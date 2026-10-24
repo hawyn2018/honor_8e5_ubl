@@ -83,4 +83,94 @@ class AdbDiscoveryPortsTest {
         assertNull(ports.resolved(invalid, 65536, true))
         assertEquals(AdbDiscoveryPorts.Change("pairing", 65535), ports.resolved(invalid, 65535, true))
     }
+
+    @Test fun bothLocalConnectPortsRemainAvailableWhenNewestPortIsNotReady() {
+        val first = found("first", "connect")
+        val second = found("second", "connect")
+        ports.resolved(first, 37053, true)
+        ports.resolved(second, 33607, true)
+
+        // The selected badge must not hide an older service that still accepts ADB.
+        assertEquals(listOf(33607, 37053), ports.candidates("connect"))
+        assertTrue(ports.candidates("pairing").isEmpty())
+    }
+
+    @Test fun candidatesIgnoreRemoteServicesAndDuplicatePorts() {
+        val first = found("first", "connect")
+        val duplicate = found("same-port", "connect")
+        val remote = found("other-phone", "connect")
+        ports.resolved(first, 37053, true)
+        ports.resolved(duplicate, 37053, true)
+        ports.resolved(remote, 33607, false)
+
+        assertEquals(listOf(37053), ports.candidates("connect"))
+        ports.lost(duplicate.key, 1)
+        assertEquals(listOf(37053), ports.candidates("connect"))
+    }
+
+    @Test fun failedResolutionReleasesNameAndRejectsItsLateCallback() {
+        val failed = found("same", "connect")
+        assertNull(ports.failed(failed))
+        assertFalse(ports.isCurrent(failed))
+        val fresh = found("same", "connect")
+        assertNotEquals(failed, fresh)
+
+        assertNull(ports.resolved(failed, 37053, true))
+        assertNull(ports.unavailable(failed))
+        assertNull(ports.failed(failed))
+        assertTrue(ports.isCurrent(fresh))
+        assertEquals(AdbDiscoveryPorts.Change("connect", 33607), ports.resolved(fresh, 33607, true))
+        assertEquals(listOf(33607), ports.candidates("connect"))
+    }
+
+    @Test fun failedSelectedServiceFallsBackToRemainingCandidate() {
+        val first = found("first", "connect")
+        val second = found("second", "connect")
+        ports.resolved(first, 37053, true)
+        ports.resolved(second, 33607, true)
+
+        assertEquals(AdbDiscoveryPorts.Change("connect", 37053), ports.failed(second))
+        assertEquals(listOf(37053), ports.candidates("connect"))
+        assertEquals(AdbDiscoveryPorts.Change("connect", null), ports.failed(first))
+        assertTrue(ports.candidates("connect").isEmpty())
+    }
+
+    @Test fun subscriptionMayLoseEndpointThenPublishItAgainWithoutNewDiscovery() {
+        val service = found("continuous", "connect")
+        ports.resolved(service, 37053, true)
+
+        assertEquals(AdbDiscoveryPorts.Change("connect", null), ports.unavailable(service))
+        assertTrue(ports.isCurrent(service))
+        assertTrue(ports.candidates("connect").isEmpty())
+        assertNull(ports.unavailable(service))
+        assertEquals(AdbDiscoveryPorts.Change("connect", 33607), ports.resolved(service, 33607, true))
+        assertEquals(listOf(33607), ports.candidates("connect"))
+    }
+
+    @Test fun unavailableNewestSubscriptionTemporarilyFallsBackThenRecovers() {
+        val first = found("first", "connect")
+        val second = found("second", "connect")
+        ports.resolved(first, 37053, true)
+        ports.resolved(second, 33607, true)
+
+        assertEquals(AdbDiscoveryPorts.Change("connect", 37053), ports.unavailable(second))
+        assertEquals(listOf(37053), ports.candidates("connect"))
+        assertEquals(AdbDiscoveryPorts.Change("connect", 33607), ports.resolved(second, 33607, true))
+        assertEquals(listOf(33607, 37053), ports.candidates("connect"))
+    }
+
+    @Test fun previousSessionFailuresCannotClearFreshEndpoint() {
+        val old = found("same", "connect")
+        ports.resolved(old, 37053, true)
+        ports.reset(2)
+        assertTrue(ports.candidates("connect").isEmpty())
+        val fresh = found("same", "connect", 2)
+        ports.resolved(fresh, 33607, true)
+
+        assertNull(ports.failed(old))
+        assertNull(ports.unavailable(old))
+        assertNull(ports.resolved(old, 37053, true))
+        assertEquals(listOf(33607), ports.candidates("connect"))
+        assertTrue(ports.isCurrent(fresh))
+    }
 }

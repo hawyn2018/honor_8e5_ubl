@@ -84,7 +84,8 @@ fun RootPage(
     val rootBusy = wirelessBusy || wirelessState.waiting
     val pairingValid = wirelessState.host.isNotBlank() && validPort(wirelessState.pairingPort) &&
         wirelessState.pairingCode.length == 6 && wirelessState.pairingCode.all { it in '0'..'9' }
-    val connectValid = wirelessState.host.isNotBlank() && validPort(wirelessState.connectPort)
+    val connectValid = wirelessState.host.isNotBlank() &&
+        (!wirelessState.connectPortManual || validPort(wirelessState.connectPort))
     LazyColumn(
         modifier = Modifier.widthIn(max = 760.dp).fillMaxSize(),
         contentPadding = padding,
@@ -197,7 +198,7 @@ fun RootPage(
             Column(Modifier.padding(horizontal = 4.dp, vertical = 4.dp)) {
                 Text("MagicRoot · 提权", fontSize = 24.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(10.dp))
-                Text("提权时间可能较长请耐心等待", fontSize = 13.sp, lineHeight = 22.sp, color = Color(0xFFE53935))
+                Text("提权时间可能较长请耐心等待\n提权过程中可能崩溃重启属正常现象，再次连接无线调试进行提权即可", fontSize = 13.sp, lineHeight = 22.sp, color = Color(0xFFE53935))
                 Spacer(Modifier.height(8.dp))
                 RootHint("已接入 MagicRoot（CVE-2026-64560）提权链：Shell 就绪后自动部署并执行；成功后 Root 仅授予本应用，不安装 ksud、不加冕 KernelSU 管理器。")
             }
@@ -249,6 +250,7 @@ fun RootPage(
                 RootConsole(rootState.logs, "console\n等待用户接入…")
             }
         }
+        item(key = "github_footer") { ProjectRepositoryFooter() }
     }
 }
 

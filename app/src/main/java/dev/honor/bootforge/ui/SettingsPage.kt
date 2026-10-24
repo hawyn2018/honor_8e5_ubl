@@ -143,6 +143,7 @@ fun SettingsPage(
                     }
                 }
             }
+            item(key = "github_footer") { ProjectRepositoryFooter() }
         }
     }
 }

@@ -38,6 +38,27 @@ internal class AdbDiscoveryPorts {
         return select(removed.ticket.kind)
     }
 
+    /** Resolution failed: release the name so another discovery can try again. */
+    fun failed(ticket: Ticket): Change? {
+        if (!isCurrent(ticket)) return null
+        entries.remove(ticket.key)
+        return select(ticket.kind)
+    }
+
+    /** A continuous subscription lost its endpoint but can publish it again. */
+    fun unavailable(ticket: Ticket): Change? {
+        if (!isCurrent(ticket)) return null
+        entries.getValue(ticket.key).port = null
+        return select(ticket.kind)
+    }
+
+    fun candidates(kind: String): List<Int> = entries.values.asSequence()
+        .filter { it.ticket.kind == kind && it.port != null }
+        .sortedByDescending { it.ticket.revision }
+        .mapNotNull { it.port }
+        .distinct()
+        .toList()
+
     private fun select(kind: String): Change? {
         // Discovery order identifies the newest pairing window. Resolution order
         // does not: a slower old callback must never replace a newer endpoint.

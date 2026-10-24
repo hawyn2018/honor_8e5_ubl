@@ -343,6 +343,7 @@ private fun UnlockPage(
         }
         item { LogPanel(state, actions) }
         item { MutedText("分区调整与引导镜像写入会影响设备启动并可能清空全部数据。请自行确认所选文件及操作。", Modifier.padding(horizontal = 4.dp), fontSize = 12, lineHeight = 19) }
+        item(key = "github_footer") { ProjectRepositoryFooter() }
     }
 }
 
@@ -457,6 +458,7 @@ private fun BackupPage(state: BackupUiState, operationBusy: Boolean, onBackup: (
                 }
             }
         }
+        item(key = "github_footer") { ProjectRepositoryFooter() }
     }
 }
 

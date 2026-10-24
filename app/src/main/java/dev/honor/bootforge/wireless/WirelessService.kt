@@ -39,7 +39,6 @@ class WirelessService : Service() {
     private var locked = false
     private lateinit var discovery: AdbServiceDiscovery
     private var discoveredPairingPort: Int? = null
-    private var discoveredConnectPort: Int? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -50,12 +49,14 @@ class WirelessService : Service() {
                 WirelessState.state = current.copy(pairingPort = WirelessPortPolicy.discovered(
                     current.pairingPort, current.pairingPortManual, port))
             } else {
-                discoveredConnectPort = port
                 WirelessState.state = current.copy(connectPort = WirelessPortPolicy.discovered(
                     current.connectPort, current.connectPortManual, port))
             }
             diagnostic("DISCOVERY kind=$kind port=${port ?: "lost"}")
-        }, { message -> WirelessState.state = WirelessState.state.copy(discovery = message) })
+        }, { message ->
+            WirelessState.state = WirelessState.state.copy(discovery = message)
+            diagnostic("NSD $message")
+        })
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -86,7 +87,6 @@ class WirelessService : Service() {
         if (action == PREPARE) {
             if (work?.isCompleted == false) return START_NOT_STICKY
             discoveredPairingPort = null
-            discoveredConnectPort = null
             WirelessState.state = WirelessState.state.copy(waiting = true, busy = false, error = null,
                 pairingPort = "", connectPort = "", pairingCode = "", paired = false, shellReady = false,
                 pairingPortManual = false, connectPortManual = false,
@@ -165,22 +165,29 @@ class WirelessService : Service() {
     @RequiresApi(30)
     private suspend fun connectShell(afterPairing: Boolean = false) {
         WirelessState.state = WirelessState.state.copy(stage = "正在连接无线调试并验证本应用 Shell 通道")
-        val deadline = SystemClock.elapsedRealtime() + 15_000L
+        val policy = WirelessConnectPolicy(SystemClock.elapsedRealtime())
         var attempts = 0
         var lastError: Exception? = null
-        while (SystemClock.elapsedRealtime() < deadline && attempts < 4) {
+        while (policy.remaining(SystemClock.elapsedRealtime()) > 0L) {
             currentCoroutineContext().ensureActive()
             val input = WirelessState.state
-            val connectPort = WirelessPortPolicy.connectionPort(input.connectPort, input.connectPortManual,
-                discoveredConnectPort, afterPairing)
+            if (!input.connectPortManual && policy.refreshDue(SystemClock.elapsedRealtime())) {
+                diagnostic("CONNECT_REFRESH attempts=$attempts")
+                discovery.restart()
+            }
+            val candidates = WirelessConnectPolicy.candidates(input.connectPort, input.connectPortManual,
+                discovery.connectionPorts(), afterPairing)
+            val connectPort = policy.select(candidates)
             if (connectPort == null) {
+                WirelessState.state = WirelessState.state.copy(stage = if (afterPairing)
+                    "配对已成功，正在等待本机无线调试连接端口" else "正在自动查找本机无线调试连接端口")
                 delay(200)
                 continue
             }
             attempts++
             diagnostic("CONNECT_ATTEMPT=$attempts port=$connectPort afterPairing=$afterPairing")
             try {
-                val remaining = deadline - SystemClock.elapsedRealtime()
+                val remaining = policy.remaining(SystemClock.elapsedRealtime())
                 if (remaining <= 0) break
                 val connected = withTimeoutOrNull(minOf(5_000L, remaining)) {
                     runInterruptible(Dispatchers.IO) {
@@ -189,6 +196,7 @@ class WirelessService : Service() {
                 } ?: error("连接超时，正在等待无线调试服务就绪")
                 check(connected.exitCode == 0)
                 WirelessState.state = WirelessState.state.copy(shellReady = true, paired = true,
+                    connectPort = connectPort.toString(),
                     stage = "本应用 Shell 权限已就绪 · UID 2000",
                     discovery = "已验证本机连接端口 $connectPort")
                 diagnostic("SHELL_SUCCESS port=$connectPort uid=2000")
@@ -198,9 +206,9 @@ class WirelessService : Service() {
             } catch (cancel: CancellationException) { throw cancel }
             catch (error: Exception) {
                 lastError = error
-                diagnostic("CONNECT_RETRY port=$connectPort ${error.javaClass.simpleName}")
+                diagnostic("CONNECT_RETRY port=$connectPort ${error.javaClass.simpleName}: ${error.message?.take(180).orEmpty()}")
             }
-            delay(500L * attempts)
+            delay(minOf(250L * attempts, 1_500L, policy.remaining(SystemClock.elapsedRealtime())))
         }
         val detail = lastError?.message
         error(if (afterPairing) "配对已成功，连接端口暂未就绪或连接未完成。请保持无线调试开启，填写主页连接端口后点击连接并获取 Shell。${detail?.let { " $it" }.orEmpty()}"
