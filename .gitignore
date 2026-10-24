@@ -1,0 +1,44 @@
+# Local Android / Gradle state
+.gradle/
+.gradle-user/
+.kotlin/
+**/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# App packages and local distributions
+*.apk
+*.aab
+*.apks
+*.xapk
+*.idsig
+dist/
+release/
+releases/
+
+# Signing material and credentials
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+key.properties
+keystore.properties
+signing.properties
+.env
+.env.*
+
+# Runtime logs, personal device dumps, and development-only workspaces
+*.log
+*.log.*
+logcat*
+logs/
+reports/
+analysis/
+platform-tools/
+backups/
+rooted/
+integration/
