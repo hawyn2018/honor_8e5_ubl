@@ -46,6 +46,10 @@ _Static_assert(sizeof(off_t) >= 8, "64-bit offsets required");
 
 #define FS_BLOCK UINT64_C(4096)
 #define SB_BYTES 3072U
+#define SB_STOP_REASON_OFFSET 2762U
+#define SB_STOP_REASON_COUNT 32U
+#define SB_ERRORS_OFFSET (SB_STOP_REASON_OFFSET + SB_STOP_REASON_COUNT)
+#define SB_ERRORS_COUNT 16U
 #define F2FS_MAGIC UINT32_C(0xf2f52010)
 #define IO_CHUNK 65536U
 #define CP_BAD_FLAGS UINT32_C(0x7818)
@@ -366,8 +370,12 @@ static bool decode_super(const unsigned char raw[SB_BYTES], uint64_t device_byte
     uint32_t log_sector = le32(raw + 8), log_spb = le32(raw + 12);
     if (log_sector < 9 || log_sector > 12 || log_spb > 3 || log_sector + log_spb != 12) return false;
     uint32_t features = le32(raw + 2180);
+    /* Stop counters and recorded error bits persist across mounts. Report
+     * this history without treating it as current resize eligibility; current
+     * checkpoint health, geometry and the kernel resize result are checked
+     * separately. Changes during the operation still fail identity readback. */
     if ((features & (UINT32_C(0x2) | UINT32_C(0x4000))) || !zero_bytes(raw + 2201, 8 * 68) ||
-        !zero_bytes(raw + 2762, 32 + 16) || zero_bytes(raw + 108, 16)) return false;
+        zero_bytes(raw + 108, 16)) return false;
     if (features & UINT32_C(0x800)) {
         if (le32(raw + 32) != 3068 || disk_crc(F2FS_MAGIC, raw, 3068) != le32(raw + 3068)) return false;
     }
@@ -438,6 +446,12 @@ static void dump_super(const char *label, unsigned index, const unsigned char ra
     printf("FS_%s_SB%u_UUID=", label, index);
     for (size_t i = 108; i < 124; i++) printf("%02x", raw[i]);
     putchar('\n');
+    unsigned stop_nonzero = 0, error_nonzero = 0;
+    for (size_t i = 0; i < SB_STOP_REASON_COUNT; i++) stop_nonzero += raw[SB_STOP_REASON_OFFSET + i] != 0;
+    for (size_t i = 0; i < SB_ERRORS_COUNT; i++) error_nonzero += raw[SB_ERRORS_OFFSET + i] != 0;
+    printf("FS_%s_SB%u_STOP_REASON_0=%u\nFS_%s_SB%u_STOP_REASON_NONZERO_COUNT=%u\n"
+        "FS_%s_SB%u_ERROR_NONZERO_COUNT=%u\n", label, index, (unsigned)raw[SB_STOP_REASON_OFFSET],
+        label, index, stop_nonzero, label, index, error_nonzero);
 }
 static int read_super_pair(const struct device_file *dev, struct super_info *s, const char *label) {
     unsigned char first[SB_BYTES], second[SB_BYTES];
@@ -446,7 +460,7 @@ static int read_super_pair(const struct device_file *dev, struct super_info *s, 
     dump_super(label, 0, first); dump_super(label, 1, second);
     printf("FS_%s_SB_PAIR_MATCH=%d\n", label, !memcmp(first, second, SB_BYTES));
     if (memcmp(first, second, SB_BYTES)) return failure("F2FS primary and backup superblocks differ");
-    if (!decode_super(first, dev->bytes, s)) return failure("F2FS superblock geometry, identity, features, health or checksum rejected; see per-copy fields");
+    if (!decode_super(first, dev->bytes, s)) return failure("F2FS superblock geometry, identity, features or checksum rejected; see per-copy fields");
     return 0;
 }
 static bool cp_block_valid(const unsigned char raw[4096], uint32_t *stored, uint32_t *computed) {

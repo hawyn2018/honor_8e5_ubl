@@ -361,7 +361,8 @@ for image in "$PE_IMAGE" "$ABL_IMAGE"; do [ -f "$image" ] && [ -r "$image" ] || 
 PE_BYTES=$(file_bytes "$PE_IMAGE"); ABL_BYTES=$(file_bytes "$ABL_IMAGE")
 is_uint "$PE_BYTES" && is_uint "$ABL_BYTES" && [ "$PE_BYTES" -gt 0 ] && [ "$ABL_BYTES" -gt 0 ] || die 'invalid image length'
 
-# Cross-check independent running-slot sources, then repeat immediately before ABL.
+# Accept an available running-slot source, require all available sources to
+# agree, then repeat immediately before ABL. Some systems expose only one.
 accept_slot() {
     [ -n "$1" ] || return 0
     case "$1" in _a|a) candidate=a ;; _b|b) candidate=b ;; *) die "invalid slot from $2" ;; esac
@@ -384,7 +385,7 @@ check_slot() {
             *) die 'bootctl returned invalid slot index' ;;
         esac
     fi
-    [ "$SLOT_SOURCES" -ge 2 ] && [ "$SLOT" != unknown ] || die 'two independent running-slot sources required'
+    [ "$SLOT_SOURCES" -ge 1 ] && [ "$SLOT" != unknown ] || die 'running slot is unavailable'
 }
 check_slot
 USERDATA=$(readlink -f /dev/block/by-name/userdata 2>/dev/null) || die 'userdata link is missing'

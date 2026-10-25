@@ -137,7 +137,7 @@ fun UnlockScreen(
     rootOpenRequest: Int = 0,
     rootContent: @Composable (PaddingValues, Boolean) -> Unit = { _, _ -> },
 ) {
-    val pagerState = rememberPagerState(initialPage = if (rootOpenRequest > 0) 0 else 2, pageCount = { 4 })
+    val pagerState = rememberPagerState(initialPage = 0, pageCount = { 4 })
     val navigationScope = rememberCoroutineScope()
     var navigationJob by remember { mutableStateOf<Job?>(null) }
     val selectPage: (Int) -> Unit = { destination ->

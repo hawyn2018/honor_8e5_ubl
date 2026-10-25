@@ -421,8 +421,10 @@ if [ "$PLAN_MODE" = create ]; then
 else
     block_idle "$EFI_NAME" || die 'efisp is mounted, swapped, or has holders'
     [ "$(blockdev --getro "$EFISP" 2>/dev/null)" = 0 ] || die 'efisp is read-only'
-    # A previous GPT-only resize must not be mistaken for a completed shrink.
-    # Inspect the plaintext filesystem through its mounted mapping when present.
+    # Reuse never resizes userdata or changes GPT, so it does not require the
+    # shrink worker's checkpoint/feature eligibility. Still verify the actual
+    # filesystem boundary to reject an incomplete previous GPT-only resize.
+    # Read the plaintext filesystem through its mounted mapping when present.
     [ -x "$SCRIPT_DIR/fsprobe" ] || die 'filesystem geometry helper is missing'
     if [ "$DATA_SOURCE" != unknown ]; then
         _reuse_source=$(readlink -f "$DATA_SOURCE") || die 'mounted userdata source is unresolved'
@@ -431,15 +433,13 @@ else
         _reuse_source=$USERDATA
         block_idle "$UD_NAME" || die 'userdata has active mappings without a verifiable data mount'
     fi
-    if [ "$DATA_FS" = f2fs ] && [ "$DATA_SOURCE" != unknown ]; then
-        [ -x "$SCRIPT_DIR/partition_worker" ] || die 'direct filesystem inspector is missing'
-        _reuse_proof=$("$SCRIPT_DIR/partition_worker" inspect-f2fs /data "$_reuse_source" 2>&1) || die 'direct userdata filesystem and checkpoint verification failed'
-        FS_READ_MODE=$(printf '%s\n' "$_reuse_proof" | sed -n 's/^FS_READ_MODE=//p')
-        [ "$FS_READ_MODE" = direct ] && [ "$(printf '%s\n' "$_reuse_proof" | sed -n 's/^RESULT=//p')" = success ] || die 'direct filesystem proof is missing'
-    else
-        _reuse_proof=$("$SCRIPT_DIR/fsprobe" "$_reuse_source" 2>&1) || die 'userdata filesystem geometry verification failed'
-        FS_READ_MODE=filesystem-superblock
-    fi
+    _reuse_proof=$("$SCRIPT_DIR/fsprobe" "$_reuse_source" 2>&1) || die 'userdata filesystem geometry verification failed'
+    FS_READ_MODE=$(printf '%s\n' "$_reuse_proof" | sed -n 's/^FS_READ_MODE=//p')
+    [ "$FS_READ_MODE" = direct ] && [ "$(printf '%s\n' "$_reuse_proof" | sed -n 's/^RESULT=//p')" = success ] || die 'direct filesystem proof is missing'
+    _reuse_type=$(printf '%s\n' "$_reuse_proof" | sed -n 's/^FS_TYPE=//p')
+    case "$DATA_FS" in
+        f2fs|ext4) [ "$_reuse_type" = "$DATA_FS" ] || die 'mounted userdata filesystem type does not match direct geometry' ;;
+    esac
     _reuse_match=$(printf '%s\n' "$_reuse_proof" | sed -n 's/^FS_MATCH=//p')
     _reuse_device=$(printf '%s\n' "$_reuse_proof" | sed -n 's/^DEVICE_BYTES=//p')
     _reuse_bytes=$(printf '%s\n' "$_reuse_proof" | sed -n 's/^FS_BYTES=//p')
