@@ -47,6 +47,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -61,6 +62,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -622,12 +624,24 @@ private fun ImageRow(icon: String, name: String, detail: String, info: String, o
 
 @Composable
 private fun StepRow(number: String, title: String, detail: String, last: Boolean) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(Modifier.size(28.dp).background(Accent.copy(alpha = .11f), CircleShape), contentAlignment = Alignment.Center) {
-                Text(number, color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+    val connectorColor = Accent.copy(alpha = .14f)
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = if (last) 28.dp else 68.dp).drawBehind {
+            if (!last) {
+                // Follow the measured row height when either text wraps.
+                val centerX = if (layoutDirection == LayoutDirection.Ltr) 14.dp.toPx() else size.width - 14.dp.toPx()
+                drawLine(
+                    color = connectorColor,
+                    start = Offset(centerX, 28.dp.toPx()),
+                    end = Offset(centerX, size.height),
+                    strokeWidth = 1.dp.toPx(),
+                )
             }
-            if (!last) Box(Modifier.width(1.dp).height(40.dp).background(Accent.copy(alpha = .14f)))
+        },
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(Modifier.size(28.dp).background(Accent.copy(alpha = .11f), CircleShape), contentAlignment = Alignment.Center) {
+            Text(number, color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.width(14.dp))
         Column(Modifier.padding(top = 3.dp, bottom = if (last) 0.dp else 20.dp)) {
