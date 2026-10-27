@@ -228,6 +228,7 @@ fun RootPage(
                 }
                 Spacer(Modifier.height(12.dp))
                 RootHint(rootState.selectedChain.integrationText)
+                RootHint("由青木信史提供的提权利用及源码修改")
             }
         }
         item {
