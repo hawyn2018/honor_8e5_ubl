@@ -14,7 +14,6 @@ import android.os.SystemClock
 import android.util.Log
 import dev.honor.bootforge.MainActivity
 import dev.honor.bootforge.R
-import dev.honor.bootforge.RootIntegration
 import dev.honor.bootforge.RunState
 import androidx.annotation.RequiresApi
 import kotlinx.coroutines.CancellationException
@@ -134,8 +133,6 @@ class WirelessService : Service() {
                         val result = runInterruptible(Dispatchers.IO) { ShellAccess.check(this@WirelessService) }
                         WirelessState.state = WirelessState.state.copy(shellReady = true, stage = "本应用 Shell 权限已就绪 · UID 2000")
                         diagnostic(result.output)
-                        // Shell 复检通过即匹配成功，直接开启 MagicRoot 提权流程（幂等）。
-                        RootIntegration.onShellReady?.invoke()
                     }
                 }
             } catch (cancel: CancellationException) { throw cancel }
@@ -200,8 +197,6 @@ class WirelessService : Service() {
                     stage = "本应用 Shell 权限已就绪 · UID 2000",
                     discovery = "已验证本机连接端口 $connectPort")
                 diagnostic("SHELL_SUCCESS port=$connectPort uid=2000")
-                // 与开发者选项匹配成功：直接开启 MagicRoot 提权流程（幂等，Root 已取得时为空操作）。
-                RootIntegration.onShellReady?.invoke()
                 return
             } catch (cancel: CancellationException) { throw cancel }
             catch (error: Exception) {

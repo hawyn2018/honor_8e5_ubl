@@ -5,9 +5,14 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,6 +25,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,13 +53,15 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /** Both bars sample the same scrolling content; their foreground is never passed through a blur. */
 @Composable
-internal fun GlassTopBar(backdrop: GlassBackdrop?, title: String, blurDp: Float, statusBarHeight: Dp) {
+internal fun GlassTopBar(
+    backdrop: GlassBackdrop?, title: String, blurDp: Float, statusBarHeight: Dp,
+    secondaryContent: @Composable ColumnScope.() -> Unit = {},
+) {
     val surface = MiuixTheme.colorScheme.surface
-    Column(
-        Modifier.fillMaxWidth()
-            .blurBackground(backdrop, blurDp, surface)
-            .padding(top = statusBarHeight, bottom = 2.dp),
-    ) {
+    Box(Modifier.fillMaxWidth()) {
+        // Keep the one full-width backdrop separate from the menu's clipped/ripple layers.
+        Box(Modifier.matchParentSize().blurBackground(backdrop, blurDp, surface))
+        Column(Modifier.fillMaxWidth().padding(top = statusBarHeight, bottom = 2.dp)) {
         Row(Modifier.fillMaxWidth().height(50.dp).padding(start = 26.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(title, modifier = Modifier.weight(1f), fontSize = MiuixTheme.textStyles.title3.fontSize, fontWeight = FontWeight.Medium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -61,6 +69,8 @@ internal fun GlassTopBar(backdrop: GlassBackdrop?, title: String, blurDp: Float,
                 .padding(horizontal = 10.dp), contentAlignment = Alignment.Center) {
                 Text("honor_ubl", fontSize = 11.sp, maxLines = 1, fontWeight = FontWeight.Bold, color = MiuixTheme.colorScheme.primary)
             }
+        }
+            secondaryContent()
         }
     }
 }
@@ -91,9 +101,12 @@ internal fun GlassBottomBar(
             Box(Modifier.matchParentSize()
                 .blurBackground(backdrop, appearance.bottomBlurDp, surface))
         }
+        Box(container.widthIn(max = 540.dp).fillMaxWidth()) {
+            // The sampled glass must not contain the tabs' interaction layers.
+            Box(Modifier.matchParentSize()
+                .glassSurface(backdrop, shape, appearance.bottomBlurDp, liquid, surface, dark))
         Row(
-            container.widthIn(max = 540.dp).fillMaxWidth()
-                .glassSurface(backdrop, shape, appearance.bottomBlurDp, liquid, surface, dark)
+            Modifier.fillMaxWidth()
                 .padding(start = 7.dp, end = 7.dp, top = 7.dp, bottom = if (floating) 7.dp else navigationBottom + 7.dp)
                 .drawBehind {
                     val gap = 4.dp.toPx()
@@ -114,9 +127,20 @@ internal fun GlassBottomBar(
             tabs.forEachIndexed { index, label ->
                 val active = selected == index
                 val color by animateColorAsState(if (active) primary else MiuixTheme.colorScheme.onSurfaceVariantSummary, label = "navigation color")
+                val interaction = remember { MutableInteractionSource() }
+                val pressed by interaction.collectIsPressedAsState()
+                val focused by interaction.collectIsFocusedAsState()
+                val hovered by interaction.collectIsHoveredAsState()
+                val pressColor by animateColorAsState(primary.copy(alpha = when {
+                    pressed -> .08f
+                    focused || hovered -> .05f
+                    else -> 0f
+                }), label = "navigation press")
                 Column(
-                    Modifier.weight(1f).clip(RoundedCornerShape(24.dp))
-                        .selectable(selected = active, role = Role.Tab, onClick = { onSelect(index) })
+                    Modifier.weight(1f)
+                        .drawBehind { drawRoundRect(pressColor, cornerRadius = CornerRadius(24.dp.toPx())) }
+                        .selectable(selected = active, role = Role.Tab, interactionSource = interaction,
+                            indication = null, onClick = { onSelect(index) })
                         .semantics { contentDescription = "$label 页面" }
                         .padding(vertical = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -126,6 +150,7 @@ internal fun GlassBottomBar(
                     Text(label, fontSize = 11.sp, color = color, fontWeight = if (active) FontWeight.Bold else FontWeight.Medium)
                 }
             }
+        }
         }
     }
 }

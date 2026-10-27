@@ -1,5 +1,7 @@
 package dev.honor.bootforge.ui
 
+import android.widget.Toast
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,17 +25,23 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.Switch
@@ -41,6 +49,9 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsPage(
@@ -48,6 +59,11 @@ fun SettingsPage(
     onChange: (AppearanceSettings) -> Unit,
     contentPadding: PaddingValues = PaddingValues(),
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var iconRequestBusy by remember { mutableStateOf(false) }
+    val iconColor = MiuixTheme.colorScheme.primary
+    val iconPreview = remember(iconColor) { AppLauncherIcon.bitmap(iconColor.toArgb()).asImageBitmap() }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
         LazyColumn(
             modifier = Modifier.widthIn(max = 760.dp).fillMaxSize(),
@@ -67,7 +83,7 @@ fun SettingsPage(
             item {
                 SettingsCard {
                     SettingsSectionTitle("玻璃与底栏")
-                    BlurSetting("顶部模糊度", "状态栏与悬浮顶栏共用一个玻璃背景", settings.topBlurDp) {
+                    BlurSetting("顶部模糊度", "状态栏、顶栏与解锁二级菜单共用一个玻璃背景", settings.topBlurDp) {
                         onChange(settings.copy(topBlurDp = it))
                     }
                     BlurSetting("底部模糊度", "独立调整底栏背景的模糊半径", settings.bottomBlurDp) {
@@ -90,7 +106,7 @@ fun SettingsPage(
                     SettingsToggle("启用 Monet 颜色", "将种子颜色生成的完整调色板应用到界面", settings.monetEnabled) {
                         onChange(settings.copy(monetEnabled = it))
                     }
-                    SettingsHint("取色关闭时，系统选项使用默认蓝色；选择指定强调色后，以指定颜色为种子。")
+                    SettingsHint("取色关闭时，系统选项使用默认蔷薇粉；选择指定强调色后，以指定颜色为种子。")
                     PalettePreview()
                 }
             }
@@ -141,6 +157,42 @@ fun SettingsPage(
                             }
                         }
                     }
+                }
+            }
+            item(key = "app_color_launcher_icon") {
+                SettingsCard {
+                    SettingsSectionTitle("随应用配色的桌面图标")
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Image(bitmap = iconPreview, contentDescription = null, modifier = Modifier.size(56.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("hnubl", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                            SettingsHint("背景与开始流程按钮同色，锁为白色。")
+                        }
+                    }
+                    SettingsHint("添加一个随应用配色更新的桌面入口，可替换原桌面图标；调整强调色或 Monet 配色后自动同步。")
+                    Button(
+                        onClick = {
+                            iconRequestBusy = true
+                            scope.launch {
+                                try {
+                                    val result = withContext(Dispatchers.IO) { AppLauncherIcon.request(context, iconColor.toArgb()) }
+                                    val message = when (result) {
+                                        AppLauncherIcon.UpdateResult.PIN_REQUESTED -> "请在桌面弹窗中确认添加"
+                                        AppLauncherIcon.UpdateResult.UPDATED, AppLauncherIcon.UpdateResult.UNCHANGED -> "桌面图标已与当前按钮颜色同步"
+                                        AppLauncherIcon.UpdateResult.UNSUPPORTED -> "当前桌面暂不支持添加此入口"
+                                        AppLauncherIcon.UpdateResult.RATE_LIMITED -> "桌面更新较频繁，请稍后再试"
+                                        AppLauncherIcon.UpdateResult.NOT_PINNED -> "请重新添加桌面图标"
+                                    }
+                                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                                } catch (error: Exception) {
+                                    Toast.makeText(context, "添加桌面图标失败：${error.message ?: "请稍后重试"}", Toast.LENGTH_LONG).show()
+                                } finally {
+                                    iconRequestBusy = false
+                                }
+                            }
+                        }, enabled = !iconRequestBusy, modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColorsPrimary(),
+                    ) { Text(if (iconRequestBusy) "正在更新…" else "添加或更新桌面图标") }
                 }
             }
             item(key = "github_footer") { ProjectRepositoryFooter() }

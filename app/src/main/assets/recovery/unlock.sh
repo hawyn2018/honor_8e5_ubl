@@ -1,6 +1,7 @@
 #!/sbin/sh
 # BootForge recovery engine. Invoke with sh unlock.sh --check|--execute.
-# No reboot, slot switch, other-slot write, automatic GPT rollback, or formatting.
+# No reboot, slot switch, automatic GPT rollback, or formatting.
+# Custom ABL writes affect only the explicitly selected current/opposite/both slots.
 # --check performs reads only, including e2fsck -fn and resize2fs -P when needed.
 # Payloads and their generated payloads.sha256 must be next to this script.
 set -u
@@ -34,6 +35,8 @@ ABL_MAY_BE_MODIFIED=0 PE_VERIFIED=0
 FILESYSTEM_MAY_BE_MODIFIED=0 GPT_MAY_BE_MODIFIED=0 GPT_VERIFIED=0
 EFI_BYTES=67108864
 PE_HASH= ABL_HASH= PAYLOAD_MANIFEST_HASH=
+SOURCE_BINDING_HASH=not-present
+ABL_WRITE_TARGET=CURRENT ABL_TARGET_SLOTS=unknown ABL_TARGET_PARTITIONS=unknown ABL_TARGETS_VERIFIED=0
 GPT_BEFORE_HASH= GPT_PLANNED_HASH=not-applicable GPTTOOL_HASH= PLAN_ID=unprepared
 EFI_PROFILE=efisp-common-v1
 EFI_LABEL=efisp
@@ -48,7 +51,7 @@ report() {
     printf '%s\n' "ROOT=$ROOT" "DEVICE=$DEVICE" "MANUFACTURER=$MANUFACTURER" "SOC=$SOC" "SLOT=$SLOT" \
         "ARITHMETIC64=$ARITHMETIC64" \
         "USERDATA=$USERDATA" "FILESYSTEM=$FILESYSTEM" "EFISP=$EFISP" \
-        "ABL=$ABL" "MODE=$PLAN_MODE" "RAW_FILESYSTEM=$RAW_FILESYSTEM" \
+        "ABL=$ABL" "ABL_WRITE_TARGET=$ABL_WRITE_TARGET" "ABL_TARGET_SLOTS=$ABL_TARGET_SLOTS" "ABL_TARGET_PARTITIONS=$ABL_TARGET_PARTITIONS" "ABL_TARGETS_VERIFIED=$ABL_TARGETS_VERIFIED" "MODE=$PLAN_MODE" "RAW_FILESYSTEM=$RAW_FILESYSTEM" \
         "DATA_SOURCE=$DATA_SOURCE" "DATA_FS=$DATA_FS" "DATA_CHAIN=$DATA_CHAIN" \
         "EFI_PROFILE=$EFI_METADATA_PROFILE" "EFI_LABEL=$EFI_LABEL" "EFI_TYPE=$EFI_TYPE" \
         "EFI_ATTR=$EFI_TARGET_ATTR" "EFI_GUID=$EFI_GUID" \
@@ -78,6 +81,71 @@ hash_file() { sha256sum "$1" | awk '{print $1}'; }
 is_guid() { printf '%s\n' "$1" | grep -Eq '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'; }
 kv() { printf '%s\n' "$1" | sed -n "s/^$2=//p"; }
 
+# BEGIN payload source binding
+# Parse data only, never shell-source the app-generated provenance file.
+# Absence is retained solely for older manual packages and fixture inputs.
+load_payload_source() {
+    SOURCE_BINDING_FILE=$1 SOURCE_BINDING_HASH=not-present
+    ABL_WRITE_TARGET=CURRENT
+    SOURCE_REQUEST_MODE= SOURCE_EFI_KIND= SOURCE_PATCH_MODE=
+    SOURCE_SLOT= SOURCE_ABL_DEVICE= SOURCE_ABL_MM= SOURCE_ABL_CAPACITY= SOURCE_ABL_SHA256=
+    [ -e "$SOURCE_BINDING_FILE" ] || [ -L "$SOURCE_BINDING_FILE" ] || return 0
+    [ -f "$SOURCE_BINDING_FILE" ] && [ -r "$SOURCE_BINDING_FILE" ] && [ ! -L "$SOURCE_BINDING_FILE" ] || die 'payload source binding is not a regular readable file'
+    awk -F= '
+        NF != 2 || $2 == "" {bad=1; next}
+        $1 !~ /^(REQUEST_MODE|EFI_SOURCE|PATCH_MODE|ABL_WRITE_TARGET|SOURCE_SLOT|SOURCE_ABL_DEVICE|SOURCE_ABL_MM|SOURCE_ABL_CAPACITY|SOURCE_ABL_SHA256)$/ {bad=1; next}
+        ++seen[$1] != 1 {bad=1; next}
+        {v[$1]=$2}
+        END {
+            if(v["REQUEST_MODE"] !~ /^(FAKE_LOCK|DIRECT|CUSTOM)$/ ||
+               v["EFI_SOURCE"] !~ /^(UPLOADED_EFISP|UPLOADED_ABL|CURRENT_SLOT_ABL|OTHER_SLOT_ABL|BUILTIN_ABL)$/ ||
+               v["PATCH_MODE"] !~ /^(FAKE_LOCK|FREEDOM)$/) bad=1
+            if(seen["ABL_WRITE_TARGET"] && v["ABL_WRITE_TARGET"] !~ /^(CURRENT|OTHER|BOTH)$/) bad=1
+            if(seen["ABL_WRITE_TARGET"] && v["ABL_WRITE_TARGET"] != "CURRENT" && v["REQUEST_MODE"] != "CUSTOM") bad=1
+            if(v["EFI_SOURCE"]=="OTHER_SLOT_ABL" && v["REQUEST_MODE"]!="CUSTOM") bad=1
+            if(seen["SOURCE_ABL_SHA256"] && (length(v["SOURCE_ABL_SHA256"])!=64 || v["SOURCE_ABL_SHA256"] ~ /[^0-9a-f]/)) bad=1
+            if(v["EFI_SOURCE"]=="CURRENT_SLOT_ABL" || v["EFI_SOURCE"]=="OTHER_SLOT_ABL") {
+                if(v["SOURCE_SLOT"] !~ /^[ab]$/ || v["SOURCE_ABL_DEVICE"] !~ /^\/dev\/block\/[A-Za-z0-9_.\/-]+$/ ||
+                   v["SOURCE_ABL_DEVICE"] ~ /(^|\/)\.\.?($|\/)/ || v["SOURCE_ABL_MM"] !~ /^[0-9]+:[0-9]+$/ ||
+                   v["SOURCE_ABL_CAPACITY"] !~ /^[1-9][0-9]*$/ || !seen["SOURCE_ABL_SHA256"]) bad=1
+            }
+            exit bad ? 1 : 0
+        }
+    ' "$SOURCE_BINDING_FILE" || die 'payload source binding has invalid, duplicate, or unknown fields'
+    SOURCE_BINDING_HASH=$(hash_file "$SOURCE_BINDING_FILE")
+    is_hash "$SOURCE_BINDING_HASH" || die 'payload source binding hash failed'
+    SOURCE_REQUEST_MODE=$(sed -n 's/^REQUEST_MODE=//p' "$SOURCE_BINDING_FILE")
+    SOURCE_EFI_KIND=$(sed -n 's/^EFI_SOURCE=//p' "$SOURCE_BINDING_FILE")
+    SOURCE_PATCH_MODE=$(sed -n 's/^PATCH_MODE=//p' "$SOURCE_BINDING_FILE")
+    _source_abl_target=$(sed -n 's/^ABL_WRITE_TARGET=//p' "$SOURCE_BINDING_FILE")
+    [ -z "$_source_abl_target" ] || ABL_WRITE_TARGET=$_source_abl_target
+    SOURCE_SLOT=$(sed -n 's/^SOURCE_SLOT=//p' "$SOURCE_BINDING_FILE")
+    SOURCE_ABL_DEVICE=$(sed -n 's/^SOURCE_ABL_DEVICE=//p' "$SOURCE_BINDING_FILE")
+    SOURCE_ABL_MM=$(sed -n 's/^SOURCE_ABL_MM=//p' "$SOURCE_BINDING_FILE")
+    SOURCE_ABL_CAPACITY=$(sed -n 's/^SOURCE_ABL_CAPACITY=//p' "$SOURCE_BINDING_FILE")
+    SOURCE_ABL_SHA256=$(sed -n 's/^SOURCE_ABL_SHA256=//p' "$SOURCE_BINDING_FILE")
+    verify_payload_source_file
+}
+verify_payload_source_file() {
+    if [ "$SOURCE_BINDING_HASH" = not-present ]; then
+        [ ! -e "$SOURCE_BINDING_FILE" ] && [ ! -L "$SOURCE_BINDING_FILE" ] || die 'legacy payload source binding appeared after staging'
+    else
+        [ -f "$SOURCE_BINDING_FILE" ] && [ ! -L "$SOURCE_BINDING_FILE" ] && \
+            [ "$(hash_file "$SOURCE_BINDING_FILE")" = "$SOURCE_BINDING_HASH" ] || die 'payload source binding changed after staging'
+    fi
+}
+verify_payload_source_identity() {
+    verify_payload_source_file
+    [ "$SOURCE_EFI_KIND" = CURRENT_SLOT_ABL ] || return 0
+    [ "$SOURCE_SLOT" = "$SLOT" ] && [ "$SOURCE_ABL_DEVICE" = "$ABL" ] && \
+        [ "$SOURCE_ABL_MM" = "$ABL_MM" ] && [ "$SOURCE_ABL_CAPACITY" = "$1" ] || die 'generated efisp source does not match the running-slot ABL identity'
+}
+verify_payload_source_abl() {
+    verify_payload_source_file
+    [ "$SOURCE_EFI_KIND" != CURRENT_SLOT_ABL ] || [ "$SOURCE_ABL_SHA256" = "$1" ] || die 'current-slot ABL changed since efisp generation'
+}
+# END payload source binding
+
 # These proofs are mandatory on production block targets. There is no buffered
 # fallback; binary reads keep their direct-I/O evidence on a separate log FD.
 export_gpt() {
@@ -99,8 +167,9 @@ read_direct() {
     grep -qx 'READ_MODE=direct' "$5" && [ "$(wc -c < "$4" | tr -d ' \r\n')" = "$3" ]
 }
 write_direct() {
-    "$WORKER" write-range "$1" "$2" "$3" "$4" --execute > "$5" 2>&1 || return 1
-    grep -qx 'READ_MODE=direct' "$5" && grep -qx 'READBACK=match' "$5" && grep -qx 'RESULT=success' "$5"
+    local write_access
+    write_access=$(write_access_path "$1") || return 1
+    bf_run_write_range "$WORKER" "$1" "$2" "$3" "$4" "$5" "$write_access"
 }
 
 clean_value() { printf '%s' "$1" | tr '\r\n' '  '; }
@@ -215,6 +284,29 @@ bf_selected_aliases "$SCRIPT_DIR/selected-tools" >/dev/null || die 'selected too
 PE_IMAGE=$SCRIPT_DIR/efisp.img
 ABL_IMAGE=$SCRIPT_DIR/abl.img
 PAYLOAD_MANIFEST=$SCRIPT_DIR/payloads.sha256
+# Completion reporting only; these helpers never issue reboot or format commands.
+completion_requires_recovery() {
+    if [ "${SOURCE_PATCH_MODE:-}" = FAKE_LOCK ]; then printf '%s\n' 0; else printf '%s\n' 1; fi
+}
+completion_reboot_target() {
+    if [ "${SOURCE_PATCH_MODE:-}" = FAKE_LOCK ]; then printf '%s\n' bootloader; else printf '%s\n' recovery; fi
+}
+completion_next_step() {
+    if [ "${SOURCE_PATCH_MODE:-}" = FAKE_LOCK ]; then
+        printf '%s\n' 'flashing complete; optional reboot bootloader; no reboot has been issued'
+    else
+        printf '%s\n' 'reboot to Recovery and perform factory reset; no reboot has been issued'
+    fi
+}
+completion_operation() {
+    if [ "${SOURCE_PATCH_MODE:-}" = FAKE_LOCK ]; then
+        printf '%s\n' 'online F2FS shrink and GPT entry rebuild; optional Fastboot entry after completion'
+    else
+        printf '%s\n' 'online F2FS shrink and GPT entry rebuild; Recovery factory reset remains pending'
+    fi
+}
+
+load_payload_source "$SCRIPT_DIR/payload-source.txt"
 BACKUP_BASE=${BACKUP_BASE_OVERRIDE:-$SCRIPT_DIR/backups}
 case "$SCRIPT_DIR$BACKUP_BASE" in *[!\ -~]*|*' '*|*'\'*) die 'script and backup paths must have plain ASCII without spaces or backslashes' ;; esac
 case "$BACKUP_BASE" in /*) ;; *) die 'backup directory must be absolute' ;; esac
@@ -245,8 +337,9 @@ DISK=/dev/block/$UD_PARENT
 [ -b "$DISK" ] || die 'userdata physical parent block node is missing'
 inspect_block "$ABL" || die 'current-slot abl is not a raw physical partition'
 ABL=$BLOCK_PATH ABL_NAME=$BLOCK_NAME ABL_MM=$BLOCK_MM ABL_PARENT=$BLOCK_PARENT
-ABL_INDEX=$BLOCK_INDEX ABL_START512=$BLOCK_START512
+ABL_INDEX=$BLOCK_INDEX ABL_START512=$BLOCK_START512 ABL_SIZE512=$BLOCK_SIZE512
 ABL_PARTITION_BYTES=$((BLOCK_SIZE512 * 512))
+verify_payload_source_identity "$ABL_PARTITION_BYTES"
 [ "$ABL" != "$USERDATA" ] || die 'abl resolves to userdata'
 _other=a; [ "$SLOT" != a ] || _other=b
 if [ -e "/dev/block/by-name/abl_$_other" ]; then
@@ -285,6 +378,201 @@ verify_gpt() {
         /^DISK_READ_MODE=/ {direct++; if($0!="DISK_READ_MODE=direct") bad=1}
         END {exit (bad || valid!=1 || result!=1 || direct!=1)}'
 }
+# BEGIN selected ABL targets
+# ABL/SLOT retain the current-slot source identity. Write destinations are separate.
+other_target_selected() { [ "$ABL_WRITE_TARGET" != CURRENT ]; }
+other_abl_needed() { other_target_selected || [ "$SOURCE_EFI_KIND" = OTHER_SLOT_ABL ]; }
+current_target_selected() { [ "$ABL_WRITE_TARGET" != OTHER ]; }
+abl_target_partitions() {
+    case "$ABL_WRITE_TARGET" in
+        CURRENT) printf '%s\n' "abl_$SLOT" ;;
+        OTHER) printf '%s\n' "abl_$ABL_OTHER_SLOT" ;;
+        BOTH) printf '%s\n' "abl_$ABL_OTHER_SLOT abl_$SLOT" ;;
+        *) die 'unknown selected ABL write target' ;;
+    esac
+}
+
+abl_target_slots() {
+    case "$ABL_WRITE_TARGET" in
+        CURRENT) printf '%s\n' "$SLOT" ;;
+        OTHER) printf '%s\n' "$ABL_OTHER_SLOT" ;;
+        BOTH) printf '%s\n' "$ABL_OTHER_SLOT $SLOT" ;;
+        *) die 'unknown selected ABL write target' ;;
+    esac
+}
+initialize_other_abl() {
+    OTHER_ABL=none OTHER_ABL_NAME=none OTHER_ABL_PARENT=none OTHER_ABL_INDEX=0
+    OTHER_ABL_START512=0 OTHER_ABL_SIZE512=0 OTHER_ABL_MM=none OTHER_ABL_CAPACITY=0
+    OTHER_ABL_BEFORE_HASH=not-applicable OTHER_ABL_GPT_BEFORE_HASH=not-applicable
+    ABL_OTHER_SLOT=a; [ "$SLOT" != a ] || ABL_OTHER_SLOT=b
+    ABL_TARGET_SLOTS=$(abl_target_slots)
+    ABL_TARGET_PARTITIONS=$(abl_target_partitions)
+    other_abl_needed || return 0
+    OTHER_ABL=$(resolve_abl_link "$ABL_OTHER_SLOT") || die 'opposite-slot ABL link is missing'
+    inspect_abl_target "$OTHER_ABL" || die 'opposite-slot ABL is not a raw physical partition'
+    OTHER_ABL=$TA_PATH OTHER_ABL_NAME=$TA_NAME OTHER_ABL_PARENT=$TA_PARENT OTHER_ABL_INDEX=$TA_INDEX
+    OTHER_ABL_START512=$TA_START512 OTHER_ABL_SIZE512=$TA_SIZE512 OTHER_ABL_MM=$TA_MM
+    OTHER_ABL_CAPACITY=$((OTHER_ABL_SIZE512 * 512))
+    [ "$OTHER_ABL" != "$ABL" ] && [ "$OTHER_ABL_MM" != "$ABL_MM" ] && \
+        [ "$OTHER_ABL" != "$USERDATA" ] && [ "$OTHER_ABL_MM" != "$UD_MM" ] || die 'selected ABL slots overlap each other or userdata'
+    unique_abl_target "abl_$ABL_OTHER_SLOT" "$OTHER_ABL_NAME" || die 'opposite-slot ABL name is missing or ambiguous'
+    is_uint "$OTHER_ABL_CAPACITY" && [ "$OTHER_ABL_CAPACITY" -gt 0 ] || die 'opposite-slot ABL has invalid capacity'
+    if other_target_selected; then
+        [ "$ABL_BYTES" -le "$OTHER_ABL_CAPACITY" ] || die 'ABL image exceeds the opposite-slot partition capacity'
+    fi
+    verify_gpt "/dev/block/$OTHER_ABL_PARENT" || die 'opposite-slot ABL parent GPT is not valid'
+    validate_other_abl_identity
+    verify_other_payload_source
+}
+verify_other_payload_source() {
+    verify_payload_source_file
+    [ "$SOURCE_EFI_KIND" = OTHER_SLOT_ABL ] || return 0
+    [ "$SOURCE_SLOT" = "$ABL_OTHER_SLOT" ] && [ "$SOURCE_ABL_DEVICE" = "$OTHER_ABL" ] && \
+        [ "$SOURCE_ABL_MM" = "$OTHER_ABL_MM" ] && [ "$SOURCE_ABL_CAPACITY" = "$OTHER_ABL_CAPACITY" ] || die 'generated efisp source does not match the opposite-slot ABL identity'
+    [ -z "${1:-}" ] || [ "$SOURCE_ABL_SHA256" = "$1" ] || die 'opposite-slot source ABL changed since efisp generation'
+}
+validate_other_abl_identity() {
+    other_abl_needed || return 0
+    [ "$(resolve_abl_link "$ABL_OTHER_SLOT")" = "$OTHER_ABL" ] || die 'opposite-slot ABL link changed'
+    inspect_abl_target "$OTHER_ABL" || die 'opposite-slot ABL physical identity disappeared'
+    [ "$TA_PATH" = "$OTHER_ABL" ] && [ "$TA_NAME" = "$OTHER_ABL_NAME" ] && \
+        [ "$TA_PARENT" = "$OTHER_ABL_PARENT" ] && [ "$TA_INDEX" = "$OTHER_ABL_INDEX" ] && \
+        [ "$TA_START512" = "$OTHER_ABL_START512" ] && [ "$TA_SIZE512" = "$OTHER_ABL_SIZE512" ] && \
+        [ "$TA_MM" = "$OTHER_ABL_MM" ] || die 'opposite-slot ABL geometry changed'
+    unique_abl_target "abl_$ABL_OTHER_SLOT" "$OTHER_ABL_NAME" || die 'opposite-slot ABL sysfs name changed'
+    [ "$(blockdev --getsize64 "$OTHER_ABL")" = "$OTHER_ABL_CAPACITY" ] || die 'opposite-slot ABL capacity changed'
+    if other_target_selected; then
+        abl_target_idle "$OTHER_ABL_NAME" "$OTHER_ABL_MM" || die 'opposite-slot ABL is mounted, swapped, or has holders'
+        bf_readonly_state "$OTHER_ABL" >/dev/null || die 'opposite-slot ABL read-only state is unknown'
+    fi
+}
+other_abl_gpt_backup() {
+    if [ "$OTHER_ABL_PARENT" = "$UD_PARENT" ]; then printf '%s\n' "$1/gpt-before.bin"
+    elif [ "$OTHER_ABL_PARENT" = "$ABL_PARENT" ]; then printf '%s\n' "$1/abl-disk-gpt-before.bin"
+    else printf '%s\n' "$1/other-abl-disk-gpt-before.bin"; fi
+}
+backup_other_abl() {
+    other_abl_needed || return 0
+    validate_other_abl_identity
+    if [ "$OTHER_ABL_PARENT" != "$UD_PARENT" ] && [ "$OTHER_ABL_PARENT" != "$ABL_PARENT" ]; then
+        export_gpt "/dev/block/$OTHER_ABL_PARENT" "$1/other-abl-disk-gpt-before.bin" "$1/other-abl-gpt-backup.log" || die 'opposite-slot parent GPT backup failed'
+    fi
+    _other_gpt=$(other_abl_gpt_backup "$1")
+    [ -s "$_other_gpt" ] || die 'opposite-slot parent GPT backup is empty'
+    OTHER_ABL_GPT_BEFORE_HASH=$(hash_file "$_other_gpt")
+    read_direct "$OTHER_ABL" 0 "$OTHER_ABL_CAPACITY" "$1/abl-other.full.bin" "$1/abl-other-backup.log" || die 'complete opposite-slot ABL backup failed'
+    OTHER_ABL_BEFORE_HASH=$(hash_file "$1/abl-other.full.bin")
+    is_hash "$OTHER_ABL_BEFORE_HASH" && is_hash "$OTHER_ABL_GPT_BEFORE_HASH" || die 'opposite-slot backup hashes are invalid'
+    read_direct "$OTHER_ABL" 0 "$OTHER_ABL_CAPACITY" "$1/abl-other-backup-readback.bin" "$1/abl-other-backup-readback.log" && \
+        [ "$(hash_file "$1/abl-other-backup-readback.bin")" = "$OTHER_ABL_BEFORE_HASH" ] || die 'opposite-slot ABL backup readback mismatch'
+    verify_other_payload_source "$OTHER_ABL_BEFORE_HASH"
+}
+verify_other_abl_unchanged() {
+    other_abl_needed || return 0
+    validate_other_abl_identity
+    is_hash "$OTHER_ABL_BEFORE_HASH" && is_hash "$OTHER_ABL_GPT_BEFORE_HASH" || die 'opposite-slot backup proof is missing'
+    verify_other_payload_source "$OTHER_ABL_BEFORE_HASH"
+    [ "$(hash_file "$1/abl-other.full.bin")" = "$OTHER_ABL_BEFORE_HASH" ] || die 'opposite-slot complete backup changed'
+    read_direct "$OTHER_ABL" 0 "$OTHER_ABL_CAPACITY" "$1/abl-other-current-check.bin" "$1/abl-other-current-check.log" && \
+        [ "$(hash_file "$1/abl-other-current-check.bin")" = "$OTHER_ABL_BEFORE_HASH" ] || die 'opposite-slot ABL changed since backup'
+    _other_expected_gpt=$OTHER_ABL_GPT_BEFORE_HASH
+    if [ "$OTHER_ABL_PARENT" = "$UD_PARENT" ] && [ "$GPT_VERIFIED" = 1 ]; then
+        [ -s "$1/gpt-after.bin" ] && [ -s "$1/gpt-planned.bin" ] && \
+            [ "$(hash_file "$1/gpt-after.bin")" = "$(hash_file "$1/gpt-planned.bin")" ] || die 'selected ABL parent GPT does not match the verified partition plan'
+        _other_expected_gpt=$(hash_file "$1/gpt-after.bin")
+    fi
+    export_gpt "/dev/block/$OTHER_ABL_PARENT" "$1/other-abl-gpt-current.bin" "$1/other-abl-gpt-current.log" && \
+        [ "$(hash_file "$1/other-abl-gpt-current.bin")" = "$_other_expected_gpt" ] || die 'opposite-slot ABL parent GPT changed outside the verified plan'
+}
+other_abl_plan_text() {
+    printf '%s\n' "ABL_WRITE_TARGET=$ABL_WRITE_TARGET" "ABL_TARGET_SLOTS=$(abl_target_slots)" \
+        "OTHER_ABL=$OTHER_ABL" "OTHER_ABL_NAME=$OTHER_ABL_NAME" "OTHER_ABL_PARENT=$OTHER_ABL_PARENT" \
+        "OTHER_ABL_INDEX=$OTHER_ABL_INDEX" "OTHER_ABL_START512=$OTHER_ABL_START512" \
+        "OTHER_ABL_SIZE512=$OTHER_ABL_SIZE512" "OTHER_ABL_MM=$OTHER_ABL_MM" "OTHER_ABL_CAPACITY=$OTHER_ABL_CAPACITY"
+}
+other_abl_inventory() {
+    other_abl_needed || return 0
+    sha256sum abl-other.full.bin || return 1
+    if [ "$OTHER_ABL_PARENT" != "$UD_PARENT" ] && [ "$OTHER_ABL_PARENT" != "$ABL_PARENT" ]; then sha256sum other-abl-disk-gpt-before.bin || return 1; fi
+}
+write_other_abl() {
+    other_target_selected || return 0
+    verify_payload_source_file
+    verify_other_abl_unchanged "$1"
+    [ "$(hash_file "$ABL_IMAGE")" = "$ABL_HASH" ] || die 'ABL payload changed before opposite-slot write'
+    abl_targets_event "writing selected abl.img to opposite-slot abl_$ABL_OTHER_SLOT: $OTHER_ABL"
+    abl_targets_mark_modified
+    write_direct "$OTHER_ABL" 0 "$OTHER_ABL_CAPACITY" "$ABL_IMAGE" "$1/abl-other-write.log" || die 'opposite-slot ABL write failed; complete backup retained'
+    sync || die 'opposite-slot ABL sync failed'
+    read_direct "$OTHER_ABL" 0 "$ABL_BYTES" "$1/abl-other-readback.bin" "$1/abl-other-readback.log" && \
+        [ "$(hash_file "$1/abl-other-readback.bin")" = "$ABL_HASH" ] || die 'opposite-slot ABL SHA256 readback mismatch'
+    abl_targets_event "EVIDENCE=selected-abl-sha256:$ABL_OTHER_SLOT:$ABL_HASH"
+}
+write_selected_abl_targets() {
+    # Finish the inactive slot first, retaining the running-slot original until then.
+    if other_abl_needed && ! other_target_selected; then verify_other_abl_unchanged "$1"; fi
+    if other_target_selected; then write_other_abl "$1"; fi
+    if current_target_selected; then write_current_abl "$1"; fi
+    ABL_TARGETS_VERIFIED=1
+    abl_targets_event "EVIDENCE=selected-abl-targets-verified:$ABL_WRITE_TARGET:$(abl_target_partitions)"
+    if ! current_target_selected; then abl_targets_event "current-slot abl_$SLOT preserved; it was not selected for writing"; fi
+    printf '%s\n' 'ABL_TARGETS_VERIFIED=1' "ABL_WRITE_TARGET=$ABL_WRITE_TARGET" "ABL_TARGET_PARTITIONS=$(abl_target_partitions)"
+}
+# END selected ABL targets
+
+# BEGIN block write access
+write_access_path() {
+    if [ "$1" = "$ABL" ] && current_target_selected; then printf '/dev/block/by-name/abl_%s\n' "$SLOT"
+    elif other_target_selected && [ "$1" = "$OTHER_ABL" ]; then printf '/dev/block/by-name/abl_%s\n' "$ABL_OTHER_SLOT"
+    elif [ "$1" = "$USERDATA" ]; then printf '%s\n' /dev/block/by-name/userdata
+    elif [ "$1" = "$EFISP" ] && [ "$EFISP" != absent ] && [ "$EFISP" != present ]; then printf '%s\n' /dev/block/by-name/efisp
+    else printf '%s\n' "$1"; fi
+}
+validate_current_abl_access() {
+    current_target_selected || return 0
+    [ "$(resolve_abl_link "$SLOT")" = "$ABL" ] || die 'current-slot ABL link changed before writable preparation'
+    inspect_abl_target "$ABL" || die 'current-slot ABL identity disappeared before writable preparation'
+    [ "$TA_PATH" = "$ABL" ] && [ "$TA_NAME" = "$ABL_NAME" ] && [ "$TA_PARENT" = "$ABL_PARENT" ] && \
+        [ "$TA_INDEX" = "$ABL_INDEX" ] && [ "$TA_START512" = "$ABL_START512" ] && \
+        [ "$TA_SIZE512" = "$ABL_SIZE512" ] && [ "$TA_MM" = "$ABL_MM" ] || die 'current-slot ABL identity changed before writable preparation'
+    abl_target_idle "$ABL_NAME" "$ABL_MM" || die 'current-slot ABL became busy before writable preparation'
+}
+ensure_selected_abl_writable() {
+    bf_write_phase_allowed || die 'write access requested outside an authorized execution phase'
+    verify_running_slot_for_write
+    verify_payload_source_file
+    validate_current_abl_access
+    if other_target_selected; then validate_other_abl_identity; fi
+    if current_target_selected; then
+        bf_ensure_bound_writable "$ABL" "/dev/block/by-name/abl_$SLOT" || die 'current-slot ABL could not be made writable'
+    fi
+    if other_target_selected; then
+        bf_ensure_bound_writable "$OTHER_ABL" "/dev/block/by-name/abl_$ABL_OTHER_SLOT" || die 'opposite-slot ABL could not be made writable'
+    fi
+    verify_running_slot_for_write
+    validate_current_abl_access
+    if other_target_selected; then validate_other_abl_identity; fi
+}
+# END block write access
+
+verify_running_slot_for_write() {
+    if command -v getprop >/dev/null 2>&1; then accept_slot "$(getprop ro.boot.slot_suffix 2>/dev/null)" ro.boot.slot_suffix; fi
+    if command -v bootctl >/dev/null 2>&1; then
+        _write_now=$(bootctl get-current-slot 2>/dev/null || :)
+        case "$_write_now" in 0|1) accept_slot "$(bootctl get-suffix "$_write_now" 2>/dev/null || :)" bootctl ;; '') ;; *) die 'current-slot HAL changed before writable preparation' ;; esac
+    fi
+}
+resolve_abl_link() { readlink -f "/dev/block/by-name/abl_$1"; }
+inspect_abl_target() {
+    inspect_block "$1" || return 1
+    TA_PATH=$BLOCK_PATH TA_NAME=$BLOCK_NAME TA_PARENT=$BLOCK_PARENT TA_INDEX=$BLOCK_INDEX
+    TA_START512=$BLOCK_START512 TA_SIZE512=$BLOCK_SIZE512 TA_MM=$BLOCK_MM
+}
+unique_abl_target() { unique_partname "$1" "$2"; }
+abl_target_idle() { block_idle "$1"; }
+abl_targets_event() { log "$1"; }
+abl_targets_mark_modified() { ABL_MAY_BE_MODIFIED=1; }
+
 verify_gpt || die 'GPT verification did not report clean primary and backup tables'
 if [ "$ABL_PARENT" != "$UD_PARENT" ]; then
     verify_gpt "/dev/block/$ABL_PARENT" || die 'current-slot abl parent GPT is not clean'
@@ -387,12 +675,12 @@ disk_idle() {
     done
 }
 block_idle "$ABL_NAME" || die 'current-slot abl is mounted, swapped, or has holders'
-[ "$(blockdev --getro "$ABL" 2>/dev/null)" = 0 ] || die 'current-slot abl is read-only'
+[ "$ABL_WRITE_TARGET" = OTHER ] || bf_readonly_state "$ABL" >/dev/null || die 'current-slot ABL read-only state is unknown'
 if [ "$PLAN_MODE" = create ]; then
     for _tool in e2fsck resize2fs dumpe2fs; do bf_tool_available "$_tool" || die "missing ext4 utility: $_tool"; done
     disk_idle || die 'userdata disk has mounted partitions, swap, or dm holders; use offline recovery'
-    [ "$(blockdev --getro "$DISK" 2>/dev/null)" = 0 ] || die 'userdata disk is read-only'
-    [ "$(blockdev --getro "$USERDATA" 2>/dev/null)" = 0 ] || die 'userdata is read-only'
+    bf_readonly_state "$DISK" >/dev/null || die 'userdata disk read-only state is unknown'
+    bf_readonly_state "$USERDATA" >/dev/null || die 'userdata read-only state is unknown'
     [ "$RAW_FILESYSTEM" = ext4 ] || die 'userdata shrink requires verified raw ext4; f2fs and encrypted mappings are unsupported'
     _crypto=$(getprop ro.crypto.state 2>/dev/null || :)
     case "$_crypto" in encrypted) die 'userdata reports encryption; no raw shrink backend is selected' ;; esac
@@ -420,7 +708,7 @@ if [ "$PLAN_MODE" = create ]; then
     [ "$MIN_FS_BLOCKS" -le "$TARGET_FS_BLOCKS" ] || die 'ext4 does not have enough movable free space for the shrink'
 else
     block_idle "$EFI_NAME" || die 'efisp is mounted, swapped, or has holders'
-    [ "$(blockdev --getro "$EFISP" 2>/dev/null)" = 0 ] || die 'efisp is read-only'
+    bf_readonly_state "$EFISP" >/dev/null || die 'efisp read-only state is unknown'
     # Reuse never resizes userdata or changes GPT, so it does not require the
     # shrink worker's checkpoint/feature eligibility. Still verify the actual
     # filesystem boundary to reject an incomplete previous GPT-only resize.
@@ -468,9 +756,10 @@ PE_BYTES=$(wc -c < "$PE_IMAGE" | tr -d ' ')
 ABL_BYTES=$(wc -c < "$ABL_IMAGE" | tr -d ' ')
 is_uint "$PE_BYTES" && is_uint "$ABL_BYTES" || die 'image sizes are invalid'
 [ "$PE_BYTES" -gt 0 ] && [ "$PE_BYTES" -le "$EFI_BYTES" ] || die 'PE image exceeds efisp capacity'
-[ "$ABL_BYTES" -gt 0 ] && [ "$ABL_BYTES" -le "$ABL_PARTITION_BYTES" ] || die 'ABL image exceeds the current-slot abl partition'
+[ "$ABL_BYTES" -gt 0 ] && { [ "$ABL_WRITE_TARGET" = OTHER ] || [ "$ABL_BYTES" -le "$ABL_PARTITION_BYTES" ]; } || die 'ABL image exceeds the selected current-slot abl partition'
 [ "$(sha256sum "$PE_IMAGE" | awk '{print $1}')" = "$PE_HASH" ] || die 'efisp image differs from the staged payload manifest'
 [ "$(sha256sum "$ABL_IMAGE" | awk '{print $1}')" = "$ABL_HASH" ] || die 'ABL image differs from the staged payload manifest'
+initialize_other_abl
 
 # Inspect the existing ancestor without creating a directory in --check.
 BACKUP_ANCESTOR=$BACKUP_BASE
@@ -505,10 +794,11 @@ if [ "$PLAN_MODE" = create ]; then
     esac
 fi
 [ "$BACKUP_MM" != "$ABL_MM" ] || die 'backup filesystem resolves to the abl target'
+if other_target_selected; then [ "$BACKUP_MM" != "$OTHER_ABL_MM" ] || die 'backup filesystem resolves to the opposite-slot abl target'; fi
 [ "$PLAN_MODE" != reuse ] || [ "$BACKUP_MM" != "$EFI_MM" ] || die 'backup filesystem resolves to efisp'
 FREE_KB=$(df -Pk "$BACKUP_ANCESTOR" 2>/dev/null | awk 'END {print $4}')
 is_uint "$FREE_KB" || die 'backup free space could not be queried'
-REQUIRED_BACKUP=$((ABL_PARTITION_BYTES + 16777216))
+REQUIRED_BACKUP=$((ABL_PARTITION_BYTES + OTHER_ABL_CAPACITY * 2 + 16777216))
 [ "$PLAN_MODE" != reuse ] || REQUIRED_BACKUP=$((REQUIRED_BACKUP + EFI_BYTES))
 [ $((FREE_KB * 1024)) -ge "$REQUIRED_BACKUP" ] || die 'backup destination does not have enough free space'
 
@@ -541,20 +831,31 @@ fi
 read_direct "$ABL" 0 "$ABL_PARTITION_BYTES" "$BACKUP_DIR/abl_$SLOT.full.bin" "$BACKUP_DIR/abl-backup.log" || die 'full original abl backup failed'
 [ "$(wc -c < "$BACKUP_DIR/abl_$SLOT.full.bin" | tr -d ' ')" = "$ABL_PARTITION_BYTES" ] || die 'original abl backup length is wrong'
 _abl_backup_hash=$(sha256sum "$BACKUP_DIR/abl_$SLOT.full.bin" | awk '{print $1}')
+verify_payload_source_abl "$_abl_backup_hash"
 read_direct "$ABL" 0 "$ABL_PARTITION_BYTES" "$BACKUP_DIR/abl-backup-readback.bin" "$BACKUP_DIR/abl-backup-readback.log" && [ "$_abl_backup_hash" = "$(hash_file "$BACKUP_DIR/abl-backup-readback.bin")" ] || die 'original abl backup verification failed'
+backup_other_abl "$BACKUP_DIR"
 if [ "$PLAN_MODE" = reuse ]; then
     read_direct "$EFISP" 0 "$EFI_BYTES" "$BACKUP_DIR/efisp.full.bin" "$BACKUP_DIR/efisp-backup.log" || die 'original efisp backup failed'
     [ "$(wc -c < "$BACKUP_DIR/efisp.full.bin" | tr -d ' ')" = "$EFI_BYTES" ] || die 'original efisp backup length is wrong'
     read_direct "$EFISP" 0 "$EFI_BYTES" "$BACKUP_DIR/efisp-backup-readback.bin" "$BACKUP_DIR/efisp-backup-readback.log" && [ "$(hash_file "$BACKUP_DIR/efisp.full.bin")" = "$(hash_file "$BACKUP_DIR/efisp-backup-readback.bin")" ] || die 'original efisp backup verification failed'
 fi
+verify_payload_source_file
+if [ "$SOURCE_BINDING_HASH" != not-present ]; then
+    cp "$SOURCE_BINDING_FILE" "$BACKUP_DIR/payload-source.txt" || die 'payload source binding backup copy failed'
+    [ "$(hash_file "$BACKUP_DIR/payload-source.txt")" = "$SOURCE_BINDING_HASH" ] || die 'payload source binding backup hash mismatch'
+fi
 PLAN_ID=$(printf '%s\n' "DISK=$DISK" "DISK_GUID=$DISK_GUID" "SLOT=$SLOT" \
     "UD_INDEX=$UD_INDEX" "UD_START=$UD_START" "UD_END=$UD_END" "NEW_UD_END=$NEW_UD_END" \
     "EFI_INDEX=$EFI_GPT_INDEX" "EFI_START=$EFI_START" "EFI_END=$EFI_END" "EFI_GUID=$EFI_GUID" \
     "GPT_BEFORE_SHA256=$GPT_BEFORE_HASH" "GPT_PLANNED_SHA256=$GPT_PLANNED_HASH" "GPTTOOL_SHA256=$GPTTOOL_HASH" \
-    "ABL_BEFORE_SHA256=$_abl_backup_hash" "PAYLOAD_MANIFEST_SHA256=$PAYLOAD_MANIFEST_HASH" | sha256sum | awk '{print $1}')
+    "ABL_BEFORE_SHA256=$_abl_backup_hash" "PAYLOAD_MANIFEST_SHA256=$PAYLOAD_MANIFEST_HASH" \
+    "PAYLOAD_SOURCE_SHA256=$SOURCE_BINDING_HASH" "ABL_WRITE_TARGET=$ABL_WRITE_TARGET" \
+    "OTHER_ABL_BEFORE_SHA256=$OTHER_ABL_BEFORE_HASH" "OTHER_ABL_GPT_SHA256=$OTHER_ABL_GPT_BEFORE_HASH" | sha256sum | awk '{print $1}')
 (
     cd "$BACKUP_DIR" || exit 1
     sha256sum gpt-before.bin gpttool.bin "abl_$SLOT.full.bin" || exit 1
+    other_abl_inventory || exit 1
+    if [ "$SOURCE_BINDING_HASH" != not-present ]; then sha256sum payload-source.txt || exit 1; fi
     [ "$PLAN_MODE" != create ] || sha256sum gpt-planned.bin || exit 1
     [ "$PLAN_MODE" != reuse ] || sha256sum efisp.full.bin || exit 1
     [ "$ABL_PARENT" = "$UD_PARENT" ] || sha256sum abl-disk-gpt-before.bin
@@ -569,10 +870,13 @@ PLAN_ID=$(printf '%s\n' "DISK=$DISK" "DISK_GUID=$DISK_GUID" "SLOT=$SLOT" \
         "efisp_end=$EFI_END" "efisp_profile=$EFI_METADATA_PROFILE" "efisp_label=$EFI_LABEL" \
         "efisp_type=$EFI_TYPE" "efisp_attributes=$EFI_TARGET_ATTR" "efisp_guid=$EFI_GUID" \
         "abl=$ABL" "abl_backup_sha256=$_abl_backup_hash" \
+        "OTHER_ABL_BEFORE_SHA256=$OTHER_ABL_BEFORE_HASH" "OTHER_ABL_GPT_SHA256=$OTHER_ABL_GPT_BEFORE_HASH" \
         "PLAN_ID=$PLAN_ID" "GPT_BEFORE_SHA256=$GPT_BEFORE_HASH" "GPT_PLANNED_SHA256=$GPT_PLANNED_HASH" \
         "GPTTOOL_SHA256=$GPTTOOL_HASH" "INVENTORY_SHA256=$(hash_file "$BACKUP_DIR/backup-inventory.sha256")" \
         "pe_sha256=$PE_HASH" "abl_image_sha256=$ABL_HASH" "payload_manifest_sha256=$PAYLOAD_MANIFEST_HASH" \
+        "PAYLOAD_SOURCE_SHA256=$SOURCE_BINDING_HASH" \
         'note=GPT and abl backups do not restore userdata filesystem contents; no automatic rollback'
+    other_abl_plan_text
     printf '%s\n' "$GPT_TABLE" "$UD_INFO"
 } > "$BACKUP_DIR/manifest.txt" || die 'backup manifest write failed'
 sync || die 'backup sync failed'
@@ -580,6 +884,7 @@ sync || die 'backup sync failed'
 # Revalidate the facts that could change while backups were being read.
 [ "$(sha256sum "$PE_IMAGE" | awk '{print $1}')" = "$PE_HASH" ] && [ "$(sha256sum "$ABL_IMAGE" | awk '{print $1}')" = "$ABL_HASH" ] || die 'images changed after preflight'
 [ "$(sha256sum "$PAYLOAD_MANIFEST" | awk '{print $1}')" = "$PAYLOAD_MANIFEST_HASH" ] || die 'payload manifest changed after staging'
+verify_payload_source_file
 [ "$(readlink -f "/dev/block/by-name/abl_$SLOT")" = "$ABL" ] || die 'abl target changed after preflight'
 [ "$(hash_file "$GPTTOOL")" = "$GPTTOOL_HASH" ] || die 'raw GPT helper changed since backup'
 (cd "$BACKUP_DIR" && sha256sum -c backup-inventory.sha256) > "$BACKUP_DIR/inventory-readback.log" 2>&1 || die 'backup inventory changed before writes'
@@ -589,16 +894,56 @@ verify_gpt || die 'raw GPT validation failed after backup'
 GPT_SOURCE_INSPECT=$(inspect_gpt "$DISK" "$UD_INDEX") || die 'direct GPT source inspection failed'
 [ "$GPT_SOURCE_INSPECT" = "$GPT_INSPECT" ] || die 'direct GPT changed after preflight'
 block_idle "$ABL_NAME" || die 'abl became busy after preflight'
+verify_other_abl_unchanged "$BACKUP_DIR"
+# A late EROFS from an offline filesystem command is retried only after direct
+# geometry inspection and a clean read-only fsck; a completed resize is not repeated.
+run_ext4_write() {
+    local ext_command=$1 ext_log=$2 ext_identity ext_rc ext_header ext_bs ext_bc
+    shift 2
+    # Internal verification failures must not alias e2fsck's successful rc=1.
+    ext_identity=$(bf_target_identity "$USERDATA") || return 125
+    bf_ensure_bound_writable "$USERDATA" /dev/block/by-name/userdata || return 125
+    [ "$(bf_target_identity "$USERDATA")" = "$ext_identity" ] || return 125
+    "$ext_command" "$@" > "$ext_log" 2>&1; ext_rc=$?
+    if [ "$ext_rc" = 0 ] || { [ "$ext_command" = e2fsck ] && [ "$ext_rc" = 1 ]; }; then return "$ext_rc"; fi
+    [ "$(bf_target_identity "$USERDATA")" = "$ext_identity" ] || return 125
+    bf_readonly_failure "$USERDATA" "$ext_log" || return "$ext_rc"
+    cp "$ext_log" "$ext_log.first-attempt" || return 125
+    ext_header=$(dumpe2fs -h "$USERDATA" 2> "$ext_log.retry-geometry.log") || return 125
+    ext_bs=$(info_field "$ext_header" 'Block size' | awk '{print $1}')
+    ext_bc=$(info_field "$ext_header" 'Block count' | awk '{print $1}')
+    [ "$ext_bs" = "$EXT4_BLOCK_SIZE" ] || return 125
+    [ "$ext_bc" = "$EXT4_BLOCK_COUNT" ] || \
+        { [ "$ext_command" = resize2fs ] && [ "$ext_bc" = "$TARGET_FS_BLOCKS" ]; } || return 125
+    e2fsck -fn "$USERDATA" > "$ext_log.retry-fsck.log" 2>&1 || return 125
+    bf_ensure_bound_writable "$USERDATA" /dev/block/by-name/userdata force || return 125
+    [ "$(bf_target_identity "$USERDATA")" = "$ext_identity" ] || return 125
+    if [ "$ext_command" = resize2fs ] && [ "$ext_bc" = "$TARGET_FS_BLOCKS" ]; then
+        log 'EXT4_RO_RECOVERY=planned-filesystem-already-complete'
+        return 0
+    fi
+    log "EXT4_RETRY=read-only-and-unchanged-clean-geometry;COMMAND=$ext_command;ATTEMPT=2"
+    "$ext_command" "$@" > "$ext_log" 2>&1
+}
+
+BF_WRITE_AUTHORIZED=1
+ensure_selected_abl_writable
+if [ "$PLAN_MODE" = create ]; then
+    bf_ensure_writable "$DISK" || die 'userdata GPT disk could not be made writable'
+    bf_ensure_bound_writable "$USERDATA" /dev/block/by-name/userdata || die 'userdata could not be made writable'
+else
+    bf_ensure_bound_writable "$EFISP" /dev/block/by-name/efisp || die 'efisp could not be made writable'
+fi
 
 if [ "$PLAN_MODE" = create ]; then
     disk_idle || die 'userdata disk became busy after preflight'
     STAGE=filesystem-shrink
     log 'checking offline ext4 before resize'
     FILESYSTEM_MAY_BE_MODIFIED=1
-    e2fsck -fp "$USERDATA"; _rc=$?
+    run_ext4_write e2fsck "$BACKUP_DIR/ext4-fsck-write.log" -fp "$USERDATA"; _rc=$?
     case "$_rc" in 0|1) ;; *) die 'ext4 check requested additional repair or reboot; GPT was not changed' ;; esac
     log "resizing userdata ext4 to $TARGET_FS_BLOCKS filesystem blocks"
-    resize2fs "$USERDATA" "$TARGET_FS_BLOCKS" || die 'ext4 resize failed; no alternate-tool retry; GPT remains original; inspect filesystem'
+    run_ext4_write resize2fs "$BACKUP_DIR/ext4-resize-write.log" "$USERDATA" "$TARGET_FS_BLOCKS" || die 'ext4 resize failed or read-only state could not be reconciled; GPT remains original; inspect filesystem'
     e2fsck -fn "$USERDATA" || die 'resized ext4 verification failed; GPT remains original'
     _after_header=$(dumpe2fs -h "$USERDATA" 2>/dev/null) || die 'resized ext4 superblock query failed'
     _after_bs=$(info_field "$_after_header" 'Block size' | awk '{print $1}')
@@ -615,9 +960,9 @@ if [ "$PLAN_MODE" = create ]; then
         [ "$(hash_file "$BACKUP_DIR/gpt-planned.bin")" = "$GPT_PLANNED_HASH" ] && \
         [ "$(hash_file "$GPTTOOL")" = "$GPTTOOL_HASH" ] || die 'raw GPT source, plan, or helper changed before the sole apply'
     GPT_MAY_BE_MODIFIED=1
-    "$GPTTOOL" apply "$DISK" "$BACKUP_DIR/gpt-before.bin" "$BACKUP_DIR/gpt-planned.bin" --execute > "$BACKUP_DIR/gpt-write.log" 2>&1
+    bf_run_gpt_apply "$GPTTOOL" "$DISK" "$BACKUP_DIR/gpt-before.bin" "$BACKUP_DIR/gpt-planned.bin" "$BACKUP_DIR/gpt-write.log"
     GPT_WRITE_RC=$?
-    [ "$GPT_WRITE_RC" = 0 ] || die 'raw GPT apply failed; no transaction replay or fallback; retain snapshots and inspect'
+    [ "$GPT_WRITE_RC" = 0 ] || die 'raw GPT apply failed or changed state prevents read-only retry; retain snapshots and inspect'
     grep -qx 'DISK_READ_MODE=direct' "$BACKUP_DIR/gpt-write.log" && grep -qx 'RESULT=success' "$BACKUP_DIR/gpt-write.log" && \
         grep -qx 'READBACK=match' "$BACKUP_DIR/gpt-write.log" || die 'raw GPT apply proof is missing; no transaction replay'
     sync || die 'GPT sync failed; inspect on-disk and kernel geometry before retry'
@@ -679,7 +1024,7 @@ else
 fi
 [ "$(sha256sum "$PE_IMAGE" | awk '{print $1}')" = "$PE_HASH" ] || die 'PE image changed before write'
 block_idle "$EFI_NAME" || die 'efisp became busy before write'
-[ "$(blockdev --getro "$EFISP" 2>/dev/null)" = 0 ] || die 'efisp became read-only'
+bf_readonly_state "$EFISP" >/dev/null || die 'efisp read-only state became unknown'
 }
 STAGE=targets-final-validation
 validate_efisp_target
@@ -690,20 +1035,23 @@ if command -v bootctl >/dev/null 2>&1; then
     _now=$(bootctl get-current-slot 2>/dev/null || :)
     case "$_now" in 0|1) accept_slot "$(bootctl get-suffix "$_now" 2>/dev/null || :)" bootctl ;; '') ;; *) die 'current-slot HAL changed before abl write' ;; esac
 fi
+write_current_abl() {
 [ "$(readlink -f "/dev/block/by-name/abl_$SLOT")" = "$ABL" ] || die 'abl target changed before write'
 inspect_block "$ABL" || die 'current-slot abl block identity disappeared before write'
 [ "$BLOCK_NAME" = "$ABL_NAME" ] && [ "$BLOCK_PARENT" = "$ABL_PARENT" ] && \
     [ "$BLOCK_INDEX" = "$ABL_INDEX" ] && [ "$BLOCK_START512" = "$ABL_START512" ] && \
     [ "$BLOCK_MM" = "$ABL_MM" ] && [ $((BLOCK_SIZE512 * 512)) = "$ABL_PARTITION_BYTES" ] || die 'current-slot abl block identity changed before write'
 block_idle "$ABL_NAME" || die 'current-slot abl became busy before write'
-[ "$(blockdev --getro "$ABL" 2>/dev/null)" = 0 ] || die 'current-slot abl became read-only'
+bf_readonly_state "$ABL" >/dev/null || die 'current-slot ABL read-only state became unknown'
 [ "$(sha256sum "$ABL_IMAGE" | awk '{print $1}')" = "$ABL_HASH" ] || die 'abl image changed before write'
-log "writing abl.img to current-slot abl_$SLOT only: $ABL"
+log "writing abl.img to selected current-slot abl_$SLOT: $ABL"
 ABL_MAY_BE_MODIFIED=1
 write_direct "$ABL" 0 "$ABL_PARTITION_BYTES" "$ABL_IMAGE" "$BACKUP_DIR/abl-write.log" || die 'current-slot abl write failed; original full partition backup is retained'
 sync || die 'abl sync failed'
 read_direct "$ABL" 0 "$ABL_BYTES" "$BACKUP_DIR/abl-readback.bin" "$BACKUP_DIR/abl-readback.log" && [ "$(hash_file "$BACKUP_DIR/abl-readback.bin")" = "$ABL_HASH" ] || die 'current-slot abl image-length readback hash mismatch'
 log 'current-slot abl image-length readback SHA-256 verified'
+}
+write_selected_abl_targets "$BACKUP_DIR"
 STAGE=efisp-write
 validate_efisp_target
 log "writing selected efisp image to $EFISP"
@@ -713,8 +1061,10 @@ read_direct "$EFISP" 0 "$PE_BYTES" "$BACKUP_DIR/pe-readback.bin" "$BACKUP_DIR/pe
 PE_VERIFIED=1
 log 'efisp image-length readback SHA-256 verified'
 STAGE=complete
-printf '%s\n' "SLOT=$SLOT" "ABL=$ABL" "EFISP=$EFISP" "BACKUP_DIR=$BACKUP_DIR" \
+printf '%s\n' "SLOT=$SLOT" "ABL=$ABL" "ABL_WRITE_TARGET=$ABL_WRITE_TARGET" "ABL_TARGET_SLOTS=$(abl_target_slots)" "ABL_TARGET_PARTITIONS=$(abl_target_partitions)" "ABL_TARGETS_VERIFIED=$ABL_TARGETS_VERIFIED" "EFISP=$EFISP" "BACKUP_DIR=$BACKUP_DIR" \
     "EFI_PROFILE=$EFI_METADATA_PROFILE" "EFI_LABEL=$EFI_LABEL" "EFI_TYPE=$EFI_TYPE" \
     "EFI_BYTES=$EFI_BYTES" "TAIL_FREE_BYTES=$TAIL_FREE_BYTES" "SKIP_F2FS_SHRINK=$SKIP_F2FS_SHRINK" "FS_READ_MODE=$FS_READ_MODE" \
-    "EFI_ATTR=$EFI_TARGET_ATTR" "EFI_GUID=$EFI_GUID" 'PE_VERIFIED=1' 'RESULT=success'
+    "EFI_ATTR=$EFI_TARGET_ATTR" "EFI_GUID=$EFI_GUID" 'PE_VERIFIED=1' 'DATA_FORMATTED=0' \
+    "REQUIRES_RECOVERY_FORMAT=$(completion_requires_recovery)" "REBOOT_TARGET=$(completion_reboot_target)" \
+    "NEXT_STEP=$(completion_next_step)" 'RESULT=success'
 exit 0

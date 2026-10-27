@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Match the application's default Pink/Vibrant/2021 primary action color. -->
+    <color name="launcher_icon_background">#B6007C</color>
+    <color name="launcher_icon_foreground">#FFFFFF</color>
+</resources>

@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 rootProject.name = "HonorBootForge"
 include(":app")
 include(":rootbridge")
+include(":abl-efisp-core")

@@ -11,6 +11,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import dev.honor.bootforge.core.SlotPartitionBackup
 import dev.honor.bootforge.core.SlotBackupFailure
+import dev.honor.bootforge.core.DualSlotBackupFiles
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,11 +40,11 @@ class BackupService : Service() {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         startForeground(42, Notification.Builder(this, channel)
             .setSmallIcon(R.drawable.ic_launcher).setContentTitle("honor_ubl 正在备份")
-            .setContentText("备份 init_boot、vbmeta、abl、GPT 分区表并修补 vbmeta 副本")
+            .setContentText("备份双槽 init_boot、abl 和 GPT 分区表")
             .setContentIntent(open).setOngoing(true).build())
         // Both services enter on the main thread and share this busy flag.
         RunState.state = RunState.state.copy(busy = true)
-        BackupState.state = BackupUiState(busy = true, stage = "正在准备当前槽位备份", status = "running")
+        BackupState.state = BackupUiState(busy = true, stage = "正在准备双槽备份并识别当前槽位", status = "running")
         scope.launch {
             val wake = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BootForge:backup")
             try {
@@ -60,8 +61,8 @@ class BackupService : Service() {
                     }
                 }
                 BackupState.state = BackupState.state.copy(
-                    stage = if (result.status == "complete") "分区镜像、主备 GPT 备份与 vbmeta 副本修补完成"
-                        else "原始镜像与 vbmeta 副本已保存，请查看 GPT 备份提示",
+                    stage = if (result.status == "complete") "分区镜像与主备 GPT 备份完成"
+                        else "原始镜像已保存，请查看 GPT 备份提示",
                     slot = result.slot, outputDirectory = result.directory, files = result.files, progress = 1f,
                     status = result.status, warnings = result.warnings, diskStatuses = result.diskStatuses)
             } catch (error: Exception) {
@@ -69,9 +70,10 @@ class BackupService : Service() {
                     BackupState.state = BackupState.state.copy(slot = result.slot, outputDirectory = result.directory,
                         files = result.files, status = result.status, warnings = result.warnings, diskStatuses = result.diskStatuses)
                 }
-                val originalsSaved = BackupState.state.files.any { it.name == "vbmeta.img" } && BackupState.state.outputDirectory.isNotEmpty()
+                val originalsSaved = DualSlotBackupFiles.originalsSaved(BackupState.state.slot,
+                    BackupState.state.files.map { it.name }) && BackupState.state.outputDirectory.isNotEmpty()
                 BackupState.state = BackupState.state.copy(
-                    stage = if (originalsSaved) "原始备份已保存，修补或后续保存未完成" else "备份已停止",
+                    stage = if (originalsSaved) "原始备份已保存，后续备份或保存未完成" else "备份已停止",
                     error = error.message ?: error.javaClass.simpleName, status = "partial")
             } finally {
                 if (wake.isHeld) wake.release()

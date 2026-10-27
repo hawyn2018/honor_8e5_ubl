@@ -1,25 +1,31 @@
-# MagicRoot 提权资产说明（assets/magic/）
+# MagicRoot 提权资产说明（旧版 assets/magic/ 与 1.0.4 assets/magic104/）
 
-BootForge 2.1.0（versionCode 13）起接入 MagicRoot 的 CVE-2026-64560 提权链。
-以下资产打包于 `assets/magic/`，运行时经本应用的无线 ADB Shell（UID 2000）
-部署到 `/data/local/tmp/magic`，仅服务于 Magic 9（MLY-AN00，
-6.12.58-android16-6-g3a7ac1674240-abogki541502914-4k）这一台目标设备。
+honor_ubl 2.4（versionCode 30）同时保留 98260 与 64650 两条链，且每条链都包含
+6.12.58 和 6.12.38 两套精确内核 profile。运行时按完整 `uname -r` 选择，不按设备型号删减。
+98260 使用 rootd，64650 使用 MagicRoot 默认链与 `bfexec`；两条链均不要求另行安装
+KernelSU 管理器或再次授权。失败只记录现场和 `boot_id`，不强制阻断重试或换链。
 
-## 来源
+## 1.0.4 资产来源与许可
 
 - 漏洞链参考实现：CVE-2026-64560 public 仓库（GhostLock/CVE-2026-64560
-  research contributors，MIT License，见文末）；HONOR 机型适配同为 MIT
-  （LICENSE-HONOR-ADAPTATION-MIT.txt）。
-- `ksu-template.ko`：使用者提供的 KernelSU 6.12.76 内核模块，经符号驱动的
-  `track_throne` 补丁（`init_cred` 替换 `ksu_cred`）；加载时由 `ko_patch`
-  按本次启动的 KASLR slide 重写未定义符号与 vermagic。
+  research contributors，MIT License，见文末）；HONOR 适配同为 MIT
+  （LICENSE-HONOR-ADAPTATION-MIT.txt）。98260 适配致谢见 MagicRoot 1.0.4 的
+  `THIRD_PARTY_NOTICES.md`。
+- `ksu-template.ko`：使用者提供的 KernelSU 模块，经符号驱动的 `track_throne`
+  补丁；加载时由 `ko_patch` 按本次启动的 KASLR slide 重写符号与 vermagic。
 - `ksud`、`ksu_grant`、`root_stage.sh` **未打包**：本应用不安装 KernelSU
-  用户态管理器，不加冕管理器。Root 通道由 `bfexec`（本项目源码
-  `app/src/main/cpp/bfexec.c`，NDK r29 静态编译）承担：UID 2000 经 KernelSU
-  reboot 钩子 + `KSU_IOCTL_GRANT_ROOT` 提权后 exec `sh -c`，与 MagicRoot 的
-  `ksu_grant` 同一机制。
+  用户态管理器，不加冕管理器。64650 的 Root 通道由 `bfexec`（本项目源码
+  `app/src/main/cpp/bfexec.c`，NDK r29 静态编译）承担；98260 由 rootd 配合
+  `root-command.sh` 提供独立 stdout、stderr 和退出码。
+- 1.0.4 的二进制载荷与两套内核符号表来自用户提供的
+  `MagicRoot-1.0.4-source-fix.zip`；`run.sh`、`run98260.sh` 仅做本应用接入所需的调整。
 
-## 打包资产 SHA-256
+## 早期 assets/magic/ 资产来源
+
+早期 `assets/magic/` 资产及其哈希保留如下，供旧版对照；当前 1.0.4 双链资产位于
+`assets/magic104/64650/` 和 `assets/magic104/98260/`。
+
+## 早期 assets/magic/ SHA-256
 
 | 文件 | 字节 | SHA-256 |
 | --- | ---: | --- |

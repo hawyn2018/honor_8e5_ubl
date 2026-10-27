@@ -1,0 +1,22 @@
+ABL-EFISP uses the following unmodified libraries:
+
+Miuix 0.9.4
+Copyright: the Miuix contributors
+https://github.com/compose-miuix-ui/miuix
+License: Apache License 2.0 (Apache-2.0.txt)
+
+AndroidX / Jetpack Compose
+Copyright: The Android Open Source Project
+https://developer.android.com/jetpack/androidx
+License: Apache License 2.0 (Apache-2.0.txt)
+
+Kotlin standard library and kotlinx.coroutines 1.10.2
+Copyright: JetBrains s.r.o. and Kotlin Programming Language contributors
+https://github.com/JetBrains/kotlin
+https://github.com/Kotlin/kotlinx.coroutines
+License: Apache License 2.0 (Apache-2.0.txt)
+
+XZ for Java 1.12
+Copyright (C) The XZ for Java authors and contributors
+https://tukaani.org/xz/java.html
+License: Zero-Clause BSD (XZ-COPYING.txt)

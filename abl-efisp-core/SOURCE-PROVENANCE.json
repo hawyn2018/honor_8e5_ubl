@@ -1,0 +1,46 @@
+{
+  "sources": [
+    {
+      "archive": "dist\\ABL-EFISP-fakebl-1.2.5-source-clean.zip",
+      "sha256": "aae3f949fa37236e20bfc92b71593ad43bc2db83de14fa264b0a167029c2af30"
+    },
+    {
+      "archive": "dist\\ABL-EFISP-freedom-1.2.3-source-clean.zip",
+      "sha256": "fb4ba3b825882854ee1113535c9afc7eef51a072f4179baa99a40a0f4583876b"
+    }
+  ],
+  "coreProductionFiles": {
+    "src/main/kotlin/net/hawyn/ablefisp/api/AblEfisp.kt": "8f2592816a7ab9d6bb5a69553ccd9f10bd09b8ba0b61439c867cfde3b8280949",
+    "src/main/kotlin/net/hawyn/ablefisp/io/ImageIo.kt": "dd0ff84ac1c26d04c82053337ebc62981c1b3d8d8be3e240619a8650818e03a8",
+    "src/main/kotlin/net/hawyn/ablefisp/io/RootAblExtractor.kt": "bc09ddbacd96fd088081dfc192a79d2ddec997628e336cae0f8547dd24613b2e",
+    "src/main/kotlin/net/hawyn/ablefisp/io/RootCommandRunner.kt": "49c63d63182a1daa5cd62b0ccb52fb778c38a64f50a607b7586406844477ef18",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/A64ValueOrigins.kt": "baed291869f81c1706dda991422221e1a2b292b5e1a5181338885147942622c7",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/Aarch64.kt": "4a594b1eec9b89749b5ba21529989cc715316d44e150fc5871301fe645b63aab",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/Binary.kt": "843a514b79c97b5e1a20ff78bbe90a6a5a932d46a5a429914792aa2bc4cb61b7",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/BootFailurePolicyPatcher.kt": "1d3859f716df27ca30f47d7ddd363e58e61810da15bc0cab40b5934e528fa707",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/CheckRootPolicyPatcher.kt": "06f592b2022a4f3eac206c57b3f9cd643c252cb916492dace150a731b013ad1d",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/CompletionFlow.kt": "970fd0a9cf2d1d41a34f595738ada72eed73cbe048f3fd310c4481885b64fa8a",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/FakeLockPatcher.kt": "521f86d1f7206030eba9abfad776af21f8a38c7311a5c940b297f92664cc44fe",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/FirmwareExtractor.kt": "8bffe233bbd8a251a4e91d04801a1953741ba488d0ae491e69783bc07cd72f2d",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/LateBootStatePatcher.kt": "c102f07efb4136cea196f8b043c87dad51cc7badb5ed8ef7a1a267faf134f15e",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/MappedRxCodeAllocator.kt": "76d7bb07bbe9d079085e859c516f44712c063f9db11c149e4545531aafb543aa",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/PatchEngine.kt": "1e69c8c932538d9db38ded8a9795db53190590ca2ac67a0804ab455c35840351",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/PeExecutableSection.kt": "88f1e152ef695c049c2ef86c302ad84c8c405402f252c55b91f5db6d98d17c2c",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/PeImage.kt": "9e80c7d3cd073958663157546d385a862a6e9343fb6c88bca1ccb3c414fdce4d",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/RollbackUpdatePatcher.kt": "501b73919e28dcdab303ef5599bdb04b8f983128f3581facd771e6c7fa1651de",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/StateBranchEvaluator.kt": "59275e3f86ff7bdab0ab7aac21efefef063b022cb0e7562cf05ecaf79335968b",
+    "src/main/kotlin/net/hawyn/ablefisp/patch/StraightLineLiveness.kt": "6d7c415b19b201113797ac51a6881ac5d03626e80242528eb56dc102c96f3d6a",
+    "src/main/kotlin/net/hawyn/ablefisp/text/FastbootText.kt": "d7fb3e15e7411cd6066773467375d1d08f399b9b7da3977f5bc4b1da397732fb",
+    "src/main/kotlin/net/hawyn/ablefisp/text/TextArgumentFlow.kt": "6121d75ab175c8f0dcbcc9827af6e187152fbd1a9836d041e7e949ade8a92a79",
+    "src/main/kotlin/net/hawyn/ablefisp/text/TextEngine.kt": "2bbad0408db7078f24a5de68879f2a9c1bbcf5a049f76b583fa430dfb3279437",
+    "src/main/kotlin/net/hawyn/ablefisp/text/TextModels.kt": "52afeeb3e94e01dc99e5067d1b695982f16c6774de9b5df81c6173ad8b840ff6",
+    "src/main/kotlin/net/hawyn/ablefisp/text/TextPe.kt": "99841ae92a5a52e9fa2a9d244c86185935c9fabefced7556e2311a68fd9f5111",
+    "src/main/kotlin/net/hawyn/ablefisp/text/TextStorage.kt": "f58b350f5c8964dfe65e96c4e5eae11aa4e199df566aec2012aff5be63cd1d40"
+  },
+  "codeIdentity": "Both archives have identical core production code; differences are only top-level README and SOURCE-SHA256 manifest.",
+  "tests": "Existing workspace abl-efisp-core/src/test, production sources exactly match the supplied clean archives.",
+  "dependencies": {
+    "org.tukaani:xz:1.12": "0BSD; unmodified; see XZ-COPYING.txt",
+    "junit:junit:4.13.2": "test only"
+  }
+}

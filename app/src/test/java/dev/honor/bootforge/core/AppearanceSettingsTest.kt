@@ -9,6 +9,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AppearanceSettingsTest {
+    @Test fun defaultsUseRoseVibrantAnd2021ForFreshOrMissingPreferences() {
+        val defaults = AppearanceSettings()
+        assertEquals(AccentOption.Pink, defaults.accent)
+        assertEquals(MonetStyle.Vibrant, defaults.paletteStyle)
+        assertEquals(MonetSpec.Spec2021, defaults.colorSpec)
+        assertEquals(0xFFB64777L, defaults.accentArgb(0xFF556677L))
+        assertEquals(defaults, AppearanceSettings.fromPersisted(emptyMap()))
+    }
+
     @Test fun settingsPersistRoundTrip() {
         val input = AppearanceSettings(0f, 60f, false, false, false, false, AccentOption.Custom,
             "#1a2B3c", MonetStyle.Expressive, MonetSpec.Spec2025)
@@ -28,9 +37,9 @@ class AppearanceSettingsTest {
 
     @Test fun accentSourceHonorsSystemSwitchAndExplicitColor() {
         val system = 0xFF556677L
-        assertEquals(system, AppearanceSettings().accentArgb(system))
-        assertEquals(AppearanceSettings.DEFAULT_ACCENT_ARGB, AppearanceSettings(monetExtraction = false).accentArgb(system))
-        assertEquals(AppearanceSettings.DEFAULT_ACCENT_ARGB, AppearanceSettings().accentArgb(null))
+        assertEquals(system, AppearanceSettings(accent = AccentOption.System).accentArgb(system))
+        assertEquals(AppearanceSettings.DEFAULT_ACCENT_ARGB, AppearanceSettings(accent = AccentOption.System, monetExtraction = false).accentArgb(system))
+        assertEquals(AppearanceSettings.DEFAULT_ACCENT_ARGB, AppearanceSettings(accent = AccentOption.System).accentArgb(null))
         assertEquals(AccentOption.Green.argb, AppearanceSettings(accent = AccentOption.Green).accentArgb(system))
         assertEquals(0xFF012ABCL, AppearanceSettings(accent = AccentOption.Custom, customAccentHex = "012abc").accentArgb(system))
         assertEquals(AppearanceSettings.DEFAULT_ACCENT_ARGB, AppearanceSettings(accent = AccentOption.Custom, customAccentHex = "bad").accentArgb(system))

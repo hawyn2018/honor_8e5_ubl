@@ -12,9 +12,9 @@ android {
         applicationId = "net.hawyn.honor8e5ubl"
         minSdk = 28
         targetSdk = 37
-        versionCode = 23
-        versionName = "2.3.5"
-        manifestPlaceholders["appLabel"] = "honor_ubl"
+        versionCode = 37
+        versionName = "2.4.7"
+        manifestPlaceholders["appLabel"] = "hnubl"
         ndk { abiFilters += "arm64-v8a" }
     }
     buildFeatures {
@@ -201,6 +201,7 @@ val compileGptTool = tasks.register<Exec>("compileGptTool") {
 tasks.named("preBuild").configure { dependsOn(compileGptTool) }
 
 dependencies {
+    implementation(project(":abl-efisp-core"))
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.core:core-ktx:1.18.0")
     implementation("top.yukonga.miuix.kmp:miuix-ui:0.9.4")

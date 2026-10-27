@@ -1,5 +1,5 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#3482FF" android:pathData="M24,4L84,4Q104,4 104,24L104,84Q104,104 84,104L24,104Q4,104 4,84L4,24Q4,4 24,4" />
-    <path android:fillColor="#FFFFFF" android:pathData="M34,48L74,48Q79,48 79,53L79,77Q79,82 74,82L34,82Q29,82 29,77L29,53Q29,48 34,48M39,48L39,38Q39,23 54,23Q69,23 69,38L61,38Q61,31 54,31Q47,31 47,38L47,48Z" />
-    <path android:fillColor="#3482FF" android:pathData="M51,60L57,60L57,72L51,72Z" />
+    <path android:fillColor="@color/launcher_icon_background" android:pathData="M24,4L84,4Q104,4 104,24L104,84Q104,104 84,104L24,104Q4,104 4,84L4,24Q4,4 24,4" />
+    <path android:fillColor="@color/launcher_icon_foreground" android:pathData="M34,48L74,48Q79,48 79,53L79,77Q79,82 74,82L34,82Q29,82 29,77L29,53Q29,48 34,48M39,48L39,38Q39,23 54,23Q69,23 69,38L61,38Q61,31 54,31Q47,31 47,38L47,48Z" />
+    <path android:fillColor="@color/launcher_icon_background" android:pathData="M51,60L57,60L57,72L51,72Z" />
 </vector>

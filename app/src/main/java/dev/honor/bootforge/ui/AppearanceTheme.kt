@@ -81,7 +81,10 @@ fun BootForgeTheme(settings: AppearanceSettings, content: @Composable () -> Unit
             },
         )
     }
-    MiuixTheme(controller = controller, content = content)
+    MiuixTheme(controller = controller) {
+        LauncherIconSync()
+        content()
+    }
 }
 
 private fun systemAccentSeed(context: Context): Long? = runCatching {

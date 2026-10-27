@@ -10,9 +10,9 @@ data class AppearanceSettings(
     val floatingBottomBar: Boolean = true,
     val monetExtraction: Boolean = true,
     val monetEnabled: Boolean = true,
-    val accent: AccentOption = AccentOption.System,
+    val accent: AccentOption = AccentOption.Pink,
     val customAccentHex: String = DEFAULT_ACCENT_HEX,
-    val paletteStyle: MonetStyle = MonetStyle.TonalSpot,
+    val paletteStyle: MonetStyle = MonetStyle.Vibrant,
     val colorSpec: MonetSpec = MonetSpec.Spec2021,
 ) {
     fun normalized(): AppearanceSettings = copy(
@@ -45,8 +45,8 @@ data class AppearanceSettings(
     }
 
     companion object {
-        const val DEFAULT_ACCENT_HEX = "#3478F6"
-        const val DEFAULT_ACCENT_ARGB = 0xFF3478F6L
+        const val DEFAULT_ACCENT_HEX = "#B64777"
+        const val DEFAULT_ACCENT_ARGB = 0xFFB64777L
 
         fun fromPersisted(values: Map<String, String>): AppearanceSettings = AppearanceSettings(
             topBlurDp = values["topBlurDp"]?.toFloatOrNull() ?: 28f,
@@ -55,9 +55,9 @@ data class AppearanceSettings(
             floatingBottomBar = values["floatingBottomBar"]?.toBooleanStrictOrNull() ?: true,
             monetExtraction = values["monetExtraction"]?.toBooleanStrictOrNull() ?: true,
             monetEnabled = values["monetEnabled"]?.toBooleanStrictOrNull() ?: true,
-            accent = AccentOption.entries.firstOrNull { it.name == values["accent"] } ?: AccentOption.System,
+            accent = AccentOption.entries.firstOrNull { it.name == values["accent"] } ?: AccentOption.Pink,
             customAccentHex = values["customAccentHex"] ?: DEFAULT_ACCENT_HEX,
-            paletteStyle = MonetStyle.entries.firstOrNull { it.name == values["paletteStyle"] } ?: MonetStyle.TonalSpot,
+            paletteStyle = MonetStyle.entries.firstOrNull { it.name == values["paletteStyle"] } ?: MonetStyle.Vibrant,
             colorSpec = MonetSpec.entries.firstOrNull { it.name == values["colorSpec"] } ?: MonetSpec.Spec2021,
         ).normalized()
     }

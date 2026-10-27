@@ -4,6 +4,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ProbeTest {
+    @Test fun rootResultDistinguishesExplicitDenialFromMissingOrInvalidReport() {
+        listOf("", "ROOT=unknown\n", "ROOT=\n", "ROOT=2\n",
+            "/files/run/unlock.sh: set: line 6: illegal option -\r\n").forEach { output ->
+            val probe = Probe.parse(output)
+            assertFalse("Missing or invalid ROOT report: $output", probe.rootReported)
+            assertFalse(probe.root)
+        }
+        val denied = Probe.parse("ROOT=0\nREADY=0\nBLOCK_REASON=root is required\n")
+        assertTrue(denied.rootReported)
+        assertFalse(denied.root)
+        val granted = Probe.parse("ROOT=1\nREADY=1\n")
+        assertTrue(granted.rootReported)
+        assertTrue(granted.root)
+    }
+
     @Test fun failureStillRetainsRootSlotAndBlockReason() {
         val probe = Probe.parse("noise\nROOT=1\nSLOT=a\nREADY=0\nBLOCK_REASON=userdata is mapped=dm-23\n")
         assertTrue(probe.root)

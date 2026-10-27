@@ -77,7 +77,7 @@ class SlotPartitionBackup(
     private val busybox = File(session, "busybox")
     private val gpttool = File(session, "gpttool")
     private val events = File(session, "backup-events.log")
-    private val images = listOf("init_boot", "vbmeta", "abl")
+    private val images = listOf("init_boot", "abl")
     private val knownKeys = setOf("SLOT_SUFFIX", "SLOT", "CMDLINE_SLOT_SUFFIX", "BOOTCONFIG_SLOT_SUFFIX")
 
     suspend fun run(onProgress: suspend (SlotBackupProgress) -> Unit): SlotBackupResult {
@@ -130,27 +130,29 @@ class SlotPartitionBackup(
                 "内置 BusyBox 备用工具准备失败"
             }
             slot = readSlot()
-            descriptors = readDescriptors(slot)
+            descriptors = readDescriptors()
             check(readSlot() == slot) { "读取分区信息期间运行槽位发生变化" }
             val originalRecords = mutableListOf<BackupFileInfo>()
             descriptors.forEachIndexed { index, partition ->
-                progress("备份 ${partition.name}$slot 原始分区", 0.1f + index * 0.17f)
+                progress("备份 ${partition.name} 原始分区", 0.1f + index * 0.1f)
                 val file = File(session, "${partition.name}.img")
                 copyPartition(partition, file)
                 val digest = hash(file.inputStream())
                 check(digest == sourceHash(partition)) { "${partition.name} 备份与分区 SHA-256 不一致" }
                 originalRecords += BackupFileInfo(file.name, file.length(), digest)
             }
-            check(readSlot() == slot && readDescriptors(slot) == descriptors) { "备份前后槽位或分区几何信息发生变化" }
+            check(readSlot() == slot && readDescriptors() == descriptors) { "备份前后槽位或分区几何信息发生变化" }
+            val activeSlotFile = DualSlotBackupFiles.writeActiveSlotFile(session, slot)
+            originalRecords += BackupFileInfo(activeSlotFile.name, activeSlotFile.length(), hash(activeSlotFile.inputStream()))
             originals = originalRecords.toList()
-            progress("将三个原始镜像复制到 Download 并回读校验", 0.59f)
+            progress("将双槽原始镜像与当前槽位标记复制到 Download 并回读校验", 0.59f)
             val originalFiles = originals.map { File(session, it.name) }
             if (Build.VERSION.SDK_INT >= 29) originalUris += publishMediaStore(folder, originalFiles, newDirectory = true)
             else legacyDirectoryIdentity = publishLegacyOriginals(folder, originalFiles)
             records += originals
             directory = "内部存储/Download/$folder"
-            // This checkpoint is durable and visible before any vbmeta modification begins.
-            progress("三个原始镜像已保存，正在原样导出主备 GPT", 0.63f)
+            // Original images are durable and visible before partition-table export begins.
+            progress("双槽原始镜像与槽位标记已保存，正在原样导出主备 GPT", 0.63f)
             val disks = try { readGptDisks(slot) } catch (error: Exception) {
                 warning("GPT 磁盘发现未完成：${error.message.orEmpty()}")
                 emptyList()
@@ -183,18 +185,13 @@ class SlotPartitionBackup(
                         publiclySaved = false, status = "partial", warnings = table.warnings + message)
                 }
             }
-            progress("原始镜像已保存，正在修补提取出的 vbmeta 副本", 0.70f)
-            val original = File(session, "vbmeta.img")
-            val patched = File(session, "vbmeta_patched.img")
-            val patch = VbmetaPatcher.patch(original, patched)
-            check(hash(original.inputStream()) == records.single { it.name == "vbmeta.img" }.sha256) { "原始 vbmeta 备份发生变化" }
-            progress("核对原始分区、已保存镜像及补丁副本", 0.76f)
+            progress("核对原始分区与已保存镜像", 0.76f)
             descriptors.forEach { partition ->
                 check(sourceHash(partition) == records.single { it.name == "${partition.name}.img" }.sha256) {
                     "${partition.name} 分区在备份期间发生变化"
                 }
             }
-            check(readSlot() == slot && readDescriptors(slot) == descriptors) { "备份完成前槽位或分区信息发生变化" }
+            check(readSlot() == slot && readDescriptors() == descriptors) { "备份完成前槽位或分区信息发生变化" }
             tables.indices.forEach { index ->
                 val table = tables[index]
                 if (table.metadata != null && helperReady) {
@@ -219,8 +216,7 @@ class SlotPartitionBackup(
                 if (readGptDisks(slot) != disks) warning("备份期间 GPT 磁盘映射发生变化，已保留首次快照")
             } catch (error: Exception) { warning("GPT 磁盘映射复核未完成：${error.message.orEmpty()}") }
             verifyOriginalExports()
-            progress("将 vbmeta_patched.img 与清单保存到同一目录", 0.84f)
-            publishAdditions(listOf(patched))
+            progress("保存 GPT 回读证据与备份清单", 0.84f)
             val readbackEvidence = session.listFiles().orEmpty().filter { it.name.endsWith(".readback.raw") && it.length() > 0 }
             try { publishAdditions(readbackEvidence) } catch (error: Exception) {
                 warning("GPT 回读证据公开保存未完整完成，本地副本保留：${error.message.orEmpty()}")
@@ -229,13 +225,13 @@ class SlotPartitionBackup(
             val gptManifest = writeGptManifest(slot, tables, warnings, status)
             val diagnostic = writeDiagnostics("diagnostics.log", warnings)
             val preManifestRecords = records + listOf(gptManifest, diagnostic).map { BackupFileInfo(it.name, it.length(), hash(it.inputStream())) }
-            writeManifest(slot, descriptors, tables, preManifestRecords, patch, date, status, warnings)
+            writeManifest(slot, descriptors, tables, preManifestRecords, date, status, warnings)
             val manifest = File(session, "backup.json")
             val sums = File(session, "SHA256SUMS")
             sums.writeText((preManifestRecords + BackupFileInfo(manifest.name, manifest.length(), hash(manifest.inputStream())))
                 .joinToString("\n", postfix = "\n") { "${it.sha256}  ${it.name}" })
             publishAdditions(listOf(gptManifest, diagnostic, manifest, sums))
-            progress(if (warnings.isEmpty()) "备份与 vbmeta 副本修补完成" else "备份与 vbmeta 副本修补完成，GPT 存在提示", 1f, status)
+            progress(if (warnings.isEmpty()) "分区镜像与主备 GPT 备份完成" else "分区镜像备份完成，GPT 存在提示", 1f, status)
             return SlotBackupResult(slot, directory, records.toList(), status, warnings.toList(), diskStatuses())
         } catch (error: Exception) {
             runCatching { log("ERROR: ${error.stackTraceToString()}") }
@@ -281,21 +277,20 @@ class SlotPartitionBackup(
         return CurrentBackupSlot.select(properties)
     }
 
-    private fun readDescriptors(slot: String): List<BackupPartitionDescriptor> {
-        check(slot == "_a" || slot == "_b")
-        val script = images.joinToString("\n") { name ->
+    private fun readDescriptors(): List<BackupPartitionDescriptor> {
+        val script = DualSlotBackupFiles.partitions.joinToString("\n") { name ->
             """
                 SRC=
                 LINK=
                 for BASE in /dev/block/by-name /dev/block/bootdevice/by-name; do
-                    CANDIDATE=${'$'}(tool readlink -f "${'$'}BASE/$name$slot") || continue
+                    CANDIDATE=${'$'}(tool readlink -f "${'$'}BASE/$name") || continue
                     [ -b "${'$'}CANDIDATE" ] || continue
                     case "${'$'}CANDIDATE" in /dev/block/*) :;; *) exit 21;; esac
                     [ -z "${'$'}SRC" ] || [ "${'$'}SRC" = "${'$'}CANDIDATE" ] || exit 22
                     SRC=${'$'}CANDIDATE
-                    LINK=${'$'}BASE/$name$slot
+                    LINK=${'$'}BASE/$name
                 done
-                [ -n "${'$'}SRC" ] || { printf 'ERROR=missing_$name$slot\n'; exit 23; }
+                [ -n "${'$'}SRC" ] || { printf 'ERROR=missing_$name\n'; exit 23; }
                 NODE=${'$'}{SRC##*/}
                 SYS=${'$'}(tool readlink -f "/sys/class/block/${'$'}NODE") || exit 24
                 [ -f "${'$'}SYS/partition" ] || exit 25
@@ -309,12 +304,12 @@ class SlotPartitionBackup(
             """.trimIndent()
         }
         val values = parseLines(query("geometry", script))
-        return images.map { name ->
+        return DualSlotBackupFiles.partitions.map { name ->
             fun get(key: String) = values["$name.$key"] ?: error("$name 缺少分区参数 $key")
             fun number(key: String) = get(key).toLongOrNull()?.also { check(it >= 0) } ?: error("$name 分区参数 $key 无效")
             val descriptor = BackupPartitionDescriptor(name, get("BY_NAME"), get("DEVICE"), get("MAJOR_MINOR"),
                 number("BYTES"), number("SECTORS_512"), number("START_512"), number("LOGICAL_SECTOR_BYTES"))
-            check(descriptor.byName in listOf("/dev/block/by-name/$name$slot", "/dev/block/bootdevice/by-name/$name$slot"))
+            check(descriptor.byName in listOf("/dev/block/by-name/$name", "/dev/block/bootdevice/by-name/$name"))
             check(Regex("/dev/block/[A-Za-z0-9_./-]+").matches(descriptor.device) && !descriptor.device.contains(".."))
             check(Regex("[0-9]+:[0-9]+").matches(descriptor.majorMinor))
             check(descriptor.bytes > 0 && Math.multiplyExact(descriptor.sectors512, 512L) == descriptor.bytes) { "$name 分区容量校验失败" }
@@ -461,7 +456,7 @@ class SlotPartitionBackup(
             .put("requested_at_millis", requestedAt.time).put("time_zone", requestedTimeZone.id).put("running_slot", slot)
             .put("partition_writes", false).put("error", error.message ?: error.javaClass.simpleName)
             .put("warnings", JSONArray(warnings)).put("local_evidence_retained", true).put("session", session.name)
-            .put("partitions", JSONArray(partitions.map { it.name + slot }))
+            .put("partitions", JSONArray(partitions.map { it.name }))
             .put("partition_tables", JSONArray().apply { tables.forEach { put(gptMetadata(it)) } })
             .put("published_files", JSONArray().apply { records.forEach { put(JSONObject().put("name", it.name).put("bytes", it.bytes).put("sha256", it.sha256)) } })
             .toString(2) + "\n")
@@ -489,7 +484,7 @@ class SlotPartitionBackup(
     """.trimIndent()
 
     private fun writeManifest(slot: String, partitions: List<BackupPartitionDescriptor>, tables: List<GptSnapshot>, records: List<BackupFileInfo>,
-        patch: VbmetaPatcher.Result, date: Date, status: String, warnings: List<String>) {
+        date: Date, status: String, warnings: List<String>) {
         val manifest = JSONObject().put("format", "bootforge-slot-backup-v2.2").put("status", status)
             .put("created_at", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US).apply { timeZone = requestedTimeZone }.format(date))
             .put("requested_at_millis", requestedAt.time).put("time_zone", requestedTimeZone.id)
@@ -502,10 +497,7 @@ class SlotPartitionBackup(
             } }).put("partition_tables", JSONArray().apply { tables.forEach { put(gptMetadata(it)) } })
             .put("files", JSONArray().apply { records.forEach { record ->
                 put(JSONObject().put("name", record.name).put("bytes", record.bytes).put("sha256", record.sha256))
-            } }).put("vbmeta_patch", JSONObject().put("offset", VbmetaPatcher.FLAGS_OFFSET).put("byte_order", "big-endian")
-                .put("original_flags", patch.originalFlags).put("patched_flags", patch.patchedFlags)
-                .put("changed_bytes", patch.changedBytes).put("operation", "flags | 2")
-                .put("source", "https://android.googlesource.com/platform/external/avb/+/refs/heads/main/libavb/avb_vbmeta_image.h"))
+            } })
         File(session, "backup.json").writeText(manifest.toString(2) + "\n")
     }
 
@@ -540,7 +532,7 @@ class SlotPartitionBackup(
                 val stored = checkNotNull(resolver.openInputStream(uri)).use { hash(it) }
                 check(stored == hash(file.inputStream())) { "下载目录中的 ${file.name} 回读校验失败" }
             }
-            // Each phase is its own batch: original images first, patch and manifests afterwards.
+            // Each phase is its own batch: original images first, GPT evidence and manifests afterwards.
             val operations = ArrayList<ContentProviderOperation>()
             uris.forEach { uri -> operations += ContentProviderOperation.newUpdate(uri)
                 .withValue(MediaStore.MediaColumns.IS_PENDING, 0).withExpectedCount(1).build() }
@@ -561,7 +553,7 @@ class SlotPartitionBackup(
 
     @android.annotation.TargetApi(29)
     private fun verifyMediaStoreOriginals(folder: String, uris: List<Uri>, originals: List<BackupFileInfo>) {
-        check(uris.size == originals.size && originals.size >= 3 && originals.map { it.name }.distinct().size == originals.size)
+        check(uris.size == originals.size && originals.map { it.name }.distinct().size == originals.size)
         uris.zip(originals).forEach { (uri, original) ->
             context.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.RELATIVE_PATH,
                 MediaStore.MediaColumns.IS_PENDING), null, null, null).use { cursor ->
@@ -638,7 +630,7 @@ class SlotPartitionBackup(
                 val stored = query("export-append-hash", "tool sha256sum ${shellQuote(partial.path)}").trim().substringBefore(' ')
                 check(stored == hash(file.inputStream())) { "下载目录中的 ${file.name} 回读校验失败" }
             }
-            // Publish the completion manifest last; the original three files are never removed.
+            // Publish the completion manifest last; the original backup batch is never removed.
             pending.forEach { (file, partial) ->
                 check(legacyIdentity(directory) == identity) { "原始备份目录已被替换，后续保存已停止" }
                 val destination = File(directory, file.name)

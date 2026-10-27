@@ -63,10 +63,6 @@ class MainActivity : ComponentActivity() {
         appearance = AppearanceStore(this)
         model = ViewModelProvider(this, ViewModelProvider.AndroidViewModelFactory.getInstance(application))[UnlockModel::class.java]
         rootModel = ViewModelProvider(this, ViewModelProvider.AndroidViewModelFactory.getInstance(application))[RootFrameworkModel::class.java]
-        // Shell 一旦验证为 UID 2000（配对/连接/检查成功）即自动开启 MagicRoot 提权流程；
-        // 覆盖「先配对成功、后打开应用」的路径：进入页面时若 Shell 已就绪也立即触发。
-        RootIntegration.onShellReady = { rootModel.onShellMatched() }
-        if (WirelessState.state.shellReady) rootModel.onShellMatched()
         if (intent.getBooleanExtra("open_root", false)) { rootOpenRequest++; intent.removeExtra("open_root") }
         if (savedInstanceState == null && !WirelessState.state.waiting && !WirelessState.state.busy) {
             val preferences = getSharedPreferences("wireless", 0)
@@ -77,24 +73,20 @@ class MainActivity : ComponentActivity() {
             val settings = appearance.settings
             BootForgeTheme(settings) {
             UnlockScreen(model.state, UnlockActions(
-                onInspect = { model.inspect() },
-                onInspectDirect = { model.inspect(false) },
-                onInspectCustom = { model.inspect(true) },
+                onRequestChanged = model::changeRequest,
+                onInspect = { request -> model.inspect(request) },
                 onPrepareTools = model::prepareTools,
                 onSelectEfisp = { selectEfisp.launch(arrayOf("*/*")) },
                 onSelectAbl = { selectAbl.launch(arrayOf("*/*")) },
                 onResetEfisp = { model.resetCustomImage("efisp") },
                 onResetAbl = { model.resetCustomImage("abl") },
-                onBuildRecovery = { model.prepareBundle() },
-                onBuildRecoveryDirect = { model.prepareBundle(false) },
-                onBuildRecoveryCustom = { model.prepareBundle(true) },
-                onExecute = { FlashService.start(this, true) },
-                onExecuteDirect = { FlashService.start(this, false) },
-                onExecuteCustom = { FlashService.start(this, true) },
+                onBuildRecovery = { request -> model.prepareBundle(request) },
+                onExecute = { request -> FlashService.start(this, request) },
                 onSharePackage = { saveBundle.launch("honor_ubl-Recovery.zip") },
                 onShareLogs = { saveLog.launch("honor_ubl-log.txt") },
                 onClearLogs = model::clearLogs,
                 onRebootRecovery = model::rebootRecovery,
+                onRebootBootloader = model::rebootBootloader,
             ), backupState = BackupState.state, onBackup = { BackupService.start(this) },
                 appearance = settings, onAppearanceChange = appearance::update,
                 rootBusy = rootModel.state.busy || WirelessState.state.busy || WirelessState.state.waiting,
@@ -118,7 +110,7 @@ class MainActivity : ComponentActivity() {
                             onConnect = { startWireless(WirelessService.CONNECT) },
                             onCheck = { startWireless(WirelessService.CHECK) },
                             onCancel = { WirelessService.start(this, WirelessService.CANCEL) },
-                        ), rootModel::deploy, rootModel::acquire, rootModel::checkRoot, rootModel::clean)
+                        ), rootModel::deploy, rootModel::acquire, rootModel::checkRoot, rootModel::clean, rootModel::selectChain)
                 })
             }
         }
@@ -144,7 +136,7 @@ class MainActivity : ComponentActivity() {
 
     /**
      * 页面可见时（含解锁亮屏返回应用）若留有已保存的 Shell 端点，自动复检 Shell；
-     * 复检通过即匹配成功，直接开启 MagicRoot 提权流程。失败静默，不影响手动配对。
+     * 复检仅更新 Shell 状态，提权由用户手动启动。失败静默，不影响手动配对。
      */
     private var autoConnectInFlight = false
 
@@ -160,7 +152,6 @@ class MainActivity : ComponentActivity() {
                 if (ready) {
                     WirelessState.state = WirelessState.state.copy(shellReady = true, stage = "本应用 Shell 权限已就绪 · UID 2000")
                     WirelessState.append("页面可见时自动复检 Shell 通过")
-                    RootIntegration.onShellReady?.invoke()
                 }
             } finally { autoConnectInFlight = false }
         }
@@ -171,8 +162,4 @@ class MainActivity : ComponentActivity() {
         super.onSaveInstanceState(outState)
     }
 
-    override fun onDestroy() {
-        if (!isChangingConfigurations) RootIntegration.onShellReady = null
-        super.onDestroy()
-    }
 }

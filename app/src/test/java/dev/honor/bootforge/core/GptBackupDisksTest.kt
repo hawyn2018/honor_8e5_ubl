@@ -7,6 +7,17 @@ import org.junit.Test
 class GptBackupDisksTest {
     private val required = setOf("init_boot_a", "vbmeta_a", "abl_a", "userdata")
 
+    @Test fun `two image backup still retains every discovered GPT disk`() {
+        val disks = GptBackupDisks.parse(protocol(
+            record("userdata", "sda", "8:0"),
+            record("init_boot_a", "sdb", "8:16"),
+            record("vbmeta_a", "sdc", "8:32"),
+            record("abl_a", "sdd", "8:48"),
+        ), setOf("init_boot_a", "abl_a", "userdata"))
+        assertEquals(listOf("sda", "sdb", "sdc", "sdd"), disks.map { it.node })
+        assertEquals(listOf("vbmeta_a"), disks.single { it.node == "sdc" }.sources)
+    }
+
     @Test fun `deduplicates multiple LUNs and sorts source aliases`() {
         val disks = GptBackupDisks.parse(protocol(
             record("userdata", "sda", "8:0"),

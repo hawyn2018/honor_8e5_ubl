@@ -27,8 +27,7 @@ private const val PROJECT_REPOSITORY_URL = "https://github.com/hawyn2018/honor_8
 internal fun ProjectRepositoryFooter(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
-    Column(
-        modifier = modifier.fillMaxWidth()
+    val repositoryLinkModifier = Modifier.fillMaxWidth()
             .combinedClickable(
                 role = Role.Button,
                 onClickLabel = "访问 GitHub 项目",
@@ -50,12 +49,22 @@ internal fun ProjectRepositoryFooter(modifier: Modifier = Modifier) {
                     }
                 },
             )
-            .padding(horizontal = 8.dp, vertical = 12.dp),
+            .padding(horizontal = 8.dp, vertical = 12.dp)
+    Column(
+        modifier = modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
+            "QQ交流群：941336897",
+            modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 12.dp),
+            fontSize = 12.sp,
+            lineHeight = 20.sp,
+            textAlign = TextAlign.Center,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+        Text(
             PROJECT_REPOSITORY_URL,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = repositoryLinkModifier,
             fontSize = 12.sp,
             lineHeight = 20.sp,
             textAlign = TextAlign.Center,

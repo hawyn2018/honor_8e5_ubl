@@ -4,6 +4,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,12 +32,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.honor.bootforge.RootChain
 import dev.honor.bootforge.wireless.WirelessUiState
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -45,6 +49,7 @@ import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 data class RootUiState(
+    val selectedChain: RootChain = RootChain.DEFAULT,
     val busy: Boolean = false,
     val shizukuStatus: String = "尚未授权",
     val rootReady: Boolean = false,
@@ -78,6 +83,7 @@ fun RootPage(
     onRun: () -> Unit,
     onCheck: () -> Unit,
     onClean: () -> Unit,
+    onSelectChain: (RootChain) -> Unit,
 ) {
     val foreignBusy = operationBusy && !wirelessState.busy && !wirelessState.waiting && !rootState.busy
     val wirelessBusy = foreignBusy || rootState.busy || wirelessState.busy
@@ -97,7 +103,7 @@ fun RootPage(
                 Spacer(Modifier.height(18.dp))
                 Text("连接 Shell，\n准备后续操作", fontSize = 34.sp, lineHeight = 45.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(10.dp))
-                RootHint("在本应用内完成无线调试配对，建立 Shell 通道；匹配成功后自动部署并执行 MagicRoot 提权链，Root 直接授予本应用。")
+                RootHint("在本应用内完成无线调试配对，建立 Shell 通道；连接成功后选择提权方式，手动点击执行提权流程。")
             }
         }
         item {
@@ -120,7 +126,7 @@ fun RootPage(
                 Spacer(Modifier.height(8.dp))
                 RootHint(wirelessState.stage)
                 Spacer(Modifier.height(10.dp))
-                RootHint("Shell 使用 UID 2000，使用时请保持无线调试开启。Root 命令经同一 Shell 通道由 bfexec 提权执行。")
+                RootHint("Shell 使用 UID 2000，使用时请保持无线调试开启。连接成功后请手动提权，成功后由所选后端执行后续命令。")
                 RootError(wirelessState.error)
             }
         }
@@ -198,15 +204,36 @@ fun RootPage(
             Column(Modifier.padding(horizontal = 4.dp, vertical = 4.dp)) {
                 Text("MagicRoot · 提权", fontSize = 24.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(10.dp))
-                Text("提权时间可能较长请耐心等待\n提权过程中可能崩溃重启属正常现象，再次连接无线调试进行提权即可", fontSize = 13.sp, lineHeight = 22.sp, color = Color(0xFFE53935))
+                Text("提权时间可能较长请耐心等待\n提权前请清理提权临时文件，成功率更高\n提权过程中可能崩溃重启属正常现象，再次连接无线调试进行提权即可", fontSize = 13.sp, lineHeight = 22.sp, color = Color(0xFFE53935))
                 Spacer(Modifier.height(8.dp))
-                RootHint("已接入 MagicRoot（CVE-2026-64560）提权链：Shell 就绪后自动部署并执行；成功后 Root 仅授予本应用，不安装 ksud、不加冕 KernelSU 管理器。")
+                Row(
+                    Modifier.fillMaxWidth().selectableGroup(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    RootChain.entries.forEach { chain ->
+                        val selected = rootState.selectedChain == chain
+                        Box(
+                            Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                                .background(if (selected) MiuixTheme.colorScheme.primary.copy(alpha = .14f)
+                                    else MiuixTheme.colorScheme.primary.copy(alpha = .05f))
+                                .selectable(selected = selected, enabled = !rootBusy,
+                                    role = Role.RadioButton, onClick = { onSelectChain(chain) })
+                                .heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 13.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(chain.id, fontSize = 16.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                RootHint(rootState.selectedChain.integrationText)
             }
         }
         item {
             RootPanel {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Root 提权", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                    Text("提权", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.weight(1f))
                     RootBadge(if (rootState.busy) "进行中" else if (rootState.rootReady) "已就绪" else "待提权")
                 }
@@ -217,7 +244,7 @@ fun RootPage(
                 Spacer(Modifier.height(8.dp))
                 RootHint(rootState.stage)
                 Spacer(Modifier.height(10.dp))
-                RootHint("配对成功后将自动部署并执行提权；成功后 Root 通道驻留至重启或手动清理，可分别前往备份页和解锁页启动任务。")
+                RootHint("无线调试连接成功后，请手动点击“执行提权流程”；将依次部署资产、执行所选提权链并验证本应用的提权通道。")
                 RootError(rootState.error)
                 Spacer(Modifier.height(18.dp))
                 Button(onClick = onDeploy, enabled = !rootBusy, modifier = Modifier.fillMaxWidth(), cornerRadius = 16.dp) {

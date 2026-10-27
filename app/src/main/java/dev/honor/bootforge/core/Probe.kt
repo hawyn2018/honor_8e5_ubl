@@ -1,6 +1,7 @@
 package dev.honor.bootforge.core
 
 data class Probe(val values: Map<String, String>) {
+    val rootReported: Boolean get() = values["ROOT"] in listOf("0", "1")
     val root: Boolean get() = values["ROOT"] == "1"
     val ready: Boolean get() = values["READY"] == "1"
     val slot: String get() = values["SLOT"].orEmpty().takeIf { it == "a" || it == "b" }.orEmpty()

@@ -1,32 +1,21 @@
-/*
- * bfexec.c —— BootForge 的 KernelSU GRANT_ROOT 执行器。
- *
- * 提权链第 6 步加载打过补丁的 KernelSU 模块（finit_module 参数 allow_shell=1），
- * 因此 UID 2000 的进程可以通过 KernelSU 的 reboot 钩子取得 root fd，
- * 再用 KSU_IOCTL_GRANT_ROOT 把本进程提升为 root，最后 exec 目标命令。
- * 与 MagicRoot 的 ksu_grant 同一机制；区别是它 exec 的是 root_stage.sh
- * 安装 ksud，而本程序直接 exec 调用方给出的命令——不安装 ksud、
- * 不加冕 KernelSU 管理器，root 只属于经本应用无线 ADB Shell 通道
- * （UID 2000，TLS 身份由本应用持有）发起的进程。
- *
- * 用法:
- *   bfexec              提升后执行 id（链路自检，等价 MagicRoot 的 root_id）
- *   bfexec <base64>     提升后执行 /system/bin/sh -c <base64 解码后的命令>
- *
- * 退出码: 命令自身退出码；2=参数无法解码；125=未找到 KernelSU 钩子；
- *         126=GRANT_ROOT 被拒绝；127=exec 失败。
+/* bfexec: KernelSU GRANT_ROOT -> exec a command with real stdout/stderr/exit status.
+ * No argument runs id; one argument is a base64-encoded shell command.
+ * Exit 2: invalid argument; 125: no KernelSU fd; 126: grant denied; 127: exec failure.
  */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/fsuid.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
 #define KSU_MAGIC_1 0xdeadbeefUL
-#define KSU_MAGIC_2 0xcafebabeUL
+#define KSU_MAGIC_2_LOCAL 0xcafebabeUL
+#define KSU_MAGIC_2_REF 0xdeadcafeUL
 #define KSU_IOCTL_GRANT_ROOT 0x4b01UL
 
 static int b64value(int c) {
@@ -75,9 +64,19 @@ int main(int argc, char **argv) {
 
     int fd = -1;
     errno = 0;
-    long reboot_rc = syscall(SYS_reboot, KSU_MAGIC_1, KSU_MAGIC_2, 0, &fd);
+    long reboot_rc = syscall(SYS_reboot, KSU_MAGIC_1, KSU_MAGIC_2_LOCAL, 0, &fd);
+    int reboot_errno = errno;
     if (fd < 0) {
-        fprintf(stderr, "BF_NO_KSU_FD rc=%ld errno=%d(%s)\n", reboot_rc, errno, strerror(errno));
+        errno = 0;
+        reboot_rc = syscall(SYS_reboot, KSU_MAGIC_1, KSU_MAGIC_2_REF, 0, &fd);
+        reboot_errno = errno;
+    }
+    if (fd < 0) {
+        fd = open("/dev/ksu", O_RDWR | O_CLOEXEC);
+        reboot_errno = errno;
+    }
+    if (fd < 0) {
+        fprintf(stderr, "BF_NO_KSU_FD rc=%ld errno=%d(%s)\n", reboot_rc, reboot_errno, strerror(reboot_errno));
         return 125;
     }
     errno = 0;
@@ -88,9 +87,10 @@ int main(int argc, char **argv) {
         fprintf(stderr, "BF_GRANT_DENIED rc=%ld errno=%d(%s)\n", grant_rc, grant_errno, strerror(grant_errno));
         return 126;
     }
-    /* 统一真实/有效/保存 uid，保证 id -u 与文件访问都表现为 root。 */
     int rc_gid = setresgid(0, 0, 0);
     int rc_uid = setresuid(0, 0, 0);
+    setfsgid(0);
+    setfsuid(0);
     if (rc_gid != 0 || rc_uid != 0) {
         fprintf(stderr, "BF_SETRESUID_FAIL\n");
         return 126;
