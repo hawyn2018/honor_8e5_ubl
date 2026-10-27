@@ -12,8 +12,8 @@ android {
         applicationId = "net.hawyn.honor8e5ubl"
         minSdk = 28
         targetSdk = 37
-        versionCode = 37
-        versionName = "2.4.7"
+        versionCode = 38
+        versionName = "2.5.0"
         manifestPlaceholders["appLabel"] = "hnubl"
         ndk { abiFilters += "arm64-v8a" }
     }

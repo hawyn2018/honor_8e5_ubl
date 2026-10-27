@@ -15,7 +15,7 @@ class PartitionPlanTest {
         GptPartition(number, start, end, name, linuxType, guid, "8000000000000001")
 
     private fun snapshot(sector: Int = 4096): GptSnapshot = GptSnapshot(
-        diskGuid, sector, 6, 249_444_346, 128,
+        diskGuid, sector, 6, 249_423_839, 128,
         listOf(
             partition(1, 1024, 15_037_439, "super", superGuid),
             partition(65, 15_037_440, 249_423_839, "userdata", userdataGuid),
@@ -107,7 +107,7 @@ class PartitionPlanTest {
     }
 
     @Test fun reusePreservesExistingBit60AndEveryOtherEntryField() {
-        val base = snapshot()
+        val base = snapshot().copy(lastUsable = 249_444_346)
         val existing = GptPartition(66, 249_423_840, 249_440_223, "efisp",
             PartitionPlanner.EFI_SYSTEM_TYPE_GUID.lowercase(), efispGuid, "1000000000000000")
         val input = base.copy(partitions = base.partitions + existing)
@@ -119,7 +119,7 @@ class PartitionPlanTest {
     }
 
     @Test fun existingEfispFlexibleSizeIsReusedAndWrongTypeIsRejected() {
-        val base = snapshot()
+        val base = snapshot().copy(lastUsable = 249_444_346)
         val efisp = GptPartition(66, 249_423_840, 249_440_223, "efisp",
             PartitionPlanner.EFI_SYSTEM_TYPE_GUID, efispGuid, "0000000000000000")
         assertTrue(PartitionPlanner.plan(base.copy(partitions = base.partitions + efisp.copy(endLba = efisp.endLba - 1))) is ReusePlan)
@@ -138,7 +138,7 @@ class PartitionPlanTest {
             if (it.name == "userdata") it.copy(number = 2) else it
         })
         assertTrue(invalid(base).message.orEmpty().contains("unused"))
-        val reused = base.copy(entryCapacity = 3, partitions = base.partitions + GptPartition(
+        val reused = base.copy(lastUsable = 249_444_346, entryCapacity = 3, partitions = base.partitions + GptPartition(
             3, 249_423_840, 249_440_223, "efisp", PartitionPlanner.EFI_SYSTEM_TYPE_GUID, efispGuid,
             "0000000000000000",
         ))
@@ -147,7 +147,7 @@ class PartitionPlanTest {
 
     @Test fun middleUserdataTailCreatesEfispWithoutChangingFollowingPartitions() {
         for (sector in listOf(512, 4096)) {
-            val base = snapshot(sector)
+            val base = snapshot(sector).copy(lastUsable = 249_444_346)
             val following = listOf(
                 partition(66, 249_423_840, 249_424_000, "tail", "55555555-5555-5555-5555-555555555555"),
                 partition(67, 249_430_000, base.lastUsable, "last", "66666666-6666-6666-6666-666666666666"),
@@ -267,9 +267,9 @@ class PartitionPlanTest {
     @Test fun userdataMustRetainAtLeastOneLogicalSector() {
         val base = snapshot()
         val userdata = base.partitions[1]
-        invalid(base.copy(partitions = listOf(base.partitions[0],
+        invalid(base.copy(lastUsable = userdata.startLba + 16_384 - 1, partitions = listOf(base.partitions[0],
             userdata.copy(endLba = userdata.startLba + 16_384 - 1))))
-        val positive = base.copy(partitions = listOf(base.partitions[0],
+        val positive = base.copy(lastUsable = userdata.startLba + 16_384, partitions = listOf(base.partitions[0],
             userdata.copy(endLba = userdata.startLba + 16_384)))
         val plan = PartitionPlanner.plan(positive, efispGuid) as CreateEfispPlan
         assertEquals(plan.userdata.startLba, plan.userdata.endLba)
@@ -300,6 +300,93 @@ class PartitionPlanTest {
         assertThrows(PartitionPlanningException::class.java) { PartitionPlanner.plan(input, efispGuid, oldBytes - 1) }
         assertThrows(PartitionPlanningException::class.java) { PartitionPlanner.plan(input, efispGuid, oldBytes - 4096, 8192) }
         assertThrows(PartitionPlanningException::class.java) { PartitionPlanner.plan(input, efispGuid, oldBytes) }
+    }
+
+    @Test fun defaultPlanUsesExistingExternalTailBeforeProposingAnyUserdataReduction() {
+        for (sector in listOf(512, 4096)) {
+            val original = snapshot(sector)
+            val old = original.partitions.single { it.name == "userdata" }
+            for (gapBytes in listOf(16L, 64L, 96L).map { it * 1024 * 1024 }) {
+                val input = original.copy(lastUsable = old.endLba + gapBytes / sector)
+                val plan = PartitionPlanner.plan(input, efispGuid) as CreateEfispPlan
+                val reduction = maxOf(0L, PartitionPlanner.EFISP_BYTES - gapBytes)
+                assertEquals(reduction, plan.shrinkBytes)
+                assertEquals(-reduction, plan.userdataSizeChangeBytes)
+                assertEquals(maxOf(gapBytes, PartitionPlanner.EFISP_BYTES), plan.efispBytes)
+                assertEquals(input.lastUsable, plan.efisp.endLba)
+                assertEquals(old.endLba - reduction / sector, plan.userdata.endLba)
+                assertEquals(plan.userdata.endLba + 1, plan.efisp.startLba)
+            }
+        }
+    }
+
+    @Test fun measuredFilesystemCanShrinkGrowOrPreserveUserdataWithinOneContinuousExtent() {
+        for (sector in listOf(512, 4096)) {
+            val original = snapshot(sector)
+            val old = original.partitions.single { it.name == "userdata" }
+            val gapBytes = 128L * 1024 * 1024
+            val input = original.copy(lastUsable = old.endLba + gapBytes / sector)
+            val oldBytes = (old.endLba - old.startLba + 1) * sector
+            for (change in listOf(-68L, 0L, 64L).map { it * 1024 * 1024 }) {
+                val plan = PartitionPlanner.plan(input, efispGuid, oldBytes + change, 2_015_232) as CreateEfispPlan
+                assertEquals(change, plan.userdataSizeChangeBytes)
+                assertEquals(-change, plan.shrinkBytes)
+                assertEquals(gapBytes - change, plan.efispBytes)
+                assertEquals(old.endLba + change / sector, plan.userdata.endLba)
+                assertEquals(input.lastUsable, plan.efisp.endLba)
+                assertEquals(old.copy(endLba = plan.userdata.endLba), plan.userdata)
+                assertEquals(input.partitions.filter { it.number != old.number },
+                    plan.resultSnapshot.partitions.filter { it.number !in setOf(old.number, plan.efisp.number) })
+            }
+        }
+    }
+
+    @Test fun measuredFilesystemAndExternalGapAreCombinedForEfispCapacity() {
+        val original = snapshot()
+        val old = original.partitions.single { it.name == "userdata" }
+        val sector = original.logicalSectorBytes
+        val oldBytes = (old.endLba - old.startLba + 1) * sector
+        val gapBytes = 40L * 1024 * 1024
+        val input = original.copy(lastUsable = old.endLba + gapBytes / sector)
+        val plan = PartitionPlanner.plan(input, efispGuid, oldBytes - 28L * 1024 * 1024, 2_015_232) as CreateEfispPlan
+        assertEquals(68L * 1024 * 1024, plan.efispBytes)
+        assertEquals(28L * 1024 * 1024, plan.shrinkBytes)
+        assertEquals(input.lastUsable, plan.efisp.endLba)
+    }
+
+    @Test fun followingPhysicalPartitionBoundsTheTailRegardlessOfEntryNumbersAndOtherHoles() {
+        val original = snapshot()
+        val old = original.partitions.single { it.name == "userdata" }
+        val oldBytes = (old.endLba - old.startLba + 1) * 4096
+        val contiguousGap = 80L * 1024 * 1024
+        val following = partition(2, old.endLba + contiguousGap / 4096 + 1,
+            old.endLba + contiguousGap / 4096 + 10, "tail", "55555555-5555-5555-5555-555555555555")
+        val input = original.copy(lastUsable = following.endLba + 1_000_000,
+            partitions = listOf(following) + original.partitions.reversed())
+        val plan = PartitionPlanner.plan(input, efispGuid, oldBytes, 2_015_232) as CreateEfispPlan
+        assertEquals(old, plan.userdata)
+        assertEquals(following.startLba - 1, plan.efisp.endLba)
+        assertEquals(contiguousGap, plan.efispBytes)
+        assertEquals(following, plan.resultSnapshot.partitions.single { it.number == following.number })
+        assertThrows(PartitionPlanningException::class.java) {
+            PartitionPlanner.plan(input, efispGuid, oldBytes + contiguousGap)
+        }
+        assertThrows(PartitionPlanningException::class.java) {
+            PartitionPlanner.plan(input, efispGuid, oldBytes + contiguousGap + 4096)
+        }
+    }
+
+    @Test fun exactContiguousImageFitIsAcceptedButOneSectorTooLargeIsRejected() {
+        val original = snapshot()
+        val old = original.partitions.single { it.name == "userdata" }
+        val oldBytes = (old.endLba - old.startLba + 1) * 4096
+        val gapBytes = 2L * 1024 * 1024
+        val input = original.copy(lastUsable = old.endLba + gapBytes / 4096)
+        val plan = PartitionPlanner.plan(input, efispGuid, oldBytes, gapBytes) as CreateEfispPlan
+        assertEquals(gapBytes, plan.efispBytes)
+        assertThrows(PartitionPlanningException::class.java) {
+            PartitionPlanner.plan(input, efispGuid, oldBytes, gapBytes + 4096)
+        }
     }
 
 }

@@ -571,11 +571,13 @@ static int check_mount(int mount_fd, const char *mount, const struct device_file
     if (!rc && found != 1) rc = failure("exact mountpoint must have one unambiguous mountinfo record");
     return rc;
 }
-static int inspect_f2fs(const char *mount, const char *mapped, bool fixture) {
+static int inspect_f2fs(const char *mount, const char *mapped, uint64_t maximum, bool fixture) {
     if (fixture) return failure("mounted F2FS inspection does not accept regular-file fixtures");
     struct device_file dev;
     int mount_fd = -1, rc = open_device(mapped, false, false, &dev);
     if (rc) goto out;
+    if (maximum && maximum > dev.bytes) { rc = failure("inspection filesystem limit exceeds mapped capacity"); goto out; }
+    if (maximum && maximum < 8192) { rc = failure("inspection extent cannot contain both F2FS superblocks"); goto out; }
     if ((rc = open_direct_reader(mapped, &dev, 4096))) goto out;
     printf("F2FS_READ_MODE=O_DIRECT\nFS_READ_MODE=direct\nF2FS_READ_ALIGNMENT=%" PRIu32 "\n", dev.direct_alignment);
     mount_fd = open(mount, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -583,7 +585,11 @@ static int inspect_f2fs(const char *mount, const char *mapped, bool fixture) {
     if ((rc = check_mount(mount_fd, mount, &dev))) goto out;
     struct super_info s;
     struct checkpoint_info cp;
-    if ((rc = read_super_pair(&dev, &s, "INSPECT")) || (rc = read_checkpoint(&dev, &s, &cp, "INSPECT")) ||
+    if ((rc = read_super_pair(&dev, &s, "INSPECT"))) goto out;
+    /* A stale large kernel mapping can cover another GPT partition. Reject a
+     * conflicting F2FS boundary before following its checkpoint addresses. */
+    if (maximum && s.blocks > maximum / FS_BLOCK) { rc = failure("F2FS exceeds the verified contiguous physical extent"); goto out; }
+    if ((rc = read_checkpoint(&dev, &s, &cp, "INSPECT")) ||
         (rc = check_mount(mount_fd, mount, &dev))) goto out;
     report_f2fs(&dev, &s, &cp);
     puts("FS_MOUNT_IDENTITY=match\nFS_INSPECTION=read-only\nRESULT=success");
@@ -656,8 +662,8 @@ out:
     return rc;
 }
 #else
-static int inspect_f2fs(const char *mount, const char *mapped, bool fixture) {
-    (void)mount; (void)mapped; (void)fixture;
+static int inspect_f2fs(const char *mount, const char *mapped, uint64_t maximum, bool fixture) {
+    (void)mount; (void)mapped; (void)maximum; (void)fixture;
     return failure("host build has no mounted-filesystem inspection command; use the snapshot harness");
 }
 static int shrink_f2fs(const char *mount, const char *mapped, uint64_t maximum, bool execute, bool fixture) {
@@ -726,16 +732,22 @@ static int self_test(void) {
 }
 
 static int usage(void) {
-    fputs("Usage:\n  partition_worker inspect-f2fs MOUNT MAPPED_DEVICE\n  partition_worker plan-f2fs MOUNT MAPPED_DEVICE MAX_FS_BYTES\n  partition_worker shrink-f2fs MOUNT MAPPED_DEVICE MAX_FS_BYTES [--execute]\n  partition_worker write-range BLOCK_DEVICE OFFSET CAPACITY IMAGE [--execute] [--fixture]\n  partition_worker read-range BLOCK_DEVICE OFFSET LENGTH [--fixture]\n  partition_worker --self-test\n", stderr);
+    fputs("Usage:\n  partition_worker inspect-f2fs MOUNT MAPPED_DEVICE [MAX_FS_BYTES]\n  partition_worker plan-f2fs MOUNT MAPPED_DEVICE MAX_FS_BYTES\n  partition_worker shrink-f2fs MOUNT MAPPED_DEVICE MAX_FS_BYTES [--execute]\n  partition_worker write-range BLOCK_DEVICE OFFSET CAPACITY IMAGE [--execute] [--fixture]\n  partition_worker read-range BLOCK_DEVICE OFFSET LENGTH [--fixture]\n  partition_worker --self-test\n", stderr);
     return 2;
 }
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--self-test")) return self_test();
     if (argc < 2) return usage();
+    if (!strcmp(argv[1], "inspect-f2fs")) {
+        uint64_t maximum = 0;
+        if (argc != 4 && argc != 5) return usage();
+        if (argc == 5 && (!parse64(argv[4], &maximum) || !maximum))
+            return failure("MAX_FS_BYTES must be a positive unsigned decimal 64-bit integer");
+        return inspect_f2fs(argv[2], argv[3], maximum, false);
+    }
     bool execute = false, fixture = false;
     int required;
     if (!strcmp(argv[1], "write-range")) required = 6;
-    else if (!strcmp(argv[1], "inspect-f2fs")) required = 4;
     else if (!strcmp(argv[1], "read-range") || !strcmp(argv[1], "shrink-f2fs") || !strcmp(argv[1], "plan-f2fs")) required = 5;
     else return usage();
     if (argc < required) return usage();
@@ -745,10 +757,6 @@ int main(int argc, char **argv) {
         else return usage();
     }
     uint64_t a, b;
-    if (!strcmp(argv[1], "inspect-f2fs")) {
-        if (execute || fixture) return usage();
-        return inspect_f2fs(argv[2], argv[3], false);
-    }
     if (!strcmp(argv[1], "shrink-f2fs") || !strcmp(argv[1], "plan-f2fs")) {
         if (!strcmp(argv[1], "plan-f2fs") && (execute || fixture)) return usage();
         if (!parse64(argv[4], &a)) return failure("MAX_FS_BYTES must be an unsigned decimal 64-bit integer");

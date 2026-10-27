@@ -474,9 +474,9 @@ completion_next_step() {
 }
 completion_operation() {
     if [ "${SOURCE_PATCH_MODE:-}" = FAKE_LOCK ]; then
-        printf '%s\n' 'online F2FS shrink and GPT entry rebuild; optional Fastboot entry after completion'
+        printf '%s\n' 'optional F2FS shrink and GPT boundary reconciliation; optional Fastboot entry after completion'
     else
-        printf '%s\n' 'online F2FS shrink and GPT entry rebuild; Recovery factory reset remains pending'
+        printf '%s\n' 'optional F2FS shrink and GPT boundary reconciliation; Recovery factory reset remains pending'
     fi
 }
 
@@ -797,16 +797,25 @@ GPT_INSPECT=$(inspect_gpt "$DISK" "$UD_INDEX") || die 'direct GPT geometry inspe
     [ "$(kv "$GPT_INSPECT" DISK_BYTES)" = "$DISK_BYTES" ] && \
     [ "$(kv "$GPT_INSPECT" UD_START)" = "$UD_START" ] || die 'direct GPT identity differs from userdata physical origin'
 GPT_UD_END=$(kv "$GPT_INSPECT" UD_END); UD_GPT_BYTES=$(kv "$GPT_INSPECT" UD_BYTES)
+CURRENT_GPT_END=$GPT_UD_END CURRENT_GPT_BYTES=$UD_GPT_BYTES
+KERNEL_UD_END=$UD_KERNEL_END KERNEL_UD_BYTES=$UD_BYTES
+EFI_LIMIT_END=$(kv "$GPT_INSPECT" EFI_LIMIT_END)
 EFI_COUNT=$(kv "$GPT_INSPECT" EFI_COUNT)
-is_uint "$GPT_UD_END" && is_uint "$UD_GPT_BYTES" && [ "$GPT_UD_END" -le "$UD_KERNEL_END" ] && \
-    [ "$UD_GPT_BYTES" = "$(((GPT_UD_END - UD_START + 1) * LOGICAL_SECTOR))" ] || die 'GPT userdata does not fit its kernel node'
+is_uint "$GPT_UD_END" && is_uint "$UD_GPT_BYTES" && \
+    [ "$UD_GPT_BYTES" = "$(((GPT_UD_END - UD_START + 1) * LOGICAL_SECTOR))" ] || die 'direct GPT userdata geometry is inconsistent'
 UD_END=$GPT_UD_END
 case "$EFI_COUNT" in
     0)
-        [ "$UD_END" = "$UD_KERNEL_END" ] || die 'userdata kernel range differs from GPT without an efisp entry'
         [ ! -e /dev/block/by-name/efisp ] || die 'efisp link exists without a direct GPT entry'
+        # A previous GPT-only edit may leave the kernel node larger or smaller.
+        # The existing mapping is never enlarged/reloaded. Its unused capacity
+        # may exceed the new limit, but every actual F2FS byte and final written
+        # range must fit the contiguous unoccupied extent checked below.
+        is_uint "$EFI_LIMIT_END" && [ "$EFI_LIMIT_END" -ge "$UD_END" ] && \
+            [ "$EFI_LIMIT_END" -le "$(kv "$GPT_INSPECT" LAST_USABLE)" ] || die 'userdata GPT extent enters another partition or reserved region'
         PLAN_MODE=create ;;
     1)
+        [ "$GPT_UD_END" -le "$UD_KERNEL_END" ] || die 'existing-layout GPT userdata exceeds its kernel node'
         PLAN_MODE=reuse EFISP=present EFI_PROFILE=existing-preserved
         EFI_INDEX=$(kv "$GPT_INSPECT" EFI_INDEX); EFI_START=$(kv "$GPT_INSPECT" EFI_START)
         EFI_END=$(kv "$GPT_INSPECT" EFI_END); EFI_BYTES=$(kv "$GPT_INSPECT" EFI_BYTES)
@@ -937,36 +946,75 @@ fi
 # Identifying this mapping does not prove cache/discard coherence after shrink.
 # Version 1.2 records the limitation rather than applying a device-profile gate.
 printf '%s\n' "CACHE_COHERENCE_UNVERIFIED=$RAMCACHE_UNVERIFIED"
-[ "$(blockdev --getsize64 "$DATA_SOURCE")" = "$UD_BYTES" ] || die 'mapped and raw userdata byte lengths differ'
-FS_PROOF=$("$WORKER" inspect-f2fs /data "$DATA_SOURCE" 2>&1) || die 'direct F2FS and checkpoint inspection failed'
+MAPPED_BYTES=$(blockdev --getsize64 "$DATA_SOURCE") || die 'mounted mapping capacity query failed'
+[ "$MAPPED_BYTES" = "$UD_BYTES" ] || die 'mapped and raw userdata byte lengths differ'
+FS_INSPECT_LIMIT=$MAPPED_BYTES
+if [ "$PLAN_MODE" = create ]; then
+    extent_bytes=$(((EFI_LIMIT_END - UD_START + 1) * LOGICAL_SECTOR))
+    [ "$FS_INSPECT_LIMIT" -le "$extent_bytes" ] || FS_INSPECT_LIMIT=$extent_bytes
+fi
+FS_PROOF=$("$WORKER" inspect-f2fs /data "$DATA_SOURCE" "$FS_INSPECT_LIMIT" 2>&1) || die 'direct F2FS and checkpoint inspection failed'
 [ "$(printf '%s\n' "$FS_PROOF" | sed -n 's/^FS_TYPE=//p')" = f2fs ] && \
     [ "$(printf '%s\n' "$FS_PROOF" | sed -n 's/^FS_MATCH=//p')" = 1 ] && \
     [ "$(printf '%s\n' "$FS_PROOF" | sed -n 's/^DEVICE_BYTES=//p')" = "$UD_BYTES" ] && \
     [ "$(kv "$FS_PROOF" RESULT)" = success ] || die 'F2FS geometry proof differs from mapped userdata'
 FS_BYTES=$(kv "$FS_PROOF" FS_BYTES); FS_READ_MODE=$(kv "$FS_PROOF" FS_READ_MODE)
-is_uint "$FS_BYTES" && [ "$FS_BYTES" -gt 0 ] && [ "$FS_BYTES" -le "$UD_GPT_BYTES" ] && \
-    [ $((FS_BYTES % LOGICAL_SECTOR)) = 0 ] && [ "$FS_READ_MODE" = direct ] || die 'direct filesystem size does not fit GPT userdata'
-TAIL_FREE_BYTES=$((UD_GPT_BYTES - FS_BYTES))
-if [ "$PLAN_MODE" = reuse ]; then
-    SKIP_F2FS_SHRINK=1 NEW_UD_END=$UD_END NEW_UD_BYTES=$UD_GPT_BYTES MAX_FS_BYTES=$UD_GPT_BYTES
-elif [ "$TAIL_FREE_BYTES" -gt 62914560 ]; then
-    SKIP_F2FS_SHRINK=1 NEW_UD_BYTES=$FS_BYTES MAX_FS_BYTES=$FS_BYTES
-else
-    [ "$UD_GPT_BYTES" -gt "$((DEFAULT_EFI_BYTES + 1048576))" ] || die 'userdata is too small for the default filesystem shrink'
-    MAX_FS_BYTES=$((UD_GPT_BYTES - DEFAULT_EFI_BYTES - 1048576))
-    FS_PLAN=$("$WORKER" plan-f2fs /data "$DATA_SOURCE" "$MAX_FS_BYTES" 2>&1) || die 'read-only F2FS shrink planning failed'
-    [ "$(kv "$FS_PLAN" RESULT)" = planned ] && [ "$(kv "$FS_PLAN" FS_READ_MODE)" = direct ] || die 'F2FS shrink plan proof is missing'
-    NEW_UD_BYTES=$(kv "$FS_PLAN" FS_EXPECTED_BYTES)
-    is_uint "$NEW_UD_BYTES" && [ "$NEW_UD_BYTES" -gt 0 ] && [ "$NEW_UD_BYTES" -lt "$FS_BYTES" ] && \
-        [ $((NEW_UD_BYTES % LOGICAL_SECTOR)) = 0 ] || die 'planned filesystem byte size is invalid'
-fi
-if [ "$PLAN_MODE" = create ]; then
-    NEW_UD_END=$((UD_START + NEW_UD_BYTES / LOGICAL_SECTOR - 1))
-    EFI_START=$((NEW_UD_END + 1)); EFI_END=$UD_END
-    EFI_BYTES=$((UD_GPT_BYTES - NEW_UD_BYTES)); EFI_OFFSET=$((EFI_START * LOGICAL_SECTOR))
-    [ "$EFI_BYTES" -gt 0 ] && [ $(((EFI_END - EFI_START + 1) * LOGICAL_SECTOR)) = "$EFI_BYTES" ] || die 'dynamic efisp tail geometry is invalid'
-fi
-[ "$PE_BYTES" -le "$EFI_BYTES" ] || die 'selected efisp image exceeds actual available capacity; filesystem is not shrunk again'
+# BEGIN userdata tail planner
+# This calculation does not write GPT, resize a mapping, or touch a filesystem.
+# Bind the final GPT once to the directly measured (or planned) F2FS boundary.
+plan_userdata_tail() {
+    REQUIRED_EFI_BYTES=0 TAIL_PLAN_REASON=existing-efisp-reuse
+    is_uint "$FS_BYTES" && [ "$FS_BYTES" -gt 0 ] && [ "$FS_BYTES" -le "$MAPPED_BYTES" ] && \
+        [ $((FS_BYTES % LOGICAL_SECTOR)) = 0 ] && [ "$FS_READ_MODE" = direct ] || die 'direct filesystem size does not fit its mounted mapping'
+    if [ "$PLAN_MODE" = reuse ]; then
+        [ "$FS_BYTES" -le "$UD_GPT_BYTES" ] || die 'direct filesystem size exceeds existing GPT userdata'
+        CONTIGUOUS_BYTES=$UD_GPT_BYTES
+        TAIL_FREE_BYTES=$((UD_GPT_BYTES - FS_BYTES))
+        SKIP_F2FS_SHRINK=1 NEW_UD_END=$UD_END NEW_UD_BYTES=$UD_GPT_BYTES MAX_FS_BYTES=$UD_GPT_BYTES
+    else
+        is_uint "$EFI_LIMIT_END" && [ "$EFI_LIMIT_END" -ge "$UD_END" ] || die 'userdata extent conflicts with the next partition or GPT reserve'
+        CONTIGUOUS_BYTES=$(((EFI_LIMIT_END - UD_START + 1) * LOGICAL_SECTOR))
+        [ "$FS_BYTES" -le "$CONTIGUOUS_BYTES" ] || die 'F2FS extends into another partition or GPT reserved region'
+        # This includes already-unallocated GPT space after userdata as well as
+        # unused bytes inside it; neither is confused with df's free file blocks.
+        TAIL_FREE_BYTES=$((CONTIGUOUS_BYTES - FS_BYTES))
+        if [ "$TAIL_FREE_BYTES" -gt 62914560 ] && [ "$PE_BYTES" -le "$TAIL_FREE_BYTES" ]; then
+            TAIL_PLAN_REASON=existing-contiguous-tail-fits-image
+            SKIP_F2FS_SHRINK=1 NEW_UD_BYTES=$FS_BYTES MAX_FS_BYTES=$FS_BYTES
+        else
+            REQUIRED_EFI_BYTES=$DEFAULT_EFI_BYTES TAIL_PLAN_REASON=reserve-default-64MiB
+            if [ "$PE_BYTES" -gt "$REQUIRED_EFI_BYTES" ]; then
+                REQUIRED_EFI_BYTES=$PE_BYTES TAIL_PLAN_REASON=extend-tail-for-larger-image
+            fi
+            # Round uploaded lengths up before the native 4 KiB/section planner.
+            [ "$CONTIGUOUS_BYTES" -gt 1048576 ] && \
+                [ "$REQUIRED_EFI_BYTES" -lt "$((CONTIGUOUS_BYTES - 1048576))" ] || die 'contiguous userdata extent is too small for the image and shrink margin'
+            REQUIRED_EFI_BYTES=$(((REQUIRED_EFI_BYTES + 4095) / 4096 * 4096))
+            MAX_FS_BYTES=$((CONTIGUOUS_BYTES - REQUIRED_EFI_BYTES - 1048576))
+            [ "$MAX_FS_BYTES" -le "$MAPPED_BYTES" ] || MAX_FS_BYTES=$MAPPED_BYTES
+            MAX_FS_BYTES=$((MAX_FS_BYTES / 4096 * 4096))
+            FS_PLAN=$("$WORKER" plan-f2fs /data "$DATA_SOURCE" "$MAX_FS_BYTES" 2>&1) || die 'read-only F2FS shrink planning failed'
+            [ "$(kv "$FS_PLAN" RESULT)" = planned ] && [ "$(kv "$FS_PLAN" FS_READ_MODE)" = direct ] || die 'F2FS shrink plan proof is missing'
+            NEW_UD_BYTES=$(kv "$FS_PLAN" FS_EXPECTED_BYTES)
+            is_uint "$NEW_UD_BYTES" && [ "$NEW_UD_BYTES" -gt 0 ] && [ "$NEW_UD_BYTES" -le "$FS_BYTES" ] && \
+                [ "$NEW_UD_BYTES" -le "$MAX_FS_BYTES" ] && [ $((NEW_UD_BYTES % LOGICAL_SECTOR)) = 0 ] || die 'planned filesystem byte size is invalid'
+            if [ "$NEW_UD_BYTES" = "$FS_BYTES" ]; then
+                [ "$TAIL_FREE_BYTES" -gt 62914560 ] && [ "$PE_BYTES" -le "$TAIL_FREE_BYTES" ] || die 'native plan did not release the required efisp tail'
+                SKIP_F2FS_SHRINK=1 TAIL_PLAN_REASON=native-plan-already-sufficient
+            fi
+        fi
+        NEW_UD_END=$((UD_START + NEW_UD_BYTES / LOGICAL_SECTOR - 1))
+        EFI_START=$((NEW_UD_END + 1)); EFI_END=$EFI_LIMIT_END
+        EFI_BYTES=$((CONTIGUOUS_BYTES - NEW_UD_BYTES)); EFI_OFFSET=$((EFI_START * LOGICAL_SECTOR))
+        [ "$EFI_BYTES" -gt 0 ] && [ "$NEW_UD_END" -lt "$EFI_END" ] && \
+            [ $(((EFI_END - EFI_START + 1) * LOGICAL_SECTOR)) = "$EFI_BYTES" ] || die 'dynamic efisp tail geometry is invalid'
+    fi
+    [ "$PE_BYTES" -le "$EFI_BYTES" ] || die 'selected efisp image exceeds actual available capacity'
+    printf '%s\n' "TAIL_PLAN_REASON=$TAIL_PLAN_REASON" "CONTIGUOUS_BYTES=$CONTIGUOUS_BYTES" \
+        "REQUIRED_EFI_BYTES=$REQUIRED_EFI_BYTES" "MAX_FS_BYTES=$MAX_FS_BYTES" "PLANNED_EFI_BYTES=$EFI_BYTES"
+}
+plan_userdata_tail
+# END userdata tail planner
 printf '%s\n' "TAIL_FREE_BYTES=$TAIL_FREE_BYTES" "SKIP_F2FS_SHRINK=$SKIP_F2FS_SHRINK" "FS_READ_MODE=$FS_READ_MODE" "EFI_BYTES=$EFI_BYTES" "PLAN_MODE=$PLAN_MODE"
 
 if [ "$ACTION" = --execute ] && [ "$PHASE" = resume ]; then
@@ -980,6 +1028,12 @@ is_guid "$EFI_GUID" || die 'new efisp GUID could not be precomputed'
 plan_text() {
     printf '%s\n' "DISK=$DISK" "DISK_GUID=$DISK_GUID" "LOGICAL_SECTOR=$LOGICAL_SECTOR" \
         "DISK_BYTES=$DISK_BYTES" "UD_INDEX=$UD_INDEX" "UD_START=$UD_START" "UD_END=$UD_END" \
+        "UD_GPT_BYTES=$UD_GPT_BYTES" "UD_KERNEL_END=$UD_KERNEL_END" "UD_BYTES=$UD_BYTES" "UD_MM=$UD_MM" \
+        "CURRENT_GPT_END=$CURRENT_GPT_END" "CURRENT_GPT_BYTES=$CURRENT_GPT_BYTES" \
+        "KERNEL_UD_END=$KERNEL_UD_END" "KERNEL_UD_BYTES=$KERNEL_UD_BYTES" "MAPPED_BYTES=$MAPPED_BYTES" \
+        "FS_INSPECT_LIMIT=$FS_INSPECT_LIMIT" \
+        "EFI_LIMIT_END=$EFI_LIMIT_END" "CONTIGUOUS_BYTES=$CONTIGUOUS_BYTES" \
+        "TAIL_PLAN_REASON=$TAIL_PLAN_REASON" "REQUIRED_EFI_BYTES=$REQUIRED_EFI_BYTES" \
         "UD_GUID=$UD_GUID" "UD_TYPE=$UD_TYPE" "UD_ATTR=$UD_ATTR" "UD_ATTR_BACKUP=$UD_ATTR_BACKUP" "UD_LABEL=$UD_LABEL" \
         "NEW_UD_END=$NEW_UD_END" "NEW_UD_BYTES=$NEW_UD_BYTES" "EFI_INDEX=$EFI_INDEX" \
         "EFI_START=$EFI_START" "EFI_END=$EFI_END" "EFI_PROFILE=$EFI_PROFILE" "EFI_LABEL=$EFI_LABEL" \
@@ -1051,7 +1105,7 @@ if [ "$PHASE" = prepare ]; then
     STAGE=backup
     journal 'STATE=preparing-backup'
     if [ "$PLAN_MODE" = create ]; then
-        "$GPTTOOL" plan "$DISK" "$UD_INDEX" "$NEW_UD_END" "$EFI_INDEX" "$EFI_GUID" \
+        "$GPTTOOL" plan-range "$DISK" "$UD_INDEX" "$NEW_UD_END" "$EFI_INDEX" "$EFI_END" "$EFI_GUID" \
             "$JOB_DIR/gpt-before.bin" "$JOB_DIR/gpt-planned.bin" > "$JOB_DIR/gpt-plan.log" 2>&1 || die 'raw GPT snapshot and plan creation failed'
     else
         export_gpt "$DISK" "$JOB_DIR/gpt-before.bin" "$JOB_DIR/gpt-plan.log" || die 'existing-layout raw GPT backup failed'
@@ -1100,13 +1154,13 @@ if [ "$PHASE" = prepare ]; then
         [ "$PLAN_MODE" != reuse ] || sha256sum efisp-before.full.bin
     ) > "$JOB_DIR/backup-inventory.sha256" || die 'backup inventory creation failed'
     {
-        printf '%s\n' 'FORMAT=BootForge-online-create-v3' "PLAN_ID=$PLAN_ID" "GPT_BEFORE_SHA256=$GPT_BEFORE_HASH" \
+        printf '%s\n' 'FORMAT=BootForge-online-create-v4' "PLAN_ID=$PLAN_ID" "GPT_BEFORE_SHA256=$GPT_BEFORE_HASH" \
             "GPT_PLANNED_SHA256=$GPT_PLANNED_HASH" "GPTTOOL_SHA256=$(hash_file "$GPTTOOL")" \
             "EFI_BEFORE_SHA256=$EFI_BEFORE_HASH" \
             "ABL_BEFORE_SHA256=$ABL_BEFORE_HASH" "INVENTORY_SHA256=$(hash_file "$JOB_DIR/backup-inventory.sha256")" \
             "OTHER_ABL_BEFORE_SHA256=$OTHER_ABL_BEFORE_HASH" "OTHER_ABL_GPT_SHA256=$OTHER_ABL_GPT_BEFORE_HASH" \
             'DATA_FORMATTED=0' "REQUIRES_RECOVERY_FORMAT=$(completion_requires_recovery)" \
-            'NOTE=F2FS online shrink precedes GPT rebuild; completion entry follows the selected mode' \
+            'NOTE=F2FS shrink runs only when needed; one final GPT boundary reconciliation follows; completion entry follows the selected mode' \
             'NOTE=GPT and ABL backup do not restore filesystem data or undo an F2FS shrink'
         cat "$JOB_DIR/plan.txt"
     } > "$JOB_DIR/manifest.txt" || die 'manifest creation failed'
@@ -1160,7 +1214,7 @@ run_f2fs_shrink() {
     [ "$(bf_target_identity "$DATA_SOURCE")" = "$fs_identity" ] && validate_data_write_chain || return 1
     bf_readonly_failure "$DATA_SOURCE" "$fs_log" || return "$fs_rc"
     cp "$fs_log" "$fs_log.first-attempt" || return 1
-    fs_retry=$("$WORKER" inspect-f2fs /data "$DATA_SOURCE" 2> "$fs_log.retry-inspect.log") || return 1
+    fs_retry=$("$WORKER" inspect-f2fs /data "$DATA_SOURCE" "$FS_INSPECT_LIMIT" 2> "$fs_log.retry-inspect.log") || return 1
     printf '%s\n' "$fs_retry" > "$fs_log.retry-inspect.txt" || return 1
     [ "$(kv "$fs_retry" RESULT)" = success ] && [ "$(kv "$fs_retry" FS_MATCH)" = 1 ] && \
         [ "$(kv "$fs_retry" FS_TYPE)" = f2fs ] && [ "$(kv "$fs_retry" FS_READ_MODE)" = direct ] && \
@@ -1228,7 +1282,7 @@ else
     journal "STATE=$STAGE"
     journal "EVIDENCE=skip-f2fs-shrink:$PLAN_MODE:$TAIL_FREE_BYTES"
 fi
-FS_AFTER=$("$WORKER" inspect-f2fs /data "$DATA_SOURCE" 2>&1) || die 'direct F2FS and checkpoint readback failed before GPT operation'
+FS_AFTER=$("$WORKER" inspect-f2fs /data "$DATA_SOURCE" "$FS_INSPECT_LIMIT" 2>&1) || die 'direct F2FS and checkpoint readback failed before GPT operation'
 FS_AFTER_BYTES=$(printf '%s\n' "$FS_AFTER" | sed -n 's/^FS_BYTES=//p')
 is_uint "$FS_AFTER_BYTES" && [ "$FS_AFTER_BYTES" -le "$NEW_UD_BYTES" ] && \
     [ "$(printf '%s\n' "$FS_AFTER" | sed -n 's/^FS_MATCH=//p')" = 1 ] && \

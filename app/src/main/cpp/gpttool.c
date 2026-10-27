@@ -310,10 +310,29 @@ static void format_guid(const unsigned char *guid,char out[37]) {
     }
     out[at]=0;
 }
+/* Bound the one physically contiguous range available after userdata. Entry
+ * numbers do not imply physical order. Existing efisp is occupied space too;
+ * callers reusing it must use its existing geometry instead of this limit. */
+static bool userdata_tail_limit(const struct snapshot *s,uint64_t index,uint64_t *limit) {
+    if(!index||index>s->count)return fail("invalid userdata index for tail limit");
+    const unsigned char *ud=s->pe+(size_t)(index-1)*s->entry_size;
+    if(zero(ud,16)||!named(ud,"userdata"))return fail("tail limit index must identify userdata");
+    uint64_t start=rd64(ud+32); *limit=s->last;
+    for(uint32_t i=0;i<s->count;i++){
+        if((uint64_t)i+1==index)continue;
+        const unsigned char *e=s->pe+(size_t)i*s->entry_size;
+        if(zero(e,16))continue;
+        uint64_t next=rd64(e+32);
+        if(next>start && next-1<*limit)*limit=next-1;
+    }
+    return *limit>=rd64(ud+40) || fail("userdata overlaps its next physical partition");
+}
 static bool inspect(const struct snapshot *s,uint64_t index,bool direct) {
     if(!index||index>s->count)return fail("invalid userdata index for inspect");
     const unsigned char *ud=s->pe+(size_t)(index-1)*s->entry_size,*bud=s->be+(size_t)(index-1)*s->entry_size;
     if(zero(ud,16)||!named(ud,"userdata"))return fail("inspect index must identify userdata");
+    uint64_t tail_limit;
+    if(!userdata_tail_limit(s,index,&tail_limit))return false;
     unsigned found=0;uint32_t efi_index=0;char guid[37],disk_guid[37],ud_type[37];
     for(uint32_t i=0;i<s->count;i++){
         const unsigned char *e=s->pe+(size_t)i*s->entry_size;
@@ -329,6 +348,7 @@ static bool inspect(const struct snapshot *s,uint64_t index,bool direct) {
     putchar('\n');
     printf("GPT_VALID=1\nGPT_ATTRIBUTE_DIFF_COUNT=%u\nGPT_ATTRIBUTE_DIFF_MASK=%016" PRIx64 "\nGPT_STATUS=%s\nDISK_READ_MODE=%s\nLOGICAL_SECTOR=%u\nDISK_BYTES=%" PRIu64 "\nUD_INDEX=%" PRIu64 "\nUD_START=%" PRIu64 "\nUD_END=%" PRIu64 "\nUD_BYTES=%" PRIu64 "\nUD_GUID=%s\nUD_ATTR=%016" PRIx64 "\nUD_ATTR_BACKUP=%016" PRIx64 "\nEFI_COUNT=%u\n",
         s->diff_count,s->diff_mask,s->diff_count?"attributes-differ":"clean",direct?"direct":"fixture",s->sector,s->bytes,index,rd64(ud+32),rd64(ud+40),(rd64(ud+40)-rd64(ud+32)+1)*s->sector,guid,rd64(ud+48),rd64(bud+48),found);
+    printf("EFI_LIMIT_END=%" PRIu64 "\n",tail_limit);
     if(found==1){
         const unsigned char *e=s->pe+(size_t)efi_index*s->entry_size,*be=s->be+(size_t)efi_index*s->entry_size;char type[37];
         format_guid(e+16,guid);format_guid(e,type);
@@ -336,13 +356,16 @@ static bool inspect(const struct snapshot *s,uint64_t index,bool direct) {
     }
     puts("RESULT=success");return true;
 }
-static bool plan(const struct snapshot *before,uint64_t ud_index,uint64_t new_end,uint64_t efi_index,const unsigned char *guid,struct snapshot *after) {
+static bool plan_range(const struct snapshot *before,uint64_t ud_index,uint64_t new_end,uint64_t efi_index,uint64_t efi_end,const unsigned char *guid,struct snapshot *after) {
     unsigned char type[16];
     if(!ud_index||ud_index>before->count||!efi_index||efi_index>before->count||ud_index==efi_index)return fail("invalid userdata/efisp indices");
     const unsigned char *ud=before->pe+(size_t)(ud_index-1)*before->entry_size,*efi=before->pe+(size_t)(efi_index-1)*before->entry_size;
     const unsigned char *b_efi=before->be+(size_t)(efi_index-1)*before->entry_size;
-    uint64_t old_end=rd64(ud+40);
-    if(zero(ud,16)||!named(ud,"userdata")||new_end>=old_end||new_end<rd64(ud+32)||!zero(efi,before->entry_size)||!zero(b_efi,before->entry_size)||zero(guid,16))return fail("plan requires a positive bounded userdata tail shrink and a zero empty slot");
+    uint64_t tail_limit;
+    if(!userdata_tail_limit(before,ud_index,&tail_limit))return false;
+    if(new_end<rd64(ud+32)||new_end>=efi_end||efi_end>tail_limit||
+       !zero(efi,before->entry_size)||!zero(b_efi,before->entry_size)||zero(guid,16))
+        return fail("plan requires bounded adjacent userdata/efisp extents and a zero empty slot");
     for(uint32_t i=0;i<before->count;i++){
         const unsigned char *e=before->pe+(size_t)i*before->entry_size;
         if(!zero(e,16)&&named(e,"efisp"))return fail("efisp already exists; refusing a repeated userdata shrink");
@@ -354,24 +377,43 @@ static bool plan(const struct snapshot *before,uint64_t ud_index,uint64_t new_en
     for(unsigned i=0;i<2;i++){
         unsigned char *table=tables[i],*e=table+(size_t)(efi_index-1)*after->entry_size;
         wr64(table+(size_t)(ud_index-1)*after->entry_size+40,new_end);
-        memcpy(e,type,16);memcpy(e+16,guid,16);wr64(e+32,new_end+1);wr64(e+40,old_end);
+        memcpy(e,type,16);memcpy(e+16,guid,16);wr64(e+32,new_end+1);wr64(e+40,efi_end);
         const char *label="efisp";for(unsigned j=0;j<5;j++)e[56+j*2]=(unsigned char)label[j];
         wr32(headers[i]+88,crc32(table,(size_t)after->entry_bytes));wr32(headers[i]+16,header_crc(headers[i]));
     }
     return validate(after,true);
 }
+/* Keep the legacy CLI contract: it only divides the existing userdata tail. */
+static bool plan(const struct snapshot *before,uint64_t ud_index,uint64_t new_end,uint64_t efi_index,const unsigned char *guid,struct snapshot *after) {
+    if(!ud_index||ud_index>before->count)return fail("invalid userdata index");
+    uint64_t old_end=rd64(before->pe+(size_t)(ud_index-1)*before->entry_size+40);
+    if(new_end>=old_end)return fail("legacy plan requires a positive userdata tail shrink");
+    return plan_range(before,ud_index,new_end,efi_index,old_end,guid,after);
+}
 static bool transition(const struct snapshot *before,const struct snapshot *after) {
-    uint64_t ud=0,efi=0,end=0;const unsigned char *guid=NULL;struct snapshot expected={0};bool ok=false;
+    uint64_t ud=0,efi=0,end=0,efi_start=0,efi_end=0;const unsigned char *guid=NULL;struct snapshot expected={0};bool ok=false;
     if(before->length!=after->length||before->count!=after->count||before->entry_size!=after->entry_size)return fail("before/after geometry differs");
     for(uint32_t i=0;i<before->count;i++){
         const unsigned char *a=before->pe+(size_t)i*before->entry_size,*b=after->pe+(size_t)i*after->entry_size;
         if(!memcmp(a,b,before->entry_size))continue;
         if(!zero(a,16)&&named(a,"userdata")){if(ud)return fail("multiple changed userdata entries");ud=i+1;end=rd64(b+40);}
-        else if(zero(a,before->entry_size)){if(efi)return fail("multiple new partitions");efi=i+1;guid=b+16;}
+        else if(zero(a,before->entry_size)){if(efi)return fail("multiple new partitions");efi=i+1;guid=b+16;efi_start=rd64(b+32);efi_end=rd64(b+40);}
         else return fail("unexpected changed GPT entry");
     }
-    if(!ud||!efi||!guid)return fail("expected exactly userdata shrink and one new efisp entry");
-    if(!plan(before,ud,end,efi,guid,&expected))goto out;
+    if(!efi||!guid)return fail("expected one new efisp entry and an optional userdata end change");
+    if(!ud){
+        /* With external free space userdata need not change. Infer it from the
+         * required adjacency; exact reconstruction below binds every byte. */
+        if(!efi_start)return fail("new efisp start is invalid");
+        for(uint32_t i=0;i<before->count;i++){
+            const unsigned char *a=before->pe+(size_t)i*before->entry_size;
+            if(zero(a,16)||!named(a,"userdata")||rd64(a+40)!=efi_start-1)continue;
+            if(ud)return fail("new efisp has ambiguous userdata adjacency");
+            ud=i+1;end=rd64(a+40);
+        }
+    }
+    if(!ud)return fail("new efisp must be adjacent to userdata");
+    if(!plan_range(before,ud,end,efi,efi_end,guid,&expected))goto out;
     if(!same_snapshot(&expected,after)){fail("after snapshot changes bytes outside the exact preserving plan");goto out;}
     ok=true;
 out:free_snapshot(&expected);return ok;
@@ -450,10 +492,15 @@ int main(int argc,char **argv) {
         if(!decimal(argv[pos+1],&ud)||!decimal(argv[pos+2],&end)||!decimal(argv[pos+3],&efi)||!parse_guid(argv[pos+4],guid)){fail("invalid plan index/end/GUID");goto out;}
         if(!open_disk(argv[pos],false,fixture,&d)||!capture(&d,&before,true)||!plan(&before,ud,end,efi,guid,&after)||!save_pair(argv[pos+5],argv[pos+6],&before,&after))goto out;
         printf("GPT_ATTRIBUTE_DIFF_COUNT=%u\nGPT_ATTRIBUTE_DIFF_MASK=%016" PRIx64 "\nSNAPSHOT_BYTES=%zu\nDISK_READ_MODE=%s\nRESULT=success\n",before.diff_count,before.diff_mask,before.length,d.direct?"direct":"fixture");ok=true;
+    }else if(!strcmp(command,"plan-range")&&argc-pos==8){
+        uint64_t ud,end,efi,efi_end;unsigned char guid[16];
+        if(!decimal(argv[pos+1],&ud)||!decimal(argv[pos+2],&end)||!decimal(argv[pos+3],&efi)||!decimal(argv[pos+4],&efi_end)||!parse_guid(argv[pos+5],guid)){fail("invalid plan-range index/end/GUID");goto out;}
+        if(!open_disk(argv[pos],false,fixture,&d)||!capture(&d,&before,true)||!plan_range(&before,ud,end,efi,efi_end,guid,&after)||!save_pair(argv[pos+6],argv[pos+7],&before,&after))goto out;
+        printf("GPT_ATTRIBUTE_DIFF_COUNT=%u\nGPT_ATTRIBUTE_DIFF_MASK=%016" PRIx64 "\nSNAPSHOT_BYTES=%zu\nDISK_READ_MODE=%s\nRESULT=success\n",before.diff_count,before.diff_mask,before.length,d.direct?"direct":"fixture");ok=true;
     }else if(!strcmp(command,"apply")&&argc-pos==4&&!strcmp(argv[pos+3],"--execute")){
         if(!load_snapshot(argv[pos+1],&before)||!load_snapshot(argv[pos+2],&after)||!apply(argv[pos],fixture,&before,&after,&started))goto out;
         printf("READBACK=match\nWRITE_ORDER=backup-then-primary\nDISK_READ_MODE=%s\nRESULT=success\n",fixture?"fixture":"direct");ok=true;
-    }else fail("usage: [--fixture-sector 512|4096] verify|export DISK; inspect DISK UD_INDEX; plan DISK UD_INDEX NEW_UD_END EFI_INDEX EFI_GUID BEFORE_FILE AFTER_FILE; apply DISK BEFORE_FILE AFTER_FILE --execute; --self-test");
+    }else fail("usage: [--fixture-sector 512|4096] verify|export DISK; inspect DISK UD_INDEX; plan DISK UD_INDEX NEW_UD_END EFI_INDEX EFI_GUID BEFORE_FILE AFTER_FILE; plan-range DISK UD_INDEX NEW_UD_END EFI_INDEX EFI_END EFI_GUID BEFORE_FILE AFTER_FILE; apply DISK BEFORE_FILE AFTER_FILE --execute; --self-test");
 out:
     if(d.fd>=0)close(d.fd);free_snapshot(&before);free_snapshot(&after);
     if(!ok){fprintf(stderr,"ERROR=%s\nERRNO=%d\nRESULT=%s\n",error_text,errno,started?"partial":"error");if(!binary)printf("RESULT=%s\n",started?"partial":"error");}

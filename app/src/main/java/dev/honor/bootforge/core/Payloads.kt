@@ -269,8 +269,8 @@ object Payloads {
         工具按当前运行槽识别 abl_a / abl_b，再按所选目标写入，写前备份，逐槽回读校验，不切换活动槽位。
         新建efisp的在线后端为online-create.sh：自动准备RAM备份、保存应用内副本、继续执行。
         生成镜像与文字定制在分区操作前完成并固定SHA-256；payload-source.txt绑定实际来源槽位ABL及独立的ABL写入目标。
-        创建顺序：1)校验备份；2)直接读取F2FS与checkpoint，尾部已释放超过60MiB时跳过再次缩容；
-        3)按实际F2FS容量调整userdata GPT末端，在释放的整个尾部创建efisp，保留super；
+        创建顺序：1)校验备份；2)直接读取F2FS与checkpoint，计算实际末尾至下一已用分区前或GPT最后可用位置的连续空间，超过60MiB且镜像装得下时跳过再次缩容；
+        3)不足时仅补足所需缩容量；按最终F2FS容量统一userdata GPT末端，在后方连续空闲创建efisp，保留super和其他分区；
         4)向所选槽位写入ABL并逐槽回读验证；5)最后写入PE并回读验证；6)假回锁提示刷写完成并可选进入Fastboot，仅解锁提示可选进入Recovery清空data。
         新建efisp采用${EfispProfile.ID}：名称${EfispProfile.LABEL}，类型EFI System（${EfispProfile.TYPE_CODE}），
         类型GUID=${EfispProfile.TYPE_GUID}，属性=${EfispProfile.NEW_ATTRIBUTES}（三台实测属性的按位交集）。

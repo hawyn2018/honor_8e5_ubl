@@ -37,8 +37,15 @@ data class CreateEfispPlan(
     val originalUserdata: GptPartition,
     override val userdata: GptPartition,
     override val efisp: GptPartition,
+    /** Signed GPT capacity reduction: negative when userdata grows. This does not resize a filesystem. */
     val shrinkBytes: Long,
-) : EfispPlan
+) : EfispPlan {
+    val userdataSizeChangeBytes: Long get() = Math.negateExact(shrinkBytes)
+    val efispBytes: Long get() = Math.multiplyExact(
+        Math.addExact(Math.subtractExact(efisp.endLba, efisp.startLba), 1L),
+        resultSnapshot.logicalSectorBytes.toLong(),
+    )
+}
 
 data class ReusePlan(
     override val originalSnapshot: GptSnapshot,
@@ -68,8 +75,11 @@ object PartitionPlanner {
     private val attributesPattern = Regex("[0-9a-fA-F]{16}")
 
     /** Geometry model; execution supplies the directly measured filesystem size.
-     * The default reduction remains available for callers planning a new resize.
-     * Every other entry and userdata's starting address remain unchanged. */
+     * Without it, preserve userdata when its following free extent holds 64 MiB;
+     * otherwise propose only the reduction needed to reach that capacity.
+     * Explicit filesystem capacity may also grow or preserve the GPT userdata
+     * extent. Every other entry and userdata's starting address stay unchanged.
+     * This model does not inspect, shrink or grow a filesystem. */
     fun plan(
         snapshot: GptSnapshot,
         efispUniqueGuid: String = UUID.randomUUID().toString().uppercase(Locale.ROOT),
@@ -109,35 +119,47 @@ object PartitionPlanner {
         if (newNumber > candidates) fail("GPT has no unused partition entry")
 
         val oldBytes = partitionBytes(userdata, original.logicalSectorBytes)
-        val newBytes = remainingUserdataBytes ?: Math.subtractExact(oldBytes, EFISP_BYTES)
-        if (newBytes <= 0 || newBytes >= oldBytes || newBytes % original.logicalSectorBytes != 0L)
-            fail("filesystem boundary must be aligned, positive and inside userdata")
+        // Only the physically adjacent free range belongs to this plan. A hole
+        // beyond another partition cannot be borrowed, regardless of entry order.
+        val nextStart = original.partitions.asSequence()
+            .filter { it.number != userdata.number && it.startLba > userdata.endLba }
+            .minOfOrNull { it.startLba }
+        val contiguousEnd = nextStart?.let { Math.subtractExact(it, 1L) } ?: original.lastUsable
+        val contiguousBytes = Math.multiplyExact(
+            Math.addExact(Math.subtractExact(contiguousEnd, userdata.startLba), 1L),
+            original.logicalSectorBytes.toLong(),
+        )
+        val newBytes = remainingUserdataBytes ?: minOf(oldBytes,
+            Math.subtractExact(contiguousBytes, EFISP_BYTES))
+        if (newBytes <= 0 || newBytes >= contiguousBytes || newBytes % original.logicalSectorBytes != 0L)
+            fail("filesystem boundary must be aligned, positive and leave a contiguous efisp extent")
         val shrinkBytes = Math.subtractExact(oldBytes, newBytes)
-        if (shrinkBytes < minimumImageBytes) fail("released userdata tail does not fit the image")
-        val sectorsToRemove = shrinkBytes / original.logicalSectorBytes
-        val newEnd = Math.subtractExact(userdata.endLba, sectorsToRemove)
-        val reducedUserdata = userdata.copy(endLba = newEnd)
+        val efispBytes = Math.subtractExact(contiguousBytes, newBytes)
+        if (efispBytes < minimumImageBytes) fail("contiguous userdata tail does not fit the image")
+        val newEnd = Math.subtractExact(Math.addExact(userdata.startLba,
+            newBytes / original.logicalSectorBytes), 1L)
+        val resizedUserdata = userdata.copy(endLba = newEnd)
         val efisp = GptPartition(
             number = newNumber.toInt(),
             startLba = Math.addExact(newEnd, 1L),
-            endLba = userdata.endLba,
+            endLba = contiguousEnd,
             name = EfispProfile.LABEL,
             typeGuid = EfispProfile.TYPE_GUID,
             uniqueGuid = efispUniqueGuid,
             attributes = EfispProfile.NEW_ATTRIBUTES,
         )
         val result = original.copy(partitions = original.partitions.map {
-            if (it.number == userdata.number) reducedUserdata else it
+            if (it.number == userdata.number) resizedUserdata else it
         } + efisp)
         validate(result)
         if (Math.subtractExact(
                 partitionBytes(userdata, original.logicalSectorBytes),
-                partitionBytes(reducedUserdata, original.logicalSectorBytes),
-            ) != shrinkBytes || partitionBytes(efisp, original.logicalSectorBytes) != shrinkBytes
+                partitionBytes(resizedUserdata, original.logicalSectorBytes),
+            ) != shrinkBytes || partitionBytes(efisp, original.logicalSectorBytes) != efispBytes
         ) {
             fail("partition size calculation differs from the measured filesystem boundary")
         }
-        CreateEfispPlan(original, result, userdata, reducedUserdata, efisp, shrinkBytes)
+        CreateEfispPlan(original, result, userdata, resizedUserdata, efisp, shrinkBytes)
     }
 
     private fun validate(snapshot: GptSnapshot) {

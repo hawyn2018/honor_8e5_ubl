@@ -600,8 +600,8 @@ private fun UnlockModePage(
             Spacer(Modifier.height(10.dp))
             Panel {
                 StepRow("1", "备份 GPT 与原始分区", "保存本次任务所需的恢复备份", false)
-                StepRow("2", "缩小 F2FS 文件系统", "释放 userdata 尾部空间", false)
-                StepRow("3", "缩小 userdata 并创建 efisp", "尾部已释放超过 60 MiB 时跳过缩容，按实际空间创建 efisp", false)
+                StepRow("2", "核对 F2FS 文件系统", "连续尾部空间不足时再缩容", false)
+                StepRow("3", "调整 userdata 并创建 efisp", "按实际文件系统边界修正 GPT，使用连续尾部空间", false)
                 StepRow("4", if (generatedEfisp) "提取 ABL 并准备 efisp.img" else "准备上传的 efisp 镜像",
                     if (generatedEfisp) "${effective.efispSource.label} · ${effective.patchMode.label}修补与文字定制"
                         else "${state.efispFileName} · 按上传内容写入", false)
@@ -897,7 +897,7 @@ private fun HeroCard(target: String?, state: UnlockUiState) {
             Spacer(Modifier.height(22.dp))
             Text("更自由的使用设备", color = ink, fontSize = 22.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
-            Text("按实际尾部空间创建 efisp  ·  当前槽位刷写", color = ink.copy(alpha = .8f), fontSize = 13.sp)
+            Text("按连续尾部空间创建 efisp  ·  当前槽位刷写", color = ink.copy(alpha = .8f), fontSize = 13.sp)
             Spacer(Modifier.height(22.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("目标分区", color = ink.copy(alpha = .67f), fontSize = 12.sp, maxLines = 1)
