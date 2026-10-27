@@ -1,5 +1,7 @@
 # honor_ubl
 
+QQ交流群：941336897 
+
 基于 Kotlin、Jetpack Compose 和 [Miuix](https://github.com/compose-miuix-ui/miuix) 的 Android 工具，整合无线调试配对、提权、分区备份及 GBL 引导写入流程。
 
 当前源码版本为 **2.5.1（versionCode 39）**，桌面名称为 `hnubl`，应用包名为 `net.hawyn.honor8e5ubl`。本版本已合入 MagicRoot 1.0.4 的两条提权链，按 98260、64650 的顺序显示，默认选择 98260。两条链均支持 6.12.58 和 6.12.38 两套精确内核 profile。
