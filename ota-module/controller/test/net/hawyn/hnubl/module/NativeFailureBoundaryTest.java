@@ -24,7 +24,7 @@ public final class NativeFailureBoundaryTest {
         check(warnings.stream().allMatch(w->w.contains("NoSuchMethodError")),"warning retains exact missing-ABI diagnosis");
         check(!runtime.ready()&&!runtime.waiting()&&runtime.warning().contains("NoSuchMethodError"),"actual runtime warning state retains missing ABI and never claims native readiness");
         check(fixture.marker.token==1,"optional feature failure does not RESET or consume completed token");
-        check(new JSONObject(fixture.consume()).getString("decision").equals("ALLOW")&&fixture.commits==0,"current ARMED token1 still continues original slot flow");
+        check(new JSONObject(fixture.consume()).getString("decision").equals("ALLOW")&&fixture.commits==1,"current ARMED file1 still requires successful official execution even when optional native watcher failed");
         check(new JSONObject(fixture.consume()).getString("decision").equals("DENY"),"token0 stays denied after original one-shot consume");
         check(NativeFailureBoundary.run("healthy",()->{},warnings::add),"normal execution succeeds");
         boolean vmError=false,death=false;

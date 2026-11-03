@@ -1,4 +1,4 @@
-// Optional presentation only. Authorization belongs to the existing reboot gate.
+// Optional presentation only. Authorization belongs to the final reboot gate.
 export const rebootLabels = Object.freeze({continue: '继续流程', reboot: '立即重启'});
 
 export function labelForState(reply) {
@@ -18,7 +18,8 @@ export function isManualRestartText(text, resourceTexts = []) {
  */
 export function createRebootLabelController(p) {
   let activity = null, pendingActivity = null, records = [], generation = 0, stopped = false;
-  let timer = null, requestTimer = null, requesting = false, suspended = 0;
+  let timer = null, requestTimer = null, requesting = null, suspended = 0;
+  let stateRevision = 0, observedState = null, readFailed = false;
   let cached = rebootLabels.continue, cachedAt = -Infinity, renderPending = false;
   const counts = {discoveryCount: 0, candidateReadCount: 0, renderCount: 0, writeCount: 0, stateReadCount: 0};
   const interval = p.intervalMs || 2500, cache = p.cacheMs || 750;
@@ -120,22 +121,45 @@ export function createRebootLabelController(p) {
     }, interval);
   }
   function request(epoch, force) {
-    if (!current(epoch) || !records.length || requesting) return;
+    if (!current(epoch) || !records.length) return;
+    // A focus/click return supersedes any read already in progress. A queued
+    // worker has not read yet and can serve the newest request directly.
+    if (force) stateRevision++;
+    if (requesting) return;
     if (!force && p.now() - cachedAt < cache) return;
-    requesting = true;
+    const job = {}; requesting = job;
     try { requestTimer = p.background(() => {
+      if (requesting !== job) return;
       requestTimer = null;
-      if (!current(epoch)) { requesting = false; return; }
-      let next = rebootLabels.continue;
+      if (!current(epoch)) { requesting = null; return; }
+      const revision = stateRevision;
+      let next = rebootLabels.continue, value = null, failure = null;
       try {
         counts.stateReadCount++;
         const reply = p.state(); // The adapter supplies STATE exclusively.
         if (!reply || reply.ok !== true || (reply.state !== 0 && reply.state !== 1))
           throw new Error('STATE did not prove an exact zero/one marker');
-        next = labelForState(reply);
-      } catch (error) { warning('Reading restart label state failed; showing Continue', error); }
-      if (!current(epoch)) return;
-      requesting = false;
+        value = reply.state; next = labelForState(reply);
+      } catch (error) { failure = error; }
+      if (!current(epoch) || requesting !== job) return;
+      requesting = null;
+      if (revision !== stateRevision) { request(epoch, true); return; }
+      if (failure) {
+        warning('Reading restart label state failed; showing Continue', failure);
+        if (!readFailed && typeof p.onStateError === 'function') try { p.onStateError(failure); }
+        catch (error) { warning('Recording the optional label read failure failed', error); }
+        readFailed = true;
+      } else {
+        readFailed = false;
+        if (value !== observedState) {
+          observedState = value;
+          if (typeof p.onState === 'function') try { p.onState(value); }
+          catch (error) { warning('Recording the optional label state failed', error); }
+        }
+      }
+      // Optional diagnostic transport may yield to a newer focus/click event.
+      // It does not make the just-read value authoritative for that newer read.
+      if (!current(epoch) || revision !== stateRevision) return;
       const changed = next !== cached;
       cached = next; cachedAt = p.now();
       // The stable path stays entirely off the UI thread. Native layout events
@@ -146,15 +170,16 @@ export function createRebootLabelController(p) {
     }); } catch (error) { requesting = false; requestTimer = null; warning('Scheduling restart label state read failed', error); }
   }
   function apply() {
-    const epoch = generation;
+    const epoch = generation, revision = stateRevision;
     if (!current(epoch) || !renderPending) return;
     if (deferUi(deref(activity), false, false)) return;
     p.main(() => {
-      if (!current(epoch)) return;
+      if (!current(epoch) || revision !== stateRevision) return;
       if (deferUi(deref(activity), false, false)) return;
       render();
     });
   }
+  function refreshState(force = true) { request(generation, force); }
   function refresh(force = true) {
     const epoch = generation;
     if (!current(epoch)) return;
@@ -205,7 +230,7 @@ export function createRebootLabelController(p) {
     if (stopped) return;
     if (same(deref(pendingActivity), owner)) return;
     if (deref(pendingActivity) == null && same(deref(activity), owner)) { refresh(true); return; }
-    clearTimer(); clearRequest(); requesting = false; const epoch = ++generation;
+    clearTimer(); clearRequest(); requesting = null; const epoch = ++generation;
     // The queued work holds only WeakReference objects, never an Activity.
     const next = p.weak(owner);
     pendingActivity = next;
@@ -219,7 +244,7 @@ export function createRebootLabelController(p) {
   function pause(owner) {
     const requested = deref(pendingActivity) || deref(activity);
     if (owner && !(p.sameOwner ? p.sameOwner(requested, owner) : same(requested, owner))) return;
-    const epoch = ++generation; clearTimer(); clearRequest(); requesting = false; activity = null; pendingActivity = null;
+    const epoch = ++generation; clearTimer(); clearRequest(); requesting = null; activity = null; pendingActivity = null;
     p.main(() => { if (epoch !== generation) return; restoreAll(); records = []; });
   }
   function aroundOriginal(fn) {
@@ -229,12 +254,30 @@ export function createRebootLabelController(p) {
     try { return fn(); }
     finally {
       suspended--;
-      if (!suspended) try { refresh(false); } catch (error) { warning('Scheduling restart label refresh failed', error); }
+      if (!suspended) {
+        // Restore presentation from the tracked controls without walking the
+        // window tree. Read the file again even inside the normal cache window.
+        renderPending = true;
+        try { apply(); } catch (error) { warning('Scheduling restart label refresh failed', error); }
+        try { refreshState(true); } catch (error) { warning('Scheduling restart label state refresh failed', error); }
+      }
     }
   }
-  function aroundClick(view, fn) { return findAction(view) ? aroundOriginal(fn) : fn(); }
+  function aroundClick(view, fn) {
+    const record = findAction(view); if (!record) return fn();
+    return aroundOriginal(() => {
+      let manual = false;
+      if (typeof p.manualAction === 'function' && !record.retired) try {
+        const label = deref(record.view), value = label && p.read(label);
+        manual = eligible(value) && String(value.text) === record.nativeText;
+      } catch (error) { warning('Identifying the original manual restart action failed', error); }
+      // The native callback exception belongs to its caller. Never retry it as
+      // an optional classification failure after it may already have run.
+      return manual ? p.manualAction(fn) : fn();
+    });
+  }
   return {
-    resume, pause, refresh, refreshView, apply, aroundOriginal, aroundClick,
+    resume, pause, refresh, refreshState, refreshView, apply, aroundOriginal, aroundClick,
     tracks: view => Boolean(findAction(view)),
     dispose() { if (stopped) return; try { pause(null); } finally { stopped = true; } },
     inspect() { return {active: deref(activity) != null && !stopped, tracked: records.length, cachedLabel: cached, stopped, ...counts}; },
@@ -292,7 +335,7 @@ export function lifecycleImplementations(contract, controller, warn) {
 }
 
 /** Install once after the critical hooks. All failures are optional warnings. */
-export function installRebootLabels({Java, app, state, warn, intervalMs = 2500, cacheMs = 750}) {
+export function installRebootLabels({Java, app, state, warn, manualAction, onState, onStateError, intervalMs = 2500, cacheMs = 750}) {
   const warning = (message, error) => { try { warn(message, error); } catch (_) {} };
   const ActivityCallbacks = Java.use('android.app.Application$ActivityLifecycleCallbacks');
   const WeakReference = Java.use('java.lang.ref.WeakReference');
@@ -471,7 +514,7 @@ export function installRebootLabels({Java, app, state, warn, intervalMs = 2500, 
     }
     return found;
   }
-  const controller = createRebootLabelController({state, warn: warning, read, scan, intervalMs, cacheMs,
+  const controller = createRebootLabelController({state, warn: warning, read, scan, intervalMs, cacheMs, manualAction, onState, onStateError,
     weak: value => WeakReference.$new(value), same: (a, b) => Boolean(a.equals(b)),
     sameOwner,
     canDiscover: () => Date.now() >= scrollingUntil,
@@ -658,7 +701,7 @@ export function installRebootLabels({Java, app, state, warn, intervalMs = 2500, 
                 windowRoots().find(root => updaterRoot(root) && root.hasWindowFocus());
               if (!focused) { controller.pause(null); labelRoot = null; discoveryDirty = false; renderDirty = false; focusDirty = false; pendingTextViews = []; return; }
               const previous = weakGet(labelRoot);
-              const discover = discoveryDirty, apply = renderDirty;
+              const discover = discoveryDirty, apply = renderDirty, forceState = focusDirty;
               const changedViews = pendingTextViews; pendingTextViews = [];
               discoveryDirty = false; renderDirty = false; focusDirty = false;
               if (!controller.inspect().active || previous == null || !previous.equals(focused)) resumeRoot(focused);
@@ -667,6 +710,7 @@ export function installRebootLabels({Java, app, state, warn, intervalMs = 2500, 
                 for (const reference of changedViews) { const view = weakGet(reference); if (view != null) controller.refreshView(view); }
                 if (apply) controller.apply();
               }
+              if (forceState) controller.refreshState(true);
             } catch (error) { warning('Optional restart label refresh failed', error); }
           }); } catch (error) { refreshQueued = false; warning('Scheduling optional restart label refresh failed', error); }
         }); } catch (error) { refreshQueued = false; warning('Entering optional restart label refresh failed', error); }
@@ -759,7 +803,7 @@ export function installRebootLabels({Java, app, state, warn, intervalMs = 2500, 
       });
     } catch (error) { warning('Scheduling optional foreground scan failed; lifecycle hooks remain active', error); }
   } catch (error) { dispose(); warning('Optional restart labels unavailable; native controls retained', error); }
-  return {refresh: controller.refresh, aroundOriginal: controller.aroundOriginal, dispose,
+  return {refresh: controller.refresh, refreshState: controller.refreshState, aroundOriginal: controller.aroundOriginal, dispose,
     inspect() { return {...controller.inspect(), scrollActive: Date.now() < scrollingUntil,
       discoveryDirty, renderDirty, focusDirty, textDirty: pendingTextViews.length > 0, textEventCount,
       textCandidates: textWatches.size, discoveryScheduled: refreshQueued}; }};

@@ -10,6 +10,9 @@ import androidx.lifecycle.viewModelScope
 import dev.honor.bootforge.core.UploadRole
 import dev.honor.bootforge.core.EfispPatchMode
 import dev.honor.bootforge.core.OtaUpdatePreparation
+import dev.honor.bootforge.core.OtaDiagnosticsArchive
+import dev.honor.bootforge.core.Payloads
+import dev.honor.bootforge.core.RootShell
 import dev.honor.bootforge.core.SystemUpdaterHandoff
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineStart
@@ -95,7 +98,8 @@ data class OtaUiState(val busy: Boolean = false, val stage: String = "系统 OTA
     val operation: OtaOperation = OtaOperation.FULL, val exportFilePath: String = "",
     val request: OtaRequest = OtaRequest(), val ablFileName: String = "尚未上传用于刷写的 ABL",
     val efispAblFileName: String = "尚未上传用于修补 EFISP 的 ABL", val efispFileName: String = "尚未上传 efisp",
-    val preparingUpdate: Boolean = false, val updatePreparationMessage: String = "", val updatePreparationFailed: Boolean = false)
+    val preparingUpdate: Boolean = false, val updatePreparationMessage: String = "", val updatePreparationFailed: Boolean = false,
+    val exportingDiagnostics: Boolean = false, val diagnosticsMessage: String = "")
 object OtaState {
     var state by mutableStateOf(OtaUiState())
     fun append(value: String) { state = state.copy(logs = state.logs + value.lines()) }
@@ -120,6 +124,67 @@ class OtaModel(application: Application) : AndroidViewModel(application) {
         OtaState.state = state.copy(request = selected, completed = false, error = "", efispPatchFailureHint = "")
     }
     fun clearLogs() { if (!state.busy) OtaState.state = state.copy(logs = emptyList()) }
+    fun exportDiagnostics(uri: Uri) {
+        if (state.busy || RunState.state.busy || BackupState.state.busy) return
+        if (uri.scheme != "content") return
+        val clicked = System.currentTimeMillis()
+        val zone = java.util.TimeZone.getDefault()
+        val console = state.logs.joinToString("\n")
+        val report = buildString {
+            appendLine("hnubl=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            appendLine("package=${app.packageName}")
+            appendLine("android_sdk=${android.os.Build.VERSION.SDK_INT}")
+            appendLine("device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+            appendLine("build=${android.os.Build.DISPLAY}")
+            appendLine("operation=${state.operation}; completed=${state.completed}; marker_ready=${state.completionMarkerReady}")
+            appendLine("selection=${state.request.encode()}")
+            appendLine("stage=${state.stage}")
+            appendLine("error=${state.error}")
+            runCatching {
+                @Suppress("DEPRECATION")
+                val updater = app.packageManager.getPackageInfo("com.hihonor.ouc", 0)
+                appendLine("updater=${updater.versionName} (${updater.longVersionCode})")
+            }.onFailure { appendLine("updater_metadata=${it.javaClass.simpleName}: ${it.message}") }
+        }
+        // Export is isolated from the OTA completion/result fields and never calls
+        // BEGIN, RESET, CONSUME, a reboot or a partition transaction.
+        OtaState.state = state.copy(busy = true, exportingDiagnostics = true, diagnosticsMessage = "正在收集 OTA 诊断日志…")
+        RunState.state = RunState.state.copy(busy = true)
+        viewModelScope.launch {
+            try {
+                val complete = withContext(Dispatchers.IO) {
+                    val result = OtaDiagnosticsArchive.collect(File(app.cacheDir, "ota-diagnostics"), report,
+                        console, clicked, zone) { command, output, errors -> RootShell.capture(command, output, errors, 45) }
+                    try {
+                        val expected = Payloads.sha256(result.archive)
+                        checkNotNull(app.contentResolver.openOutputStream(uri, "wt")) { "诊断文件打开失败" }.use { output ->
+                            result.archive.inputStream().use { it.copyTo(output) }
+                        }
+                        val digest = java.security.MessageDigest.getInstance("SHA-256")
+                        var bytes = 0L
+                        checkNotNull(app.contentResolver.openInputStream(uri)) { "诊断文件回读失败" }.use { input ->
+                            val buffer = ByteArray(65536)
+                            while (true) {
+                                val count = input.read(buffer); if (count < 0) break
+                                bytes += count; digest.update(buffer, 0, count)
+                            }
+                        }
+                        val actual = digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
+                        check(bytes == result.archive.length() && actual == expected) { "诊断文件校验失败，请重新导出" }
+                        result.rootEvidenceComplete
+                    } finally { result.archive.delete() }
+                }
+                OtaState.state = state.copy(diagnosticsMessage = if (complete) "OTA 诊断日志已导出，可直接发送此 ZIP 排查问题"
+                    else "诊断日志已导出，部分 Root 证据未取得；缺失原因已写入 ZIP")
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                OtaState.state = state.copy(diagnosticsMessage = "诊断日志导出失败：${error.message ?: error.javaClass.simpleName}")
+            } finally {
+                OtaState.state = state.copy(busy = false, exportingDiagnostics = false)
+                RunState.state = RunState.state.copy(busy = false)
+            }
+        }
+    }
     fun prepareSystemUpdate() {
         if (state.busy || RunState.state.busy || BackupState.state.busy) return
         // Reserve synchronously so repeated taps and service starts see the same busy state.

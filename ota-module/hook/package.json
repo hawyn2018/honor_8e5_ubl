@@ -1,10 +1,10 @@
 {
   "name": "hnubl-ota-agent",
-  "version": "2.9.2",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node test/policy.test.mjs && node test/version-policy.test.mjs && node test/agent-lifecycle.test.mjs && node test/native-slot-policy.test.mjs && node test/native-slot-locator.test.mjs && node test/native-slot-agent.test.mjs && node test/reboot-labels.test.mjs"
+    "test": "node test/agent-lifecycle.test.mjs && node test/cache-query.test.mjs && node test/cache-version-policy.test.mjs && node test/native-slot-agent.test.mjs && node test/native-slot-locator.test.mjs && node test/native-slot-policy.test.mjs && node test/policy.test.mjs && node test/reboot-context.test.mjs && node test/reboot-labels-manual-action.test.mjs && node test/reboot-labels-state-refresh.test.mjs && node test/reboot-labels.test.mjs && node test/version-policy.test.mjs"
   },
   "dependencies": {
     "frida-java-bridge": "7.0.13"

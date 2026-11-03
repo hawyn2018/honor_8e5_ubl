@@ -1,0 +1,36 @@
+package net.hawyn.hnubl.discovery;
+import com.android.tools.smali.dexlib2.*;import com.android.tools.smali.dexlib2.iface.*;import com.android.tools.smali.dexlib2.iface.instruction.*;import com.android.tools.smali.dexlib2.iface.reference.*;
+import com.android.tools.smali.dexlib2.immutable.*;import com.android.tools.smali.dexlib2.immutable.instruction.*;import com.android.tools.smali.dexlib2.immutable.reference.*;import com.android.tools.smali.dexlib2.rewriter.*;import com.android.tools.smali.dexlib2.writer.pool.DexPool;import com.google.gson.*;
+import java.io.*;import java.nio.file.*;import java.security.*;import java.util.*;import java.util.zip.*;
+/** A leftover real Proxy must not be mistaken for an actual payload entry. */
+public final class PayloadCallerDiscoveryTest {
+ private static void check(boolean b,String m){if(!b)throw new AssertionError(m);}
+ private static String key(MethodReference m){StringBuilder s=new StringBuilder(m.getDefiningClass()).append("->").append(m.getName()).append('(');for(CharSequence t:m.getParameterTypes())s.append(t);return s.append(')').append(m.getReturnType()).toString();}
+ private static String hash(File f)throws Exception{MessageDigest d=MessageDigest.getInstance("SHA-256");try(InputStream in=new FileInputStream(f)){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)d.update(b,0,n);}return HexFormat.of().formatHex(d.digest());}
+ private static File mutate(File input,Path output,Set<String> callers,Set<String> protocols,String preserve)throws Exception{
+  Files.createDirectories(output);int[] edits={0};DexRewriter rewrite=new DexRewriter(new RewriterModule(){@Override public Rewriter<Method> getMethodRewriter(Rewriters all){return new MethodRewriter(all){@Override public Method rewrite(Method method){return new RewrittenMethod(method){@Override public MethodImplementation getImplementation(){
+   MethodImplementation body=super.getImplementation();if(body==null||!callers.contains(key(method)))return body;List<Instruction> code=new ArrayList<>();
+   for(Instruction ins:body.getInstructions()){
+    if(ins instanceof ReferenceInstruction&&((ReferenceInstruction)ins).getReference() instanceof MethodReference){MethodReference m=(MethodReference)((ReferenceInstruction)ins).getReference();String signature=key(m).substring(key(m).indexOf("->")+2);
+     if(protocols.contains(signature)&&!signature.equals(preserve)){MethodReference changed=new ImmutableMethodReference(m.getDefiningClass(),"fixture_unused_"+m.getName(),m.getParameterTypes(),m.getReturnType());
+      if(ins instanceof RegisterRangeInstruction){RegisterRangeInstruction r=(RegisterRangeInstruction)ins;code.add(new ImmutableInstruction3rc(ins.getOpcode(),r.getStartRegister(),r.getRegisterCount(),changed));}
+      else {FiveRegisterInstruction r=(FiveRegisterInstruction)ins;code.add(new ImmutableInstruction35c(ins.getOpcode(),r.getRegisterCount(),r.getRegisterC(),r.getRegisterD(),r.getRegisterE(),r.getRegisterF(),r.getRegisterG(),changed));}edits[0]++;continue;
+     }
+    }code.add(ins);
+   }return new ImmutableMethodImplementation(body.getRegisterCount(),code,body.getTryBlocks(),body.getDebugItems());
+  }};}};}});
+  var dex=DexFileFactory.loadDexContainer(input,null);Map<String,Path> files=new LinkedHashMap<>();for(String name:dex.getDexEntryNames()){Path p=output.resolve(name);DexPool.writeTo(p.toString(),rewrite.getDexFileRewriter().rewrite(dex.getEntry(name).getDexFile()));files.put(name,p);}check(edits[0]>0,"Actual caller references did not change");File result=output.resolve("TEST-ONLY-UNSIGNED.apk").toFile();
+  try(ZipFile zip=new ZipFile(input);ZipOutputStream out=new ZipOutputStream(new FileOutputStream(result))){var all=zip.entries();while(all.hasMoreElements()){ZipEntry e=all.nextElement();String name=e.getName();if(e.isDirectory()||name.toUpperCase(Locale.ROOT).startsWith("META-INF/"))continue;out.putNextEntry(new ZipEntry(name));if(files.containsKey(name))Files.copy(files.get(name),out);else try(InputStream in=zip.getInputStream(e)){in.transferTo(out);}out.closeEntry();}}return result;
+ }
+ private static Set<String> definitions(File apk,Set<String> signatures)throws Exception{Set<String> found=new LinkedHashSet<>();var all=DexFileFactory.loadDexContainer(apk,null);for(String name:all.getDexEntryNames())for(ClassDef c:all.getEntry(name).getDexFile().getClasses())for(Method m:c.getMethods())if(signatures.contains(key(m).substring(key(m).indexOf("->")+2)))found.add(key(m));return found;}
+ public static void main(String[] args)throws Exception{
+  check(args.length==2,"APK NEW_OUTPUT_DIRECTORY");File input=new File(args[0]);Path out=Path.of(args[1]);check(!Files.exists(out),"Exclusive output required");Files.createDirectories(out);String before=hash(input);JsonObject baseline=JsonParser.parseString(OucDiscovery.discover(input)).getAsJsonObject();check(baseline.get("discovery_complete").getAsBoolean(),"Real input lacks critical hooks");
+  Set<String> callers=new LinkedHashSet<>(),protocols=new LinkedHashSet<>();for(JsonElement e:baseline.getAsJsonArray("hooks")){JsonObject h=e.getAsJsonObject();if(!h.get("role").getAsString().equals("payload_start"))continue;check(!h.getAsJsonArray("payload_callers").isEmpty(),"Actual caller evidence missing");for(JsonElement c:h.getAsJsonArray("payload_callers"))callers.add(c.getAsString());protocols.add(h.get("protocol_descriptor").getAsString());}
+  check(protocols.size()>1,"Needs actual independent payload API callers");Set<String> originals=definitions(input,protocols);
+  String keep=protocols.iterator().next();File positive=mutate(input,out.resolve("one-live-api"),callers,protocols,keep);JsonObject live=JsonParser.parseString(OucDiscovery.discover(positive)).getAsJsonObject();check(live.get("discovery_complete").getAsBoolean(),"One real API path should retain coverage");
+  int liveCount=0;for(JsonElement e:live.getAsJsonArray("hooks")){JsonObject h=e.getAsJsonObject();if(h.get("role").getAsString().equals("payload_start")){liveCount++;check(keep.equals(h.get("protocol_descriptor").getAsString()),"Unused leftover Proxy received a start hook");}}
+  check(liveCount>0,"No genuinely live API hook");File negative=mutate(input,out.resolve("all-proxies-unused"),callers,protocols,"");JsonObject unused=JsonParser.parseString(OucDiscovery.discover(negative)).getAsJsonObject();
+  check(originals.equals(definitions(negative,protocols)),"The negative fixture removed Proxy definitions instead of their callers");check(!unused.get("discovery_complete").getAsBoolean(),"Unused packaged Proxies falsely proved protection");check(unused.getAsJsonArray("critical_missing").asList().stream().anyMatch(e->e.getAsString().equals("payload_start")),"Missing real payload call not classified critical");
+  check(hash(input).equals(before),"Original APK changed");JsonObject report=new JsonObject();report.addProperty("passed",true);report.addProperty("inputSha256",before);report.addProperty("deviceOperations",false);report.add("oneLiveApi",live);report.add("unusedProxyCriticalMissing",unused.get("critical_missing"));report.addProperty("unchangedProtocolDefinitions",originals.size());Files.writeString(out.resolve("report.json"),new GsonBuilder().setPrettyPrinting().create().toJson(report));System.out.println("Payload real-caller DEX tests passed: "+out);
+ }
+}

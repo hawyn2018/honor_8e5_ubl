@@ -55,6 +55,10 @@ final class OtaMarker implements Closeable {
             }
             return response(false, 0, "DENY");
         } catch (IOException | RuntimeException failure) {
+            if (!"STATE".equals(command)) try {
+                OtaEventJournal.record("marker_transaction_failed", OtaEventJournal.fields("command", command,
+                    "exception_class", failure.getClass().getSimpleName(), "error", String.valueOf(failure.getMessage())));
+            } catch (RuntimeException | LinkageError ignored) { }
             return response(false, 0, "DENY");
         }
     }

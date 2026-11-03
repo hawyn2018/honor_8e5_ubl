@@ -24,12 +24,20 @@ final class DeferredSlotFiles implements DeferredSlotStore.Persistence, Closeabl
     DeferredSlotFiles() throws IOException { directory = SecureFs.privateMarkerDirectory(); }
 
     @Override public <T> T locked(DeferredSlotStore.Transaction<T> operation) throws IOException {
+        return operate(operation, true);
+    }
+
+    @Override public <T> T diagnostic(DeferredSlotStore.Transaction<T> operation) throws IOException {
+        return operate(operation, false);
+    }
+
+    private <T> T operate(DeferredSlotStore.Transaction<T> operation, boolean waitForLock) throws IOException {
         synchronized(this){if(closed)throw new IOException("Deferred slot store closed");transactions++;}
-        try{return transaction(operation);}
+        try{return transaction(operation, waitForLock);}
         finally{synchronized(this){transactions--;if(closed&&transactions==0)directory.close();}}
     }
 
-    private <T> T transaction(DeferredSlotStore.Transaction<T> operation) throws IOException {
+    private <T> T transaction(DeferredSlotStore.Transaction<T> operation, boolean waitForLock) throws IOException {
         FileDescriptor descriptor = SecureFs.openPrivateFile(directory, "deferred-slot.lock", OsConstants.O_RDWR, true);
         try (FileOutputStream lockStream = new FileOutputStream(descriptor)) {
             FileLock lock;
@@ -38,6 +46,7 @@ final class DeferredSlotFiles implements DeferredSlotStore.Persistence, Closeabl
                 try { lock = lockStream.getChannel().tryLock(); }
                 catch (OverlappingFileLockException busy) { lock = null; }
                 if (lock != null) break;
+                if (!waitForLock) throw new IOException("Local diagnostic registry busy; official activation already confirmed");
                 try { Thread.sleep(10); }
                 catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new IOException("Deferred slot transaction interrupted", interrupted); }
             }

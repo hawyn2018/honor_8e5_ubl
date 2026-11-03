@@ -1,4 +1,4 @@
-/** Shared, side-effect-free decisions; consumed only at the earliest reboot gate. */
+/** Shared, side-effect-free decisions; permission is consumed only at the final process-local reboot gate. */
 export function isAutomatic(mode, discovered = []) {
   const text = String(mode == null ? '' : mode).trim().toLowerCase();
   return discovered.some(value => String(value).toLowerCase() === text) ||
@@ -17,7 +17,7 @@ export function consumeAllows(reply) {
 }
 
 export function requiredReady(counts) {
-  return (counts.reboot_gate || 0) > 0 && (counts.manual_reboot_gate || 0) > 0 &&
+  return (counts.reboot_gate || 0) > 0 && (counts.reboot_terminal || 0) > 0 && (counts.reboot_continuation || 0) > 0 && (counts.manual_reboot_gate || 0) > 0 &&
     (counts.automatic_reboot_gate || 0) > 0 &&
     ((counts.countdown || 0) + (counts.countdown_timer || 0) > 0) &&
     // Completion notifications can be replayed after reopening the UI. At least
@@ -26,7 +26,7 @@ export function requiredReady(counts) {
 }
 
 export function isCriticalRole(role) {
-  return ['reboot_gate', 'countdown', 'countdown_timer', 'payload_start'].includes(role);
+  return ['reboot_gate', 'reboot_terminal', 'countdown', 'countdown_timer', 'payload_start'].includes(role);
 }
 
 export function readiness(critical, broker) {

@@ -68,6 +68,7 @@ data class OtaActions(
     val onWriteEfispOnly: () -> Unit = {},
     val onExportEfisp: () -> Unit = {},
     val onClearLogs: () -> Unit = {},
+    val onExportDiagnostics: () -> Unit = {},
     val onReturnToSystemUpdater: () -> Unit = {},
 )
 
@@ -262,6 +263,16 @@ fun OtaPage(state: OtaUiState, operationBusy: Boolean, actions: OtaActions, cont
                         Toast.makeText(context, "已复制全部日志", Toast.LENGTH_SHORT).show()
                     }, enabled = fullLog.isNotEmpty(), modifier = Modifier.weight(1f)) { Text("复制全部") }
                     Button(onClick = actions.onClearLogs, enabled = enabled && fullLog.isNotEmpty(), modifier = Modifier.weight(1f)) { Text("清空日志") }
+                }
+                Spacer(Modifier.height(10.dp))
+                Button(onClick = actions.onExportDiagnostics, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (state.exportingDiagnostics) "正在导出诊断日志…" else "导出 OTA 诊断日志")
+                }
+                Spacer(Modifier.height(6.dp))
+                OtaHint("收集完成标记、切槽计划、模块状态与详细事件，保存为 ZIP，便于远程排查。")
+                if (state.diagnosticsMessage.isNotBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    OtaHint(state.diagnosticsMessage)
                 }
             }
         }

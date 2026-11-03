@@ -119,12 +119,13 @@ public final class RootBroker {
         for (;;) {
             int value = input.read();
             if (value == '\n') break;
-            if (value == -1 || value < 'A' || value > 'Z' || bytes.size() == "CONSUME".length()) {
+            if (value == -1 || value < 32 || value > 126 || bytes.size() == 63) {
                 throw new IOException("OTA command rejected");
             }
             bytes.write(value);
         }
         String command = bytes.toString("US-ASCII");
+        if (command.startsWith("TRACE ")) { OtaClientTrace.parse(command); return command; }
         if (!command.equals("STATE") && !command.equals("RESET") && !command.equals("CONSUME") && !command.equals("BEGIN")) {
             throw new IOException("OTA command rejected");
         }

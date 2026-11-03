@@ -10,7 +10,7 @@
   </p>
   <p><strong>hnubl专为荣耀8e5设备解锁BL+假回锁适配的全功能解锁神器，目前已合入保留锁态OTA功能。</strong></p>
   <p>A full-featured bootloader unlock and simulated relock toolkit for HONOR 8e5 (Snapdragon 8 Elite Gen 5) devices,<br/>now with OTA support that preserves the configured lock state.</p>
-  <p><code>2.9.6</code> &nbsp;·&nbsp; Android / Miuix &nbsp;·&nbsp; <a href="LICENSE">AGPL-3.0-only</a> &nbsp;·&nbsp; Source-only releases</p>
+  <p><code>3.0.0</code> &nbsp;·&nbsp; Android / Miuix &nbsp;·&nbsp; <a href="LICENSE">AGPL-3.0-only</a> &nbsp;·&nbsp; Source-only releases</p>
   <p><a href="#简体中文"><strong>中文版</strong></a> &nbsp;|&nbsp; <a href="#english"><strong>English</strong></a></p>
 </div>
 
@@ -137,14 +137,20 @@ OTA 备份目录为：
 
 完整 OTA 修补外部来源失败时可确认使用内置 ABL 重试；仅刷写 / 导出失败会显示重试建议。请根据实际所选来源、备份和输出日志判断结果。
 
-### 2.9.6 更新重点
+### 3.0.0 更新重点
 
-- 软件更新完成页的按钮已识别且文字正确后，稳定轮询只在后台读取状态，相同状态不再重复扫描、读取或改写页面。
-- 滚动期间延后识别和文字更新；纯滚动不制造整树扫描，真实内容变化在停稳后合并处理。
-- 仅对曾匹配的少量标签使用标准 TextWatcher，兼容固定尺寸控件换字但不触发布局的情况；首次未匹配和监听缺失时保留受滚动保护的低频兜底。
-- 显示增强与实际重启门控分离，既有许可、OTA 事务和分区刷写逻辑保持。
+**修复保留锁态 OTA 已成功后，返回软件更新仍显示“继续流程”，或点击重启再次回到 hnubl 的问题。应用与配套模块同步为 3.0.0。**
 
-细节见 [2.9.6 完成页性能说明](docs/ota-2.9.6.md)、[OTA 返回与续接](docs/ota-2.9.2.md) 和 [文件来源及自定义 su](docs/app-logic-2.8.14.md)。
+- **完成文件决定业务许可。** `/data/adb/hnubl/freeotaok=1` 表示可获得一次手动续接许可；为 `0`、空或不存在时，入口显示“继续流程”并引导进入 hnubl。移除 2.9.9 错将补丁 `getStatus()` 与主 OTA 等待重启状态比较的 `==6` 门槛，本地 phase、旧启动记录和瞬时界面状态不增加完成条件。
+- **官方切槽与原流程续接。** 文件许可原子消费 `1→0` 后，直接调用真实官方 `setSlot()`；成功后交还原生重启流程。实际调用失败仍保留明确错误，许可已消费不等于切槽成功。
+- **只刷新必要的按钮状态。** 同一窗口恢复焦点、原点击处理返回后强制读取 STATE，在途强制刷新合并，旧回包和旧 UI 队列不覆盖新结果。稳定同值时不反复扫描整页或改写文字，既有滚动保护与固定尺寸文字监听保留。
+- **保留已有保护与适配。** 最终重启出口、手动／自动来源区分、弱身份异步意图、一次消费、目标进程反优化及延迟切槽沿用 2.9.9；提权、备份、分区操作、镜像修补核心与 KBL 保持上一版实现。
+
+**使用顺序：** 升级前在 OTA 页安装或更新模块 → 系统 OTA 安装完成且尚未重启 → 执行完整保留锁态 OTA → 按需要在 KernelSU 安装到未使用的槽位 → 返回软件更新，点击“立即重启”。仅刷写或导出 EFISP 不等同于完整 OTA 流程。
+
+用户已反馈本次问题设备修复成功；离线回归覆盖四份系统更新 APK、受控协议模拟及 12 套 JavaScript 测试，保留原标签 79 例并新增状态刷新 11 例。验证范围不代表所有机型、固件组合均已完成真机 OTA 测试。
+
+GitHub Release 仅提供源码，不附 APK、签名私钥或本地日志；项目许可继续为 **AGPL-3.0-only**，第三方许可与声明保留。详见 [3.0.0 完成文件与按钮刷新](docs/ota-3.0.0.md)、[完成页性能说明](docs/ota-2.9.6.md) 和 [OTA 返回与续接](docs/ota-2.9.2.md)。
 
 ---
 
@@ -250,14 +256,20 @@ OTA backups are saved in `Download/hnubl/hnubl_ota_backup_yyyyMMdd_HHmmss/`.
 
 **Flash EFISP only** updates EFISP separately. **Export EFISP** generates and saves an image without writing a partition. Neither replaces the full lock-state preservation workflow or grants its reboot permission. EFISP-only completion also offers **Return to system updater**; image export has no reboot action.
 
-### What's new in 2.9.6
+### What's new in 3.0.0
 
-- Once the updater's action label is correct, stable polling reads state in the background without repeatedly scanning, reading, or rewriting the UI.
-- Scrolling delays pending discovery and rendering. Pure scrolling does not request a full-tree scan; real content changes are merged after scrolling settles.
-- Standard TextWatchers observe only the small number of previously matched controls, including fixed-size text changes that do not trigger layout. Scroll-safe fallback checks cover initial discovery and unavailable listeners.
-- Label presentation remains separate from the existing permission gate, OTA transaction, and partition-writing logic.
+**Fixes the system updater still showing “Continue the process,” or returning to hnubl after a reboot request, even though hnubl’s lock-state-preserving OTA workflow had succeeded. The app and companion module are both 3.0.0.**
 
-See [2.9.6 performance notes](docs/ota-2.9.6.md), [OTA handoff and continuation](docs/ota-2.9.2.md), and [file roles / custom su](docs/app-logic-2.8.14.md) for implementation details.
+- **The completion file decides business permission.** `/data/adb/hnubl/freeotaok=1` grants one manual continuation. Zero, an empty file or a missing file keeps the “Continue the process” entry and routes the user to hnubl. The incorrect `getStatus()==6` patch-status precondition from 2.9.9 is removed; local phases, old boot records and transient UI state add no completion conditions.
+- **Official activation and original continuation.** Permission is atomically consumed from `1` to `0`, followed directly by the real official `setSlot()`. Genuine success returns control to the original reboot flow. Actual failures remain explicit; permission consumption is not a successful slot action.
+- **Refreshes only the necessary button state.** Regaining focus in the same window or returning from the original click handler forces a STATE read. In-flight forced refreshes coalesce, and stale replies or queued UI work cannot overwrite a newer result. Unchanged values avoid repeated whole-page discovery and text writes; scrolling protection and fixed-size text observation remain.
+- **Retains established protection and adaptation.** The final reboot outlet, manual/automatic origin handling, weak-identity asynchronous intent, single consumption, target-process deoptimization and deferred activation retain the 2.9.9 implementation. Privilege handling, backups, partition operations, the image-patching core and KBL retain the previous implementation.
+
+**Workflow:** install or update the module before upgrading → let the system OTA finish installing without rebooting → complete hnubl’s full lock-state-preserving OTA workflow → use KernelSU’s Install to inactive slot when needed → return to the system updater and choose “Restart now.” Flashing or exporting EFISP alone does not complete the OTA workflow.
+
+The user has confirmed the fix on the affected device. Offline regression covers four updater APK versions, controlled protocol simulations and 12 JavaScript suites, retaining the 79 existing label cases and adding 11 state-refresh cases. This does not imply physical-device OTA testing across every model or firmware combination.
+
+GitHub Releases are source-only, without APKs, signing private keys or local logs. Project-owned code remains **AGPL-3.0-only**, with third-party licenses and notices retained. See [3.0.0 marker and button updates](docs/ota-3.0.0.md#english), [completion-page performance](docs/ota-2.9.6.md), and [OTA handoff and continuation](docs/ota-2.9.2.md).
 
 ---
 

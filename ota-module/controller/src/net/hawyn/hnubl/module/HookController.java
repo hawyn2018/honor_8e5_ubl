@@ -29,6 +29,8 @@ public final class HookController {
     private JSONObject mapping;
     private ApkMetadata mappingMetadata;
     private String mappingError = "";
+    private CriticalMappingPolicy.Failure criticalMappingFailure;
+    private final CriticalMappingPolicy.StopThrottle criticalStopThrottle = new CriticalMappingPolicy.StopThrottle();
     private String metadataError = "";
     private boolean metadataAttempted;
     private long nextMetadataCheck;
@@ -46,7 +48,6 @@ public final class HookController {
     private final DeferredSlotStore deferredSlots;
     private final TypedSlotCommitter slotCommitter;
     private final NativeSlotRuntime nativeSlots;
-    private final boolean fallbackCanConsume;
     private final String nativeInitWarning;
     private ControllerReadiness readiness = new ControllerReadiness(false);
     private volatile String terminalError = "";
@@ -74,22 +75,27 @@ public final class HookController {
         this.module = module.getCanonicalFile();
         this.activationId = activationId;
         this.engineSha = engineSha.toLowerCase(Locale.ROOT);
+        try { OtaEventJournal.context(activationId, this.engineSha, null, null); }
+        catch (RuntimeException | LinkageError ignored) { }
         // Capture once per activation. Saving a WebUI choice cannot silently
         // change a running updater; boot/Apply prepares a new matching snapshot.
         this.options = OtaOptions.production().requireActive(activationId);
-        DeferredSlotFiles files=null;DeferredSlotStore slots=null;TypedSlotCommitter committer=null;NativeSlotRuntime runtime=null;
-        boolean noPending=false;String nativeWarning="";
+        DeferredSlotFiles files=null;DeferredSlotStore slots=null;TypedSlotCommitter committer=new TypedSlotCommitter();NativeSlotRuntime runtime=null;
+        String nativeWarning="";
         try{
             files=new DeferredSlotFiles();
-            noPending=files.locked(access->access.read()==null);
             BootIdentity boot=BootIdentity.current();
-            slots=new DeferredSlotStore(files,boot.bootId,boot.sourceSlot);
-            committer=new TypedSlotCommitter(boot);
+            try { OtaEventJournal.context(activationId,this.engineSha,boot.bootId,boot.sourceSlot); }
+            catch (RuntimeException | LinkageError ignored) { }
+            slots=new DeferredSlotStore(files,boot.bootId,boot.sourceSlot,OtaEventJournal::record);
             runtime=new NativeSlotRuntime(this.module,activationId,slots);
-        }catch(IOException | LinkageError optional){nativeWarning="Native slot enhancement unavailable; original slot flow retained when no pending record: "+optional;}
+        }catch(IOException | LinkageError optional){nativeWarning="Optional native slot enhancement unavailable; file permission and original updater flow retained: "+optional;}
         if(slots==null&&files!=null){files.close();files=null;}
         this.deferredFiles=files;this.deferredSlots=slots;this.slotCommitter=committer;this.nativeSlots=runtime;
-        this.fallbackCanConsume=noPending;this.nativeInitWarning=nativeWarning;
+        this.nativeInitWarning=nativeWarning;
+        try { OtaEventJournal.record("controller_slot_initialization", OtaEventJournal.fields(
+            "native_available", slots != null, "reason", nativeWarning)); }
+        catch (RuntimeException | LinkageError ignored) { }
     }
 
     public static void main(String[] args) throws Exception {
@@ -218,7 +224,8 @@ public final class HookController {
                         if (!sessions.containsKey(entry.getKey())) {
                             Session session = new Session(entry.getKey(), entry.getValue());
                             sessions.put(entry.getKey(), session);
-                            session.start();
+                            startCriticalSession(session::start, failure ->
+                                failSession(session, "Critical injector launch failed: " + failure));
                         }
                     }
                     boolean ready = !sessions.isEmpty();
@@ -236,15 +243,20 @@ public final class HookController {
             } catch (Throwable failure) {
                 if (stopping) break;
                 synchronized (this) { readiness.invalidate(); }
+                if (failure instanceof CriticalMappingPolicy.Failure) {
+                    updaterRunning = stopUnprotectedUpdater((CriticalMappingPolicy.Failure) failure);
+                } else synchronized (this) { phase = "pending"; }
                 writeStatus(false, "钩子适配未就绪：" + failure.toString());
-                // A transport/discovery diagnostic is not a request to stop OUC.
-                // Existing in-process restart gates remain closed while pending.
-                synchronized (this) {
-                    phase = "pending";
-                }
+                // Optional hooks, cache/PM I/O and transport failures never select the stop policy.
             }
             Thread.sleep(updaterRunning ? 1_000 : 2_000);
         }
+    }
+
+    interface SessionStarter { void start() throws Exception; }
+    static void startCriticalSession(SessionStarter starter, java.util.function.Consumer<Throwable> failed) {
+        try { starter.start(); }
+        catch (Exception | LinkageError failure) { failed.accept(failure); }
     }
 
     private synchronized void refreshBroker() {
@@ -254,33 +266,46 @@ public final class HookController {
         nextBrokerAttempt = now + TimeUnit.SECONDS.toNanos(2);
         if (otaTransport != null) { otaTransport.close(); otaTransport = null; }
         try {
-            otaTransport = new OtaTransport(context,deferredSlots,slotCommitter,fallbackCanConsume,nativeInitWarning);
+            otaTransport = new OtaTransport(context,deferredSlots,slotCommitter,nativeInitWarning);
             brokerError = "";
             warnings.remove("ota_transport");
         } catch (Exception pending) {
             String previous = brokerError;
             brokerError = pending.toString();
             warnings.put("ota_transport", brokerError);
-            if (!previous.equals(brokerError)) System.err.println("[OUC transport pending] " + brokerError);
+            if (!previous.equals(brokerError)) {
+                System.err.println("[OUC transport pending] " + brokerError);
+                try { OtaEventJournal.record("ota_transport_initialization_error", OtaEventJournal.fields(
+                    "exception_class", pending.getClass().getSimpleName(), "error", String.valueOf(pending.getMessage()))); }
+                catch (RuntimeException | LinkageError ignored) { }
+            }
         }
     }
 
     private boolean refreshMapping(boolean forceMetadata) throws Exception {
         long now = System.nanoTime();
         if (!forceMetadata && metadataAttempted && now < nextMetadataCheck) {
+            if (mapping == null && criticalMappingFailure != null) throw criticalMappingFailure;
             if (!metadataError.isEmpty()) throw new IOException(metadataError);
-            if (mapping == null) throw new IOException(mappingError);
+            if (mapping == null) throwMappingUnavailable();
             return false;
         }
         metadataAttempted = true;
         nextMetadataCheck = now + METADATA_INTERVAL;
         ApkMetadata current;
         try { current = readMetadata(); metadataError = ""; }
-        catch (Exception failure) { metadataError = failure.toString(); throw failure; }
+        catch (Exception failure) {
+            metadataError = failure.toString();
+            // A transient PM read must not erase an already confirmed failed installation.
+            if (mapping == null && criticalMappingFailure != null) throw criticalMappingFailure;
+            throw failure;
+        }
         if (current.equals(mappingMetadata)) {
-            if (mapping == null) throw new IOException(mappingError);
+            if (mapping == null) throwMappingUnavailable();
             return false;
         }
+        criticalMappingFailure = null;
+        criticalStopThrottle.clear();
         synchronized (this) {
             if (stopping) return false;
             readiness.invalidate();
@@ -293,8 +318,10 @@ public final class HookController {
             writeStatus(false, "软件更新版本变化，重新定位功能");
         }
         boolean scanned = false;
+        String analyzedHash = "";
         try {
             String hash = sha256(current.apk);
+            analyzedHash = hash;
             JSONObject discovered = hash.equals(apkHash) && validMapping(mapping, hash) ? mapping :
                 readDiscoveryCache(hash);
             boolean cached = discovered != null;
@@ -303,13 +330,24 @@ public final class HookController {
                 scanCount++;
                 discovered = new JSONObject(OucDiscovery.discover(current.apk));
             }
-            if (!validMapping(discovered, hash)) throw new IOException("Incomplete or mismatched semantic discovery: " + discovered);
             // Do not publish a mapping made from an APK replaced during analysis.
             if (!current.equals(readMetadata())) throw new IOException("Updater APK changed during semantic analysis");
+            if (scanned) {
+                CriticalMappingPolicy.Failure critical = CriticalMappingPolicy.inspect(discovered, hash);
+                if (critical != null) {
+                    try { atomic(new File(STATE, "discovery.json"), discovered.toString(2)); }
+                    catch (Exception diagnostic) { System.err.println("[OUC critical discovery] export snapshot unavailable: " + diagnostic); }
+                    OtaEventJournal.record("critical_mapping_failure", OtaEventJournal.fields("code", critical.code, "reason", critical.getMessage()));
+                    throw critical;
+                }
+            }
+            if (!validMapping(discovered, hash)) throw new IOException("Incomplete or mismatched semantic discovery: " + discovered);
             if (stopping) throw new InterruptedException("Controller disposed during semantic analysis");
             mapping = discovered;
             mappingMetadata = current;
             mappingError = "";
+            criticalMappingFailure = null;
+            criticalStopThrottle.clear();
             apkHash = hash; appVersion = current.version; targetUid = current.uid;
             discoveryCached = cached;
             atomic(new File(STATE, "discovery.json"), mapping.toString(2));
@@ -321,6 +359,9 @@ public final class HookController {
             mapping = null;
             mappingMetadata = current;
             mappingError = failure.toString();
+            criticalMappingFailure = failure instanceof CriticalMappingPolicy.Failure ? (CriticalMappingPolicy.Failure)failure : null;
+            if (!analyzedHash.isEmpty()) apkHash = analyzedHash;
+            discoveryCached = false;
             appVersion = current.version; targetUid = current.uid;
             throw failure;
         } finally {
@@ -330,12 +371,47 @@ public final class HookController {
         }
     }
 
+    private void throwMappingUnavailable() throws IOException {
+        if (criticalMappingFailure != null) throw criticalMappingFailure;
+        throw new IOException(mappingError);
+    }
+
+    /** An explicit failed critical installation is not a file-permission decision. */
+    private synchronized boolean stopUnprotectedUpdater(CriticalMappingPolicy.Failure failure) {
+        if (stopping) return false;
+        phase = failure.code;
+        Map<Integer, Long> alive = null;
+        try { alive = updaterProcesses(); }
+        catch (IOException | RuntimeException | LinkageError observation) {
+            OtaEventJournal.record("critical_mapping_observation_error", OtaEventJournal.fields("code", failure.code, "error", observation.toString()));
+        }
+        boolean running = alive == null || !alive.isEmpty();
+        if (!criticalStopThrottle.due(alive, System.nanoTime())) return running;
+        for (Session session : sessions.values()) {
+            try { session.stop(); }
+            catch (RuntimeException | LinkageError cleanup) {
+                OtaEventJournal.record("critical_mapping_cleanup_error", OtaEventJournal.fields("code", failure.code, "error", cleanup.toString()));
+            }
+        }
+        sessions.clear();
+        try {
+            command("am", "force-stop", "--user", "0", TARGET);
+            OtaEventJournal.record("critical_mapping_stop", OtaEventJournal.fields("code", failure.code,
+                "reason", failure.getMessage(), "response_ok", true));
+        } catch (Exception | LinkageError stopFailure) {
+            OtaEventJournal.record("critical_mapping_stop", OtaEventJournal.fields("code", failure.code,
+                "reason", failure.getMessage(), "response_ok", false, "error", stopFailure.toString()));
+        }
+        return running;
+    }
+
     private static boolean validMapping(JSONObject candidate, String apkHash) {
         return candidate != null && Integer.valueOf(MAPPING_SCHEMA).equals(candidate.opt("schema")) &&
             TARGET.equals(candidate.optString("package")) && apkHash.equals(candidate.optString("apk_sha256")) &&
             Boolean.TRUE.equals(candidate.opt("discovery_complete")) &&
             (!candidate.has("ready") || Boolean.TRUE.equals(candidate.opt("ready"))) &&
-            candidate.optJSONArray("hooks") != null && candidate.optJSONArray("hooks").length() > 0;
+            candidate.optJSONArray("hooks") != null && candidate.optJSONArray("hooks").length() > 0 &&
+            CriticalMappingPolicy.coversCriticalRoles(candidate);
     }
 
     private JSONObject readDiscoveryCache(String apkHash) {
@@ -598,7 +674,9 @@ public final class HookController {
         volatile String error = "";
         volatile Process injector;
         final AgentReadiness protection = new AgentReadiness();
-        Session(int pid, long startTime) { this.pid = pid; this.startTime = startTime; }
+        final SessionEventJournal journal;
+        Session(int pid, long startTime) { this.pid = pid; this.startTime = startTime;
+            this.journal = new SessionEventJournal(pid,startTime,activationId,engineSha,OtaEventJournal::record); }
         void start() throws Exception {
             JSONObject parameters = new JSONObject().put("mapping", mapping).put("activation_id", activationId)
                 .put("forceFullPackage", options.forceFullPackage)
@@ -608,6 +686,7 @@ public final class HookController {
                 "-s", new File(module, "agent.bundle.js").getPath(), "-P", parameters.toString())
                 .redirectErrorStream(true).start();
             injector = process;
+            journal.start();
             everAttached = true;
             Thread monitor = new Thread(() -> {
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
@@ -625,6 +704,7 @@ public final class HookController {
                             synchronized (HookController.this) {
                                 if (stopped || stopping || sessions.get(pid) != this) return;
                                 protection.accept(event);
+                                journal.accept(event);
                                 if (!protection.error.isEmpty()) { failSession(this, protection.error); return; }
                             }
                         } catch (Exception ignored) { /* Native diagnostic, not a readiness event. */ }
@@ -632,7 +712,10 @@ public final class HookController {
                     int result = process.waitFor();
                     synchronized (HookController.this) {
                         if (stopped || stopping || sessions.get(pid) != this) return;
-                        if (protection.completed(result, sameProcess(this, "injector-exit")) && error.isEmpty()) {
+                        boolean matching = sameProcess(this, "injector-exit");
+                        boolean protectedSession = protection.completed(result, matching) && error.isEmpty();
+                        journal.injectorExit(result,matching,protectedSession);
+                        if (protectedSession) {
                             // -e detached the host only after init resolved. The
                             // hooks now live in the updater until this PID exits.
                             eternalized = true; ready = true;
@@ -649,6 +732,7 @@ public final class HookController {
             monitor.setDaemon(true); monitor.start();
         }
         void stop() {
+            journal.end(error.isEmpty()?"controller_cleanup_or_target_exit":"session_failed");
             stopped = true; ready = false;
             Process process = injector;
             injector = null;
@@ -667,15 +751,18 @@ public final class HookController {
         if (stopping || session.stopped || sessions.get(session.pid) != session) return;
         session.ready = false;
         session.error = error;
+        session.journal.failure(error);
         lastHookError = error;
         readiness.invalidate();
         // The lock serializes failure cleanup with controller disposal. An old
         // monitor cannot issue am after ModuleMain has disposed this controller.
         boolean alive = sameProcess(session, "failure-cleanup");
-        session.stop();
+        try { session.stop(); }
+        catch (RuntimeException | LinkageError cleanup) { session.journal.failure("Critical session cleanup failed: " + cleanup); }
         try { writeStatus(false, error); } catch (Exception ignored) {}
         if (alive && !stopping) {
-            try { command("am", "force-stop", "--user", "0", TARGET); } catch (Exception ignored) {}
+            try { command("am", "force-stop", "--user", "0", TARGET); session.journal.targetStop(true,"critical_session_failure",null); }
+            catch (Exception | LinkageError stopError) { session.journal.targetStop(false,"critical_session_failure",stopError.toString()); }
         }
     }
 
@@ -712,6 +799,8 @@ public final class HookController {
             .put("engine_hash", engineSha).put("discovery_cached", discoveryCached).put("scan_count", scanCount)
             .put("force_full_package", options.forceFullPackage)
             .put("process_discovery_source", processDiscoverySource);
+        status.put("critical_mapping_failure", criticalMappingFailure != null)
+            .put("critical_mapping_reason", criticalMappingFailure == null ? "" : criticalMappingFailure.code);
         org.json.JSONArray pids = new org.json.JSONArray();
         List<Integer> ordered = new ArrayList<>(sessions.keySet()); Collections.sort(ordered);
         ordered.forEach(pids::put); status.put("pids", pids);
@@ -731,7 +820,9 @@ public final class HookController {
         if (everAttached && explicitReplacement) {
             // -e means killing an injector is not an unload. Stop the target once
             // here, before ModuleMain launches a replacement controller.
-            try { command("am", "force-stop", "--user", "0", TARGET); } catch (Exception ignored) {}
+            try { command("am", "force-stop", "--user", "0", TARGET);
+                OtaEventJournal.record("controller_target_stop", OtaEventJournal.fields("phase", "controller_replacement", "response_ok", true)); }
+            catch (Exception stopError) { OtaEventJournal.record("controller_target_stop", OtaEventJournal.fields("phase", "controller_replacement", "response_ok", false, "error", stopError.toString())); }
         }
         sessions.clear();
         if (otaTransport != null) { otaTransport.close(); otaTransport = null; }

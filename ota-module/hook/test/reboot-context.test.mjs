@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import {createRebootContext} from '../src/reboot-context.js';
+let thread='a',saved=new WeakMap(),warnings=[];const c=createRebootContext({threadId:()=>thread,remember:(v,k)=>saved.set(v,k),recall:v=>{const k=saved.get(v);saved.delete(v);return k;},warn:(m,e)=>warnings.push([m,e])});
+assert.equal(c.current(),'unknown');
+c.enter('manual',()=>{assert.equal(c.current(),'manual');c.enter('unknown',()=>assert.equal(c.current(),'manual'));});assert.equal(c.current(),'unknown');
+const expected=new Error('native');assert.throws(()=>c.enter('manual',()=>{throw expected;}),e=>e===expected);assert.equal(c.current(),'unknown');
+c.enter('automatic',()=>c.enter('manual',()=>assert.equal(c.current(),'automatic')));
+c.enter('manual',()=>c.enter('automatic',()=>assert.equal(c.current(),'automatic')));assert.equal(c.current(),'unknown');
+const one={},two={};c.enter('manual',()=>c.capture(one));c.enter('automatic',()=>c.capture(two));
+thread='b';c.resume(one,()=>assert.equal(c.current(),'manual'));assert.equal(c.current(),'unknown');
+c.resume(one,()=>assert.equal(c.current(),'unknown'));c.resume(two,()=>assert.equal(c.current(),'automatic'));
+c.enter('manual',()=>{thread='c';assert.equal(c.current(),'unknown');thread='b';assert.equal(c.current(),'manual');});
+c.capture(one);c.resume(one,()=>assert.equal(c.current(),'unknown'));
+const broken=createRebootContext({threadId:()=>thread,remember(){throw expected;},recall(){throw expected;},warn:(m,e)=>warnings.push([m,e])});
+broken.enter('manual',()=>broken.capture(one));broken.resume(one,()=>assert.equal(broken.current(),'unknown'));assert.equal(warnings.length,2);
+assert.deepEqual(Object.keys(c).sort(),['capture','current','enter','resume']);
+console.log('Reboot origin scopes, automatic priority, one-shot weak retrieval and cleanup checks passed (no grant or broker API)');

@@ -39,6 +39,8 @@ public final class DiscoveryCompatibilityTest {
             require(baseline.get("discovery_complete").getAsBoolean(),"Original discovery incomplete");
             verifyNativeNoUpdate(original,baseline);
             VersionCacheDiscoveryTest.verify(original,baseline);
+            EngineLifecycleDiscoveryTest.verify(original,baseline);
+            TerminalRebootDiscoveryTest.verify(original,baseline);
             deriveRenames(original,baseline);
             require(typeNames.size()>0,"No application classes eligible for rename");
             require(methodNames.size()>0,"No non-protocol methods eligible for rename");
@@ -52,6 +54,8 @@ public final class DiscoveryCompatibilityTest {
             require(changed.get("discovery_complete").getAsBoolean(),"Mutated discovery incomplete");
             verifyNativeNoUpdate(mutated,changed);
             VersionCacheDiscoveryTest.verify(mutated,changed);
+            EngineLifecycleDiscoveryTest.verify(mutated,changed);
+            TerminalRebootDiscoveryTest.verify(mutated,changed);
             require(roleCounts(baseline).equals(roleCounts(changed)),"Role coverage/count changed");
             verifyRenamedHooks(baseline,changed);
             require(originalReferences.equals(rewrittenReferences),"An invoke reference was lost or not rewritten");
@@ -73,6 +77,7 @@ public final class DiscoveryCompatibilityTest {
             report.put("protocolMethodNamesPreserved",true);report.put("deviceOperations",false);
             report.put("nativeNoUpdateCallbackAndHandlerEdgesVerified",true);
             report.put("nativeCacheListCountUriEvidenceVerified",true);
+            report.put("vendorEngineLifecycleRenamedAndRediscovered",true);
             report.put("limitations",Arrays.asList("Not a real older updater APK", "No runtime execution or ART-hook verification", "No control-flow/instruction-body mutation", "Unsigned fixture must not be installed", "Valid DEX tables remain canonically sorted as required by DEX"));
             write(out.resolve("report.json"),OucDiscovery.json(report));
             System.out.println(OucDiscovery.json(report));
@@ -104,6 +109,21 @@ public final class DiscoveryCompatibilityTest {
             boolean protocol=method.startsWith("<")||method.startsWith("on")||protocolNames.contains(method);
             if(!protocol && !isOverride(m,classes) && !methodNames.containsKey(methodKey))
                 methodNames.put(methodKey,"probe_"+(++nextMethod));
+        }
+        for(JsonElement element:baseline.getAsJsonArray("reboot_continuations")) {
+            String owner=descriptor(element.getAsJsonObject().get("class_name").getAsString());
+            require(classes.containsKey(owner),"Actual reboot continuation type missing");
+            if(!typeNames.containsKey(owner))typeNames.put(owner,"Lhnubl/compat/mutation/Target"+(++nextClass)+";");
+        }
+        JsonObject engine=baseline.getAsJsonObject("engine_lifecycle");
+        require(engine!=null&&!engine.isEmpty(),"Actual vendor engine lifecycle absent");
+        String engineOwner=descriptor(engine.get("class_name").getAsString());
+        if(!typeNames.containsKey(engineOwner))typeNames.put(engineOwner,"Lhnubl/compat/mutation/Target"+(++nextClass)+";");
+        for(String role:List.of("factory","start","stop")) {
+            JsonObject method=engine.getAsJsonObject(role).deepCopy();method.addProperty("class_name",engine.get("class_name").getAsString());
+            String target=hookKey(method);require(methods.containsKey(target),"Native lifecycle target missing: "+target);
+            require(!isOverride(methods.get(target),classes),"Lifecycle target unexpectedly implements an external protocol");
+            if(!methodNames.containsKey(target))methodNames.put(target,"probe_"+(++nextMethod));
         }
         for(JsonElement element:baseline.getAsJsonArray("hooks")) {
             JsonObject hook=element.getAsJsonObject();if(!hook.get("role").getAsString().equals("version_response"))continue;
@@ -206,6 +226,17 @@ public final class DiscoveryCompatibilityTest {
                 require(found,"Renamed native no-update callback not rediscovered");
             }
         }
+        Set<String> continuations=new HashSet<>();for(JsonElement item:after.getAsJsonArray("reboot_continuations"))continuations.add(descriptor(item.getAsJsonObject().get("class_name").getAsString()));
+        for(JsonElement item:before.getAsJsonArray("reboot_continuations"))require(continuations.contains(rewriteType(descriptor(item.getAsJsonObject().get("class_name").getAsString()))),"Renamed original reboot Runnable missing");
+        JsonObject oldEngine=before.getAsJsonObject("engine_lifecycle"),newEngine=after.getAsJsonObject("engine_lifecycle");
+        require(newEngine!=null&&!newEngine.isEmpty(),"Renamed lifecycle missing");
+        require(descriptor(newEngine.get("class_name").getAsString()).equals(rewriteType(descriptor(oldEngine.get("class_name").getAsString()))),"Lifecycle owner was not renamed");
+        for(String role:List.of("factory","start","stop")) {
+            JsonObject oldMethod=oldEngine.getAsJsonObject(role).deepCopy(),newMethod=newEngine.getAsJsonObject(role).deepCopy();
+            oldMethod.addProperty("class_name",oldEngine.get("class_name").getAsString());newMethod.addProperty("class_name",newEngine.get("class_name").getAsString());
+            require(hookKey(newMethod).equals(rewriteMethodKey(hookKey(oldMethod))),"Lifecycle method not rediscovered after rename: "+role);
+        }
+        for(String property:List.of("control_property","counter_property"))require(oldEngine.get(property).equals(newEngine.get(property)),"Protocol property key changed during symbol-only mutation");
     }
     private static void verifyNativeNoUpdate(File apk,JsonObject mapping)throws Exception {
         Map<String,Method> methods=new HashMap<>();

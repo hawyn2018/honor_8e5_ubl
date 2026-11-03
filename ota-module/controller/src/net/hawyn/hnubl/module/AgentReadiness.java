@@ -22,7 +22,16 @@ final class AgentReadiness {
             return;
         }
         if (!"ready".equals(kind) && !"critical_ready".equals(kind)) return;
-        criticalReady = Boolean.TRUE.equals(event.opt("critical_ready"));
+        boolean criticalDeclared = Boolean.TRUE.equals(event.opt("critical_ready"));
+        JSONObject counts = event.optJSONObject("counts");
+        boolean actualTerminal = Boolean.TRUE.equals(event.opt("deoptimized")) && Boolean.TRUE.equals(event.opt("terminal_ready")) &&
+            Boolean.TRUE.equals(event.opt("continuation_ready")) && counts != null && positive(counts.opt("reboot_terminal")) && positive(counts.opt("reboot_continuation"));
+        criticalReady = criticalDeclared && actualTerminal;
+        if (criticalDeclared && !actualTerminal) {
+            error = "Critical terminal/continuation/deoptimization installation proof is incomplete";
+            declaredReady = false;
+            return;
+        }
         brokerReady = Boolean.TRUE.equals(event.opt("broker_ready"));
         org.json.JSONArray values = event.optJSONArray("warnings");
         if (values != null) for (int i = 0; i < values.length(); i++) warnings.add(String.valueOf(values.opt(i)));
@@ -32,5 +41,8 @@ final class AgentReadiness {
 
     boolean completed(int exitCode, boolean sameProcess) {
         return exitCode == 0 && sameProcess && declaredReady && error.isEmpty();
+    }
+    private static boolean positive(Object value) {
+        return value instanceof Number && ((Number)value).longValue() > 0 && ((Number)value).doubleValue() == (double)((Number)value).longValue();
     }
 }

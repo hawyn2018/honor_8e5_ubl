@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {createRebootLabelController,isManualRestartText} from '../src/reboot-labels.js';
+import {createRebootContext} from '../src/reboot-context.js';
+let tests=0;function test(name,fn){fn();tests++;console.log('PASS '+name);}
+function fixture(bridge=true){const views=[{text:'立即重启',visible:true,enabled:true,clickable:true,listener:true},{text:'下载',visible:true,enabled:true,clickable:true,listener:true}];let callbacks=0,reads=0;const queue=[];const c=createRebootContext({threadId:()=>1,remember(){},recall(){}});
+const p={weak:v=>({get:()=>v}),same:(a,b)=>a===b,read:v=>{reads++;return {...v};},write:(v,t)=>v.text=t,scan:owner=>owner.views.map(v=>({...v,view:v,manual:isManualRestartText(v.text)})),main:fn=>fn(),background:fn=>{queue.push(fn);return queue.length;},later:()=>1,cancel(){},now:()=>0,state:()=>({ok:true,state:0}),warn(){},...(bridge?{manualAction:fn=>{callbacks++;return c.enter('manual',fn);}}:{})};
+const labels=createRebootLabelController(p);labels.resume({views});while(queue.length)queue.shift()();return {labels,views,c,get callbacks(){return callbacks;},get reads(){return reads;}};}
+test('confirmed Continue control restores native text and marks only the real click scope manual',()=>{const f=fixture();assert.equal(f.views[0].text,'继续流程');let calls=0;assert.equal(f.labels.aroundClick(f.views[0],()=>{calls++;assert.equal(f.c.current(),'manual');assert.equal(f.views[0].text,'立即重启');return 42;}),42);assert.equal(calls,1);assert.equal(f.callbacks,1);assert.equal(f.c.current(),'unknown');});
+test('unrelated download control retains its original callback without manual provenance',()=>{const f=fixture();assert.equal(f.labels.aroundClick(f.views[1],()=>{assert.equal(f.c.current(),'unknown');return 8;}),8);assert.equal(f.callbacks,0);});
+test('native text reuse before the next layout cannot mark Download as a restart',()=>{const f=fixture();f.views[0].text='下载';f.labels.aroundClick(f.views[0],()=>assert.equal(f.c.current(),'unknown'));assert.equal(f.callbacks,0);});
+test('automatic origin overrides a nested recognized restart click',()=>{const f=fixture();f.c.enter('automatic',()=>f.labels.aroundClick(f.views[0],()=>assert.equal(f.c.current(),'automatic')));assert.equal(f.c.current(),'unknown');});
+test('native exception and callback count survive the optional bridge exactly once',()=>{const f=fixture(),error=new Error('native');let calls=0;assert.throws(()=>f.labels.aroundClick(f.views[0],()=>{calls++;throw error;}),e=>e===error);assert.equal(calls,1);assert.equal(f.c.current(),'unknown');});
+test('missing optional bridge retains original label and callback behavior',()=>{const f=fixture(false);let calls=0;assert.equal(f.labels.aroundClick(f.views[0],()=>++calls),1);assert.equal(calls,1);assert.equal(f.callbacks,0);});
+console.log(tests+' manual-action bridge checks passed; no marker mutation, slot or reboot operation');

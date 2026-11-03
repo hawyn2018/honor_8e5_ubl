@@ -96,6 +96,9 @@ class MainActivity : ComponentActivity() {
     private val exportOtaEfisp = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         if (uri != null && canOperate) otaModel.exportEfisp(uri)
     }
+    private val exportOtaDiagnostics = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null && canOperate) otaModel.exportDiagnostics(uri)
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         pendingWirelessAction = savedInstanceState?.getString("wireless_action") ?: WirelessService.PREPARE
@@ -163,6 +166,7 @@ class MainActivity : ComponentActivity() {
                                             onWriteEfispOnly = { operate { otaModel.onWriteEfispOnly() } },
                                             onExportEfisp = { operate { exportOtaEfisp.launch("efisp.img") } },
                                             onClearLogs = { operate { otaModel.clearLogs() } },
+                                            onExportDiagnostics = { operate { exportOtaDiagnostics.launch(dev.honor.bootforge.core.OtaDiagnosticsArchive.fileName()) } },
                                             onReturnToSystemUpdater = { operate { otaModel.returnToSystemUpdater() } },
                                         ), padding)
                                     },

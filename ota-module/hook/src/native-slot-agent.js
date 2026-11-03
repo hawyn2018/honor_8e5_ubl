@@ -9,10 +9,27 @@ let replacedAddress = null;
 const listeners = [], warnings = [];
 let sequence = 0;
 
+let nativeLog = null, logLookupAttempted = false;
+
+// Diagnostic-only: never retries a transaction or writes completion evidence.
+function emitNative(item) {
+  const record = {engine_pid: Process.id, ...item};
+  try { send(record); } catch (_) {}
+  try {
+    if (!logLookupAttempted) {
+      logLookupAttempted = true;
+      const library = Process.getModuleByName('liblog.so');
+      nativeLog = new NativeFunction(library.getExportByName('__android_log_write'), 'int', ['int', 'pointer', 'pointer']);
+    }
+    if (nativeLog !== null)
+      nativeLog(4, Memory.allocUtf8String('hnubl-ota'), Memory.allocUtf8String(JSON.stringify(record)));
+  } catch (_) { /* Logging never changes the original native callback. */ }
+}
+
 function warning(message, failure) {
   const item = {message: String(message), details: failure == null ? '' : String(failure)};
   warnings.push(item);
-  try { send({event: 'native_warning', ...item}); } catch (_) {}
+  try { emitNative({event: 'native_warning', ...item}); } catch (_) {}
 }
 
 function libcWire(params) {
@@ -130,7 +147,7 @@ rpc.exports = {
       Interceptor.replace(facts.setActive.address, replacement);
       replacedAddress = facts.setActive.address;
       Interceptor.flush(); ready = true;
-      try { send({event: 'native_ready', ...inspect(), functions: Object.fromEntries(
+      try { emitNative({event: 'native_ready', ...inspect(), functions: Object.fromEntries(
         Object.entries(facts).map(([role, fact]) => [role, {name: fact.name, size: fact.size, address: String(fact.address)}]))}); } catch (_) {}
     } catch (failure) {
       if (replacedAddress !== null) { try { Interceptor.revert(replacedAddress); Interceptor.flush(); } catch (_) {} replacedAddress = null; }

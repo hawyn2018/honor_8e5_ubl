@@ -56,6 +56,12 @@ public final class DiscoveryRebootFrontierTest {
                     method(TASK,"run",1,List.of(),2,text(0,"manual"),invoke(Opcode.INVOKE_STATIC,OWNER,"inner",List.of(STRING),"V",0),ret()))));
             }
         }
+        methods.add(method(OWNER,"realPayloadCaller",9,List.of(),8,
+            new ImmutableInstruction11n(Opcode.CONST_4,0,0),
+            new ImmutableInstruction3rc(Opcode.INVOKE_INTERFACE_RANGE,0,7,new ImmutableMethodReference("Landroid/os/IUpdateEngine;","applyPayload",List.of(STRING,"J","J","[Ljava/lang/String;"),"V")),ret()));
+        classes.add(type("Lfixture/TerminalTask;",List.of("Ljava/lang/Runnable;"),List.of(
+            method("Lfixture/TerminalTask;","<init>",65537,List.of(),1,invoke(Opcode.INVOKE_DIRECT,"Ljava/lang/Object;","<init>",List.of(),"V",0),ret()),
+            method("Lfixture/TerminalTask;","run",1,List.of(),2,new ImmutableInstruction11n(Opcode.CONST_4,0,0),text(1,"ota"),invoke(Opcode.INVOKE_VIRTUAL,"Landroid/os/PowerManager;","reboot",List.of(STRING),"V",0,1),ret()))));
         classes.add(type(OWNER,List.of(),methods));
         classes.add(type("Landroid/os/IUpdateEngine$Stub$Proxy;",List.of("Landroid/os/IUpdateEngine;"),List.of(
             method("Landroid/os/IUpdateEngine$Stub$Proxy;","applyPayload",1,List.of(STRING,"J","J","[Ljava/lang/String;"),8,

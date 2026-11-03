@@ -6,7 +6,9 @@ public final class AgentReadinessTest {
     private static int checks;
     private static void check(boolean ok, String label) { checks++; if (!ok) throw new AssertionError(label); }
     private static JSONObject ready(Object critical, Object broker, Object hook) throws Exception {
-        return new JSONObject().put("event", "ready").put("critical_ready", critical).put("broker_ready", broker).put("hook_ready", hook);
+        return new JSONObject().put("event", "ready").put("critical_ready", critical).put("broker_ready", broker).put("hook_ready", hook)
+            .put("deoptimized",true).put("terminal_ready",true).put("continuation_ready",true)
+            .put("counts",new JSONObject().put("reboot_terminal",1).put("reboot_continuation",1));
     }
     public static void main(String[] args) throws Exception {
         AgentReadiness state = new AgentReadiness();
@@ -26,6 +28,12 @@ public final class AgentReadinessTest {
         check(!state.completed(0, true) && !state.error.isEmpty(), "real critical failure invalidates ready");
         state.accept(ready(true, true, true));
         check(!state.completed(0, true), "later ready cannot erase fatal critical integrity failure");
+        for(String field:new String[]{"deoptimized","terminal_ready","continuation_ready"}) {
+            AgentReadiness incomplete=new AgentReadiness();incomplete.accept(ready(true,true,true).put(field,false));
+            check(!incomplete.completed(0,true)&&!incomplete.error.isEmpty(),"missing actual terminal installation proof is critical "+field);
+        }
+        AgentReadiness old=new AgentReadiness();JSONObject oldEvent=ready(true,true,true);oldEvent.remove("deoptimized");old.accept(oldEvent);
+        check(!old.completed(0,true)&&!old.error.isEmpty(),"old agent ready without the new actual terminal proof is never protected");
         System.out.println("AGENT_READINESS_CHECKS=" + checks);
     }
 }
