@@ -88,7 +88,7 @@ GPT 主备表、分区信息、清单及校验记录
 
 `slot_active_a` / `slot_active_b` 的内容只有对应字母 `a` / `b`。当前备份功能不包含 vbmeta 修补。请将备份另存到电脑等设备外位置，再进行分区调整、镜像刷写或清除 data。
 
-#### 3. 选择解锁方式
+#### 3. 选择解锁方式（建议假回锁，深度优化防检测+免清数据解锁）
 
 | 模式 | 默认 EFISP 来源 | 默认 ABL 写入 | 完成后的入口 |
 | --- | --- | --- | --- |
@@ -211,7 +211,7 @@ The timestamp uses the device's time when backup starts. The backup includes `in
 
 The current backup workflow does not patch vbmeta. Copy the backup to a computer or another off-device location before changing partitions, flashing boot images, or clearing data.
 
-#### 3. Choose an unlock mode
+#### 3. Choose an unlock mode (fake relock recommended: extensive anti-detection optimization + no-wipe unlocking)
 
 | Mode | Default EFISP source | Default ABL write | Completion action |
 | --- | --- | --- | --- |
