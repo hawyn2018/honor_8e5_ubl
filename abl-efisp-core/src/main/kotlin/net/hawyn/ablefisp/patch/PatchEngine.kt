@@ -32,17 +32,39 @@ object PatchEngine {
         val extracted = extract(input)
         val image = PeImage.parse(extracted.output)
         val analysis = SemanticPatcher.analyze(image)
+        val pssPolicy = PssVerificationPatcher.analyze(image, analysis.stateVerifierRva)
         val additional = if (mode == PatchMode.FREEDOM_FAKE_LOCK) {
             FakeLockPatcher.analyze(image, requireNotNull(analysis.stateGlobal))
         } else SemanticPlan(emptyList(), emptyList())
         val rootPolicy = if (mode == PatchMode.FREEDOM_FAKE_LOCK) {
             CheckRootPolicyPatcher.analyze(image)
         } else SemanticPlan(emptyList(), emptyList())
-        val recovery = BootFailurePolicyPatcher.analyze(image)
+        val optionalNotes = arrayListOf<String>()
+        val recovery = OptionalPatchPolicy.analyze("原生哈希日志上报路径恢复", emptyList<BootFailurePolicyPatcher.Plan>(), optionalNotes) {
+            BootFailurePolicyPatcher.analyze(image)
+        }
         val lateState = if (mode == PatchMode.FREEDOM_FAKE_LOCK) {
             LateBootStatePatcher.analyze(image, requireNotNull(additional.normalBootState))
         } else emptyList()
-        val rollbackUpdate = RollbackUpdatePatcher.analyze(image)
+        val rollbackUpdate = OptionalPatchPolicy.analyze("启动回滚版本更新策略", SemanticPlan(emptyList(), emptyList()), optionalNotes) {
+            RollbackUpdatePatcher.analyze(image)
+        }
+        val compatibility = OptionalPatchPolicy.analyze("OEM 版本兼容增强", SemanticPlan(emptyList(), emptyList()), optionalNotes) {
+            BootCompatibilityPatcher.analyze(image)
+        }
+        val avbVersions = OptionalPatchPolicy.analyze("AVB 版本兼容增强", SemanticPlan(emptyList(), emptyList()), optionalNotes) {
+            AvbVersionCompatibilityPatcher.analyze(image)
+        }
+        val specialSdam = OptionalPatchPolicy.analyze("special SDAM 更新复位兼容", SemanticPlan(emptyList(), emptyList()), optionalNotes) {
+            SpecialSdamCompatibilityPatcher.analyze(image)
+        }
+        val hashDescriptors = AvbHashDescriptorPatcher.analyze(image)
+        val flashingUnlock = OptionalPatchPolicy.analyze<FlashingUnlockPatcher.Plan?>("flashing unlock 增强", null, optionalNotes) {
+            FlashingUnlockPatcher.analyze(image)
+        }
+        val superUnlock = OptionalPatchPolicy.analyze<SuperUnlockPatcher.Plan?>("oem superunlock 增强", null, optionalNotes) {
+            SuperUnlockPatcher.analyze(image, flashingUnlock)
+        }
         fun sharesCallerMapping(anchor: Long, stub: Long?, size: Int): Boolean {
             if (stub == null) return false
             return image.sections.any { section ->
@@ -52,53 +74,101 @@ object PatchEngine {
                     stub >= section.rva && stub + size <= section.rva + length
             }
         }
-        val relocatedRecovery = recovery.filterNot { sharesCallerMapping(it.callRva, it.existingStubRva, BootFailurePolicyPatcher.STUB_BYTES) }
         val relocatedLateState = lateState.filterNot { sharesCallerMapping(it.selectorRva, it.existingStubRva, LateBootStatePatcher.STUB_BYTES) }
-        val slots = MappedRxCodeAllocator.allocate(image, relocatedRecovery.map {
-            MappedRxCodeAllocator.Request(it.callRva, BootFailurePolicyPatcher.STUB_BYTES)
-        } + relocatedLateState.map {
+        val unlockRequests = flashingUnlock?.let { plan -> listOfNotNull(
+            if (sharesCallerMapping(plan.frontGateRva, plan.existingFrontStubRva, FlashingUnlockPatcher.FRONT_STUB_BYTES)) null
+            else MappedRxCodeAllocator.Request(plan.frontGateRva, FlashingUnlockPatcher.FRONT_STUB_BYTES),
+            if (sharesCallerMapping(plan.transactionGateRva, plan.existingTransactionStubRva, FlashingUnlockPatcher.TRANSACTION_STUB_BYTES)) null
+            else MappedRxCodeAllocator.Request(plan.transactionGateRva, FlashingUnlockPatcher.TRANSACTION_STUB_BYTES),
+        ) }.orEmpty()
+        val superRequests = superUnlock?.let { plan ->
+            val existing = plan.existingAllocationRva
+            val mapped = existing != null && image.sections.any { section ->
+                val length = minOf(section.rawSize.toLong(), section.virtualSize.takeIf { it > 0 } ?: section.rawSize.toLong())
+                section.executable && !section.writable && section.characteristics and 0x02000000L == 0L &&
+                    existing >= section.rva && existing + SuperUnlockCode.TOTAL_BYTES <= section.rva + length
+            }
+            if (mapped) emptyList()
+            else listOf(MappedRxCodeAllocator.Request(plan.registrationGateRva, SuperUnlockCode.TOTAL_BYTES))
+        }.orEmpty()
+        val originalRequests = relocatedLateState.map {
             MappedRxCodeAllocator.Request(it.selectorRva, LateBootStatePatcher.STUB_BYTES)
-        })
-        val destinations = relocatedRecovery.zip(slots.take(relocatedRecovery.size)).associate { (item, slot) -> item.callRva to slot.rva }
-        val lateDestinations = relocatedLateState.zip(slots.drop(relocatedRecovery.size)).associate { (item, slot) -> item.selectorRva to slot.rva }
-        val recoveryEdits = recovery.flatMap { item ->
-            val stub = destinations[item.callRva] ?: requireNotNull(item.existingStubRva)
-            BootFailurePolicyPatcher.edits(item, stub)
+        } + unlockRequests
+        // Preserve all inherited placement decisions. Only the additional
+        // command may need a new mapping when an old/text-edited RX tail is full.
+        val slots = MappedRxCodeAllocator.allocate(image, originalRequests)
+        var outputImage = image
+        var superAllocation = superUnlock?.existingAllocationRva
+        var mappingEdits = emptyList<PlannedEdit>()
+        if (superRequests.isNotEmpty()) {
+            superAllocation = try {
+                val combined = MappedRxCodeAllocator.allocate(image, originalRequests + superRequests)
+                check(combined.take(slots.size) == slots)
+                combined.last().rva
+            } catch (_: PatchException) {
+                val expansion = PeCodeSectionAppender.append(image, SuperUnlockCode.TOTAL_BYTES,
+                    listOf(requireNotNull(superUnlock).registrationGateRva, superUnlock.nativeRegisterRva,
+                        superUnlock.readWriteBackendRva, superUnlock.fastbootOkayRva, superUnlock.fastbootFailRva))
+                outputImage = PeImage.parse(expansion.bytes)
+                mappingEdits = expansion.metadataEdits
+                expansion.newSectionRva
+            }
         }
+        val lateDestinations = relocatedLateState.zip(slots).associate { (item, slot) -> item.selectorRva to slot.rva }
+        val recoveryEdits = recovery.flatMap(BootFailurePolicyPatcher::nativeReportingEdits)
         val lateEdits = lateState.flatMap { item ->
             val stub = lateDestinations[item.selectorRva] ?: requireNotNull(item.existingStubRva)
             LateBootStatePatcher.edits(item, stub)
         }
-        val plan = analysis.edits + additional.edits + rootPolicy.edits + recoveryEdits + lateEdits + rollbackUpdate.edits
-        val output = image.bytes.copyOf()
+        val unlockDestinations = unlockRequests.zip(slots.drop(relocatedLateState.size))
+            .associate { (request, slot) -> request.anchorRva to slot.rva }
+        val unlockEdits = flashingUnlock?.let { plan -> FlashingUnlockPatcher.edits(plan,
+            unlockDestinations[plan.frontGateRva] ?: requireNotNull(plan.existingFrontStubRva),
+            unlockDestinations[plan.transactionGateRva] ?: requireNotNull(plan.existingTransactionStubRva),
+        ) }.orEmpty()
+        val superEdits = superUnlock?.let { plan -> SuperUnlockPatcher.edits(plan,
+            requireNotNull(superAllocation),
+        ) }.orEmpty()
+        val plan = analysis.edits + pssPolicy.edits + additional.edits + rootPolicy.edits + recoveryEdits + lateEdits + rollbackUpdate.edits + compatibility.edits + avbVersions.edits + specialSdam.edits + hashDescriptors.flatMap(AvbHashDescriptorPatcher::edits) + unlockEdits + mappingEdits + superEdits
+        val output = outputImage.bytes.copyOf()
         val occupied = HashSet<Int>()
         val matches = plan.map { edit ->
-            val offset = image.rvaToOffset(edit.rva, edit.replacement.size)
+            val offset = outputImage.rvaToOffset(edit.rva, edit.replacement.size)
                 ?: throw PatchException("修补目标未映射到文件。")
             for (at in offset until offset + edit.replacement.size) {
                 if (!occupied.add(at)) throw PatchException("修补目标范围重叠，已停止生成。")
             }
-            val before = output.copyOfRange(offset, offset + edit.replacement.size)
+            val before = if (mappingEdits.any { it === edit }) image.bytes.copyOfRange(offset, offset + edit.replacement.size)
+                else output.copyOfRange(offset, offset + edit.replacement.size)
             edit.replacement.copyInto(output, offset)
             PatchMatch(edit.name, edit.rva, offset, before.hex(), edit.replacement.hex(), before.contentEquals(edit.replacement))
         }
-        val recoveryNotes = if (recovery.isEmpty()) listOf(
-            "未发现此类 AVB hash 故障恢复调用，没有添加额外恢复补丁。",
-        ) else listOf(
-            "按 hash 错误上报、允许错误值来源与错误码范围定位 ${recovery.size} 处恢复调用。",
-            "仅允许验证错误且结果为 ERROR_VERIFICATION 时跳过该厂商故障上报；读取、内存、元数据格式等其他错误保持原调用。",
-            "建议保留原版 vbmeta；该修改不保证被改签名或损坏的元数据能通过 Android 后续校验。",
-            "条件代码使用调用点所在的原有只读可执行映射，不追加代码节或扩大加载范围；已存在的同映射补丁可复用。",
+        val recoveryNotes = listOf(
+            "保留 ABL 原生校验日志和厂商故障上报，不再生成按允许错误值跳过上报的条件代码。",
+            if (recoveryEdits.isEmpty()) "未发现需要恢复的历史哈希上报拦截，原调用保持。"
+            else "已将 ${recoveryEdits.size} 处经完整识别的历史条件调用恢复为原生上报调用；未擦除旧孤立代码。",
+            "SHA 比较固定通过后是否输出成功日志完全由 ABL 原成功路径决定，不新增、过滤或伪造日志。",
         )
         val lateNotes = if (lateState.isEmpty()) emptyList() else listOf(
             "按同一启动状态字段、允许错误值来源、失败分支和本地返回变量定位 ${lateState.size} 处尾部状态重算。",
             "仅正常成功且允许验证错误时保持 green；失败回退的原状态、错误返回和资源清理保留。",
         )
+        val unlockNotes = flashingUnlock?.notes?.plus(
+            "确认菜单之前的 OKAY 仅表示命令已接受；成功依据为事务内真实协议写入结果和独立缓冲区读回，不使用 Locked/Unlocked/Relocked、locked/unlocked 或 SAFE/RISK 显示值。",
+        ) ?: listOf("未发现可匹配的普通 flashing unlock 流程，没有添加此项修改。")
         return PatchResult(
             output, extracted.sourceFormat, input.sha256(), output.sha256(), output.size,
-            matches, extracted.notes + analysis.notes + additional.notes + rootPolicy.notes + recoveryNotes + lateNotes + rollbackUpdate.notes + listOf(
+            matches, extracted.notes + optionalNotes + analysis.notes + pssPolicy.notes + additional.notes + rootPolicy.notes + recoveryNotes + lateNotes + rollbackUpdate.notes + compatibility.notes + avbVersions.notes + specialSdam.notes +
+                (if (hashDescriptors.isEmpty()) listOf("未发现 HashDescriptor 数据摘要比较路径，保留原流程。") else listOf(
+                    "按摘要比较调用、ABI 结果消费者、长度门与原生成功输出关系定位 ${hashDescriptors.size} 处共用 HashDescriptor 校验。",
+                    "保留读盘、SHA 摘要计算与非零长度处理，仅将摘要比较结果固定为通过；保留原生条件分支和成功路径。",
+                    "作用于所有进入这些共用流程的分区，不按 init_boot 或分区名列表限制。",
+                    "保留原生日志实现、无摘要时的 persistent 摘要读取/初始化及其失败路径；成功后是否记录日志由 ABL 原逻辑决定。",
+                    "该修改不跳过 vbmeta 签名、元数据检查或 Android dm-verity。",
+                )) + unlockNotes + superUnlock?.notes.orEmpty() + listOf(
                 "已按代码关系定位三处状态初始化分支。",
-                "输出保留原有 PE 节布局、入口与加载长度。",
+                if (mappingEdits.isEmpty()) "输出保留原有 PE 节布局、入口与加载长度。"
+                else "原 RX 尾部不足，已为新增命令追加只读可执行映射并同步 PE 元数据；原节地址、原始文件偏移和入口保持。",
                 "已写入定位到的功能修改点。",
             ), matches.all { it.alreadyApplied }, mode,
         )
@@ -120,9 +190,17 @@ internal data class NormalBootStateFacts(
 internal data class SemanticPlan(
     val edits: List<PlannedEdit>, val notes: List<String>, val stateGlobal: Long? = null,
     val normalBootState: NormalBootStateFacts? = null,
+    val stateVerifierRva: Long? = null,
 )
 
 internal object SemanticPatcher {
+    /** Read-only reuse of the complete partition-read -> LoadImage proof. */
+    fun hasEfispLoader(image: PeImage): Boolean {
+        val edit = partitionEdit(image, A64.references(image)).edit ?: return false
+        val offset = image.rvaToOffset(edit.rva, 12) ?: return false
+        return image.bytes.copyOfRange(offset, offset + 12).contentEquals("efisp\u0000".toByteArray(Charsets.UTF_16LE))
+    }
+
     private val CONTEXT = "fastboot flash:rdmodev1".toByteArray(Charsets.US_ASCII) + byteArrayOf(0, 0, 0, 1)
     private val WEAK_MARKERS = listOf("fastboot flash:rdmodev1", "common_check_rdmod_v1_state")
         .map { it.toByteArray(Charsets.US_ASCII) }
@@ -130,7 +208,7 @@ internal object SemanticPatcher {
         val target: Long, val stateRegister: Int, val storeStart: Long,
         val store: Long, val global: Long, val readOemInfo: Long,
     )
-    private data class Cluster(val readBranch: Long, val logBranch: Long, val logExit: Long, val verifyBranch: Long, val success: Success)
+    private data class Cluster(val readBranch: Long, val logBranch: Long, val logExit: Long, val verifyBranch: Long, val success: Success, val verifier: Long)
     private data class Descriptor(val message: Long, val messageLength: Int, val signature: A64.Value, val signatureLength: Int)
 
     fun plan(image: PeImage): List<PlannedEdit> = analyze(image).edits
@@ -178,7 +256,7 @@ internal object SemanticPatcher {
             branchEdit("rdmode 日志循环分支", cluster.logBranch, cluster.logExit),
             branchEdit("rdmode 验证结果分支", cluster.verifyBranch, cluster.success.target),
             partition.edit,
-        ), listOf(partition.note), cluster.success.global)
+        ), listOf(partition.note), cluster.success.global, stateVerifierRva = cluster.verifier)
     }
 
     private fun clustersForSecondCall(
@@ -220,7 +298,7 @@ internal object SemanticPatcher {
                 val failedState = image.word(success.storeStart - 4)?.let(A64::movWImmediate)
                 if (failedState != (success.stateRegister to 0)) continue
                 val loops = logLoops(image, refs, firstCall + 8, context.pc)
-                if (loops.size == 1) result += Cluster(branchPc, loops[0].first, loops[0].second, secondCall + 4, success)
+                if (loops.size == 1) result += Cluster(branchPc, loops[0].first, loops[0].second, secondCall + 4, success, verifyTarget)
             }
         }
         return result

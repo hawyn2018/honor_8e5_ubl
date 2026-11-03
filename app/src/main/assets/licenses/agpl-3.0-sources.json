@@ -1,0 +1,30 @@
+{
+  "schema": 2,
+  "license": "AGPL-3.0-only",
+  "english": {
+    "url": "https://www.gnu.org/licenses/agpl-3.0.txt",
+    "downloadUrl": "https://ftp.gnu.org/gnu/Licenses/agpl-3.0.txt",
+    "asset": "licenses/agpl-3.0-en.txt",
+    "sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+    "bytes": 34523,
+    "verbatimGnuOfficialSource": true
+  },
+  "chinese": {
+    "asset": "licenses/agpl-3.0-zh-CN.txt",
+    "translator": "AI",
+    "method": "Direct paragraph-by-paragraph comparison with official AGPLv3 English. Exact-English matches reuse previously independently translated GPLv3 paragraphs; all AGPL-specific differences are newly translated.",
+    "status": "Unofficial translation; original English alone states the distribution terms",
+    "official": false,
+    "sourceEnglishAsset": "licenses/agpl-3.0-en.txt",
+    "sourceEnglishSha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+    "sourceParagraphCount": 118,
+    "translatedSourceParagraphCount": 118,
+    "exactEnglishReusedParagraphs": 98,
+    "newlyTranslatedAgplParagraphs": 20,
+    "coverage": "Title, preamble, sections 0–17, end notice, and complete application appendix",
+    "translationTermsUrl": "https://www.gnu.org/licenses/translations.html",
+    "textSha256": "31183cc7a5c38ee2cad99375aa37e4eda89e8c9bc2c2bc352d8bad453dccfd3a",
+    "bytes": 31701,
+    "createdDate": "2026-11-01"
+  }
+}

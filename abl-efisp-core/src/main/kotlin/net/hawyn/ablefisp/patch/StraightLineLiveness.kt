@@ -104,6 +104,14 @@ internal object StraightLineLiveness {
         }
         // Move-wide, bitfield/shift aliases and EXTR.
         if (word and 0x1f800000 in listOf(0x12800000, 0x13000000, 0x13800000)) return writes(word and 31)
+        // Conditional compare reads GP operands and writes only NZCV.
+        if (word and 0x1fe00000 == 0x1a400000) return Effect(flags = true) // CCMP/CCMN
+        // Integer multiply-add/subtract (including MUL/MNEG aliases).
+        if (word and 0x7fe00000 == 0x1b000000) return writes(word and 31)
+        // Advanced SIMD modified immediate: MOVI/MVNI/ORR/BIC use vector state,
+        // not a GP destination. This is the same bounded encoding family tracked
+        // by A64ValueOrigins; unknown instruction families remain unknown.
+        if (word and 0x0ff80000 == 0x0f000000) return Effect()
         // CSEL/CSINC/CSINV/CSNEG, including CSET: consume but do not modify NZCV.
         if (word and 0x1fe00000 == 0x1a800000) return writes(word and 31)
         return null

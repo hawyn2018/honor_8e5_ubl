@@ -115,7 +115,7 @@ load_payload_source() {
     [ -f "$SOURCE_BINDING_FILE" ] && [ -r "$SOURCE_BINDING_FILE" ] && [ ! -L "$SOURCE_BINDING_FILE" ] || die 'payload source binding is not a regular readable file'
     awk -F= '
         NF != 2 || $2 == "" {bad=1; next}
-        $1 !~ /^(REQUEST_MODE|EFI_SOURCE|PATCH_MODE|ABL_WRITE_TARGET|SOURCE_SLOT|SOURCE_ABL_DEVICE|SOURCE_ABL_MM|SOURCE_ABL_CAPACITY|SOURCE_ABL_SHA256)$/ {bad=1; next}
+        $1 !~ /^(REQUEST_MODE|EFI_SOURCE|PATCH_MODE|ABL_WRITE_TARGET|PATCH_RETRY_SOURCE|SOURCE_SLOT|SOURCE_ABL_DEVICE|SOURCE_ABL_MM|SOURCE_ABL_CAPACITY|SOURCE_ABL_SHA256)$/ {bad=1; next}
         ++seen[$1] != 1 {bad=1; next}
         {v[$1]=$2}
         END {
@@ -123,10 +123,17 @@ load_payload_source() {
                v["EFI_SOURCE"] !~ /^(UPLOADED_EFISP|UPLOADED_ABL|CURRENT_SLOT_ABL|OTHER_SLOT_ABL|BUILTIN_ABL)$/ ||
                v["PATCH_MODE"] !~ /^(FAKE_LOCK|FREEDOM)$/) bad=1
             if(seen["ABL_WRITE_TARGET"] && v["ABL_WRITE_TARGET"] !~ /^(CURRENT|OTHER|BOTH)$/) bad=1
-            if(seen["ABL_WRITE_TARGET"] && v["ABL_WRITE_TARGET"] != "CURRENT" && v["REQUEST_MODE"] != "CUSTOM") bad=1
+            if(seen["ABL_WRITE_TARGET"] && v["ABL_WRITE_TARGET"] == "OTHER" && v["REQUEST_MODE"] != "CUSTOM") bad=1
             if(v["EFI_SOURCE"]=="OTHER_SLOT_ABL" && v["REQUEST_MODE"]!="CUSTOM") bad=1
             if(seen["SOURCE_ABL_SHA256"] && (length(v["SOURCE_ABL_SHA256"])!=64 || v["SOURCE_ABL_SHA256"] ~ /[^0-9a-f]/)) bad=1
-            if(v["EFI_SOURCE"]=="CURRENT_SLOT_ABL" || v["EFI_SOURCE"]=="OTHER_SLOT_ABL") {
+            actual=v["EFI_SOURCE"]
+            if(seen["PATCH_RETRY_SOURCE"]) {
+                if(v["PATCH_RETRY_SOURCE"]!="BUILTIN_ABL" || v["EFI_SOURCE"] !~ /^(UPLOADED_ABL|CURRENT_SLOT_ABL|OTHER_SLOT_ABL)$/) bad=1
+                if(seen["SOURCE_SLOT"] || seen["SOURCE_ABL_DEVICE"] || seen["SOURCE_ABL_MM"] || seen["SOURCE_ABL_CAPACITY"]) bad=1
+                if(v["SOURCE_ABL_SHA256"]!="509e8f9655184f69c147c494f8cfabe795f2cacb4e5e6b7a1fb0a48ecc08376c") bad=1
+                actual=v["PATCH_RETRY_SOURCE"]
+            }
+            if(actual=="CURRENT_SLOT_ABL" || actual=="OTHER_SLOT_ABL") {
                 if(v["SOURCE_SLOT"] !~ /^[ab]$/ || v["SOURCE_ABL_DEVICE"] !~ /^\/dev\/block\/[A-Za-z0-9_.\/-]+$/ ||
                    v["SOURCE_ABL_DEVICE"] ~ /(^|\/)\.\.?($|\/)/ || v["SOURCE_ABL_MM"] !~ /^[0-9]+:[0-9]+$/ ||
                    v["SOURCE_ABL_CAPACITY"] !~ /^[1-9][0-9]*$/ || !seen["SOURCE_ABL_SHA256"]) bad=1
@@ -137,7 +144,8 @@ load_payload_source() {
     SOURCE_BINDING_HASH=$(hash_file "$SOURCE_BINDING_FILE")
     is_hash "$SOURCE_BINDING_HASH" || die 'payload source binding hash failed'
     SOURCE_REQUEST_MODE=$(sed -n 's/^REQUEST_MODE=//p' "$SOURCE_BINDING_FILE")
-    SOURCE_EFI_KIND=$(sed -n 's/^EFI_SOURCE=//p' "$SOURCE_BINDING_FILE")
+    SOURCE_EFI_KIND=$(sed -n 's/^PATCH_RETRY_SOURCE=//p' "$SOURCE_BINDING_FILE")
+    [ -n "$SOURCE_EFI_KIND" ] || SOURCE_EFI_KIND=$(sed -n 's/^EFI_SOURCE=//p' "$SOURCE_BINDING_FILE")
     SOURCE_PATCH_MODE=$(sed -n 's/^PATCH_MODE=//p' "$SOURCE_BINDING_FILE")
     _source_abl_target=$(sed -n 's/^ABL_WRITE_TARGET=//p' "$SOURCE_BINDING_FILE")
     [ -z "$_source_abl_target" ] || ABL_WRITE_TARGET=$_source_abl_target

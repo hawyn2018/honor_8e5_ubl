@@ -1,77 +1,278 @@
-# honor_ubl
+<div align="center">
+  <img src="docs/assets/hnubl-logo.png" width="128" height="128" alt="hnubl app icon" />
+  <h1>hnubl</h1>
+  <p><sub>作者官方联系方式如下，其他来源请勿轻信！</sub></p>
+  <p>
+    <a href="https://qm.qq.com/q/8ax2kPeghy"><strong>QQ交流群 · 941336897</strong></a> &nbsp;·&nbsp;
+    <a href="https://t.me/blroot"><strong>Telegram · blroot</strong></a> &nbsp;·&nbsp;
+    <a href="https://www.coolapk.com/u/43879986"><strong>酷安 · hawyn</strong></a> &nbsp;·&nbsp;
+    <a href="https://m.tb.cn/h.jgDi6un?tk=4QbA6Z6JhAO"><strong>闲鱼 · 2018hawyn</strong></a>
+  </p>
+  <p><strong>hnubl专为荣耀8e5设备解锁BL+假回锁适配的全功能解锁神器，目前已合入保留锁态OTA功能。</strong></p>
+  <p>A full-featured bootloader unlock and simulated relock toolkit for HONOR 8e5 (Snapdragon 8 Elite Gen 5) devices,<br/>now with OTA support that preserves the configured lock state.</p>
+  <p><code>2.9.6</code> &nbsp;·&nbsp; Android / Miuix &nbsp;·&nbsp; <a href="LICENSE">AGPL-3.0-only</a> &nbsp;·&nbsp; Source-only releases</p>
+  <p><a href="#简体中文"><strong>中文版</strong></a> &nbsp;|&nbsp; <a href="#english"><strong>English</strong></a></p>
+</div>
 
-QQ交流群：941336897 
+---
 
-基于 Kotlin、Jetpack Compose 和 [Miuix](https://github.com/compose-miuix-ui/miuix) 的 Android 工具，整合无线调试配对、提权、分区备份及 GBL 引导写入流程。
+## 简体中文
 
-当前源码版本为 **2.5.1（versionCode 39）**，桌面名称为 `hnubl`，应用包名为 `net.hawyn.honor8e5ubl`。本版本已合入 MagicRoot 1.0.4 的两条提权链，按 98260、64650 的顺序显示，默认选择 98260。两条链均支持 6.12.58 和 6.12.38 两套精确内核 profile。
+**hnubl专为荣耀8e5设备解锁BL+假回锁适配的全功能解锁神器，目前已合入保留锁态OTA功能。**
 
+从无线调试连接、提权、原始分区备份，到 ABL → EFISP 修补、分区准备、解锁刷写和 OTA 后的保留锁态处理，在一个应用中完成。界面基于 [Miuix](https://github.com/compose-miuix-ui/miuix)，提供动态配色、玻璃模糊和可滑动的五页导航。
 
-2.5.0 更新：没有 efisp 时，统一以 F2FS 实际末尾至同盘下一已用分区之前（没有后续分区时为 GPT 最后可用 LBA）的连续空间规划创建范围，同时利用 userdata 内部未使用尾部和 GPT 外部已释放的空闲。连续尾部大于 60 MiB 且镜像装得下时跳过 F2FS 缩容；不足时仅规划需要补足的缩容量，保留原有 section 对齐与有效块迁移、超级块及 checkpoint 回读。最终 userdata GPT 末尾与实际 F2FS 一致，可缩小、保持或在连续未占范围内受控扩大，并与新 efisp 条目在同一次最终 GPT 提交中写入。已有 efisp 继续复用，不重复调整 userdata。完整文件系统仍需位于当前可访问的正确解密映射内；进入其他已用分区、有效数据读取或迁移失败等冲突保留停止与备份证据。提权实现、双槽备份、ABL 修补、镜像来源与槽位选择、只读目标解除和刷写顺序沿用 2.4.7。
+**导航：** [功能](#功能一览) · [支持设备](#支持范围) · [使用流程](#使用流程) · [OTA](#保留锁态-ota) · [构建](#从源码构建) · [许可证](#许可证与第三方组件)
 
-2.4.7 更新：实际分区写入遇到内核只读状态时，针对本次已确认的写入目标执行 `blockdev --setrw`，复核读写状态后有限重试。系统工具优先，缺失、执行错误或只读状态仍未解除时使用内置 BusyBox 回退。读取、预检、准备和备份阶段不修改分区只读标志，镜像身份、SHA-256、分区边界和写后回读校验继续保留。此处理针对内核软件只读标志；未解除时保留错误和现场。双槽备份、提权及 ABL 修补沿用 2.4.6。
+### 功能一览
 
-2.4.6 更新：备份页面改为提取 A/B 双槽的 `init_boot` 和 `abl`，分别保存为 `init_boot_a.img`、`init_boot_b.img`、`abl_a.img`、`abl_b.img`。读取备份时的当前槽位，在同一备份目录创建 `slot_active_a` 或 `slot_active_b`，文件内仅写对应的小写字母 `a` 或 `b`。分区表备份继续沿用原有方式，保存位置及按设备实际点击时间生成目录的规则保持一致；提权、ABL 修补和解锁刷写流程沿用 2.4.5。
+| 页面 | 提供的功能 |
+| --- | --- |
+| **提权** | 应用内无线调试配对和 Shell 连接；已有 Root 检查；98260 / 64650 两条手动提权入口；自定义 `su` 路径对接。 |
+| **备份** | A/B 双槽 `init_boot`、ABL 原始镜像；当前槽位标记；主备 GPT、分区清单与 SHA-256 校验记录。 |
+| **OTA** | 标准 OTA、尝鲜 OTA、自定义 OTA；安装或更新配套 KSU 模块；仅更新 EFISP、导出 EFISP，以及旧 EFISP 增加功能。 |
+| **解锁** | 假回锁解锁、仅解锁、自定义刷写；按来源生成 EFISP；创建或复用 `efisp` 分区；ABL 槽位选择和写后回读。 |
+| **设置** | Monet 取色、强调色、玻璃模糊、悬浮底栏、随应用配色的桌面入口、自定义 `su`、支持与中英双语许可证。 |
 
-2.4.5 更新：修复 ABL 合并代码与数据的 RX 节中，字符串字节被误识别为 ADR 指令而中止修补的问题。仅在控制流、调用参数数据流及字节读取后的终止判定能够证明其为字符串对象时排除伪指令；兼容有符号或无符号字节读取、直接零值跳转、比较零及完整字节掩码测试后的条件跳转等价形式，跟踪寄存器复制、栈暂存及已知指针偏移。ADR/ADRP 写入 XZR 的编码也不再作为有效地址引用。保留真实指令、绝对指针、重定位和目录引用的存储保护，不使用机型、版本或固定地址适配表。文字分配器遇到零尾内的引用对象时保护其后空间，空间不足时沿用原有后备分配路径。增加假回锁、仅解锁、旧成品重新导入、文字容量及有效引用保护回归。提权实现、备份、分区调整、刷写脚本及分区只读权限处理均沿用 2.4.4；本轮不加入分区写权限调整。
+**按功能和数据流适配。** 修补器依据指令、协议参数、缓冲区及调用关系定位功能，动态安排补丁空间，兼容可识别的旧成品重新导入。没有型号、固件版本或固定地址适配表；核心目标缺失时会报告原因，可选增强未匹配时按对应策略跳过。此设计提高了适配范围，并不代表任意 ABL、固件组合都经过验证。
 
-2.4.4 更新：在提权页“提权时间可能较长请耐心等待”下方加入红字“提权前请清理提权临时文件，成功率更高”，字号、行高及颜色与现有等待提示保持一致。每页底部 GitHub 链接上方加入“QQ交流群：941336897”，项目链接继续支持点击访问、长按复制。提权实现、临时文件清理功能、详细修补日志、备份和解锁流程沿用 2.4.3。
+**随附 KBL 调试环境。** 生成的 EFISP 包含显式启动的 KBL、Fastboot 调试入口和 EFI 应用加载能力。`kblstart` 与 `kbladb` 分开启用，支持文件及分区操作、屏幕开关等功能。KBL 运行于原生 UEFI 环境，具体能力取决于已经识别的固件接口；它与 Android/Linux Shell 的程序接口有区别。使用方法见 [KBL 电脑端工具](tools/kbl_console/README.md)。
 
-2.4.3 更新：ABL 提取及修补过程加入详细日志。每项核心补丁记录名称、RVA、PE 文件偏移、修改前后字节、已应用或原已应用状态和文字定制后的字节校验结果；文字定制记录旧新文字、旧新 RVA、输出位置及引擎说明。核心修补后（文字定制前）的哈希与最终 efisp 哈希分别标注，输出文件发布和回读校验结果进入日志。读取设备信息、准备操作包和实际解锁均接入相同日志通道，在后台生成时依序更新界面；失败记录已完成阶段与异常。完整明细随 `generation-report.txt` 打包，最近一次生成尝试另存应用私有的 `generation-attempt.log`。运行日志移除行数截断，以列表加载全部内容，并新增“复制全部日志”。普通应用图标完整沿用原有 108×108 画布、图标引用与三个矢量路径，仅将底色改为与默认开始流程按钮一致的蔷薇粉，锁为白色，保持原尺寸、形状及比例。设置新增“随应用配色的桌面图标”，经桌面确认后添加固定 ID 的快捷入口；入口按原路径绘制，直接使用当前 Miuix primary，与开始流程按钮同色，锁固定白色。已添加后，强调色、自定义颜色、Monet 风格或标准及明暗主题改变时自动同步，返回应用时重试更新。普通应用抽屉图标保留默认配色；桌面主题图标或图标包可能覆盖显示，缓存刷新也由桌面处理。修补核心、生成镜像的内容、提权适配和分区操作顺序沿用 2.4.2。
+### 支持范围
 
-2.4.2 更新：应用尚未取得提权确认时，普通解锁页标题显示“等待root授权”，确认取得后显示“一切，准备就绪”。“自定义解锁”显示名称统一调整为“自定义刷写”，内部 CUSTOM 标识保持一致。三个解锁子页的说明底部新增红字“仅适用于搭载8e5芯片的荣耀设备，其他设备请勿尝试。”。说明与红字统一缩小为 11sp。底栏玻璃背景与前景交互分层，使用直接绘制的圆角按压、悬停及焦点反馈，消除长按灰色矩形，保留选中滑动动画。这是界面提示与外观更新，提权适配、备份、来源和槽位路由及分区刷写流程沿用 2.4.1。
+**在搭载高通第五代骁龙 8 至尊版的荣耀设备上提供有限支持。**
 
-2.4.1 更新：解锁子页滑动与业务忙碌状态分离，修复松手时读取分区按钮和 A/B 标签闪动；状态栏、顶栏与二级菜单共用连续顶部模糊，统一由顶部模糊度控制。未识别槽位时显示较小字号的“当前槽位abl待识别”，A/B 徽标保持单行。新安装的 Monet 默认强调色为蔷薇粉、风格为鲜明、标准为 2021，已有明确保存的设置继续使用。
+| 应用内列出的支持设备 | 目前确定不支持的设备 |
+| --- | --- |
+| honor magic 8 | honor win rt2 |
+| honor magic 8 pro | honor magic 9 |
+| honor magic 8 rsr | |
+| honor win | |
+| honor robot phone | |
+| honor magic v6 | |
+| honor magicpad3 pro 13.3 | |
 
-自定义解锁新增 ABL“当槽刷写 / 对槽刷写 / 双槽刷写”，默认当槽；选择的是同一份已确定 ABL 镜像的实际写入目标。efisp 来源新增“将对槽的 ABL 修补为 efisp”，来源与写入目标独立。所有来源和目标均按运行槽位解析，源槽位、设备身份和哈希绑定本次生成结果。写入前完整备份、直接回读；双槽先对槽再当槽，全部选定 ABL 校验完成后才写 efisp。活动槽位和重启入口按原流程处理。
+这份列表仅用于展示，应用没有按型号设置硬性准入限制。相同处理器也可能具有不同的签名启动链、设备计数、固件接口和系统兼容条件；列表中的名称不构成对所有系统版本的兼容保证。使用前请确认当前设备、镜像和系统组合的适用性。
 
-2.4 更新：98260 默认采用 32 次有界尝试、480 秒内部预算和 600 秒 rootd 等待上限；日志出现 `holding zombie` 后仅再等待 15 秒即结束本轮，不强制杀死残留进程，失败提示追加“98260建议重启再试”。普通失败与 proof/PARKED 失败均只记录现场，不强制禁止重试或换链；一种链已经成功后再切换仍要求重启。失败记录包含 `boot_id` 和原因，每轮日志独立保存到 `/data/local/tmp/magic-98260/history/`，便于逐轮分析。2.3.9 的分区、备份、刷写及 Fastboot 文字修复原样保留。
+假回锁是基于 EFISP 的引导策略。Fastboot 显示、镜像接受行为与厂商官方解锁凭据是不同层面的状态，请勿仅凭某一处 `locked` / `unlocked` 显示判断全部启动链状态。
 
-2.3.9 更新：生成 efisp 时将 Fastboot 标签完整保留为单行 `device freedom (github hawyn2018)`，不插入自动换行。33 字节标签加 NUL 需要 34 字节；同步更新复制长度与已证明缓冲区容量，并回读校验指令参数、完整文字和核心补丁。沿用此前备份导出数量修复及 recovery 脚本 Unix 换行规范化修复。提权后端、分区调整、备份及刷写流程沿用 2.3.8。
+### 使用流程
 
-本次更新：解锁二级菜单支持左右滑动，点击菜单以滑动动画切换，选中标记同步移动。提权选项调整为 98260 在前、64650 在后；备份只提取当前槽位的 `init_boot`、`abl` 并保存 GPT 分区表，移除 vbmeta 备份和副本修补。假回锁写入完成后可选重启进入 Fastboot；仅解锁保留进入 Recovery 清 data 的提示；自定义按所选模式提供对应入口。沿用 2.3.7 的 ABL-EFISP 修补核心、文字定制和分区操作流程。
+#### 1. 建立提权通道
 
-## 功能
+1. 打开开发者选项中的**无线调试**，在应用的**提权**页面配对并连接 Shell。配对端口与连接端口是两个不同端口，应用支持自动发现，也可手动填写。
+2. 连接后先检查现有权限：`su` 授权成功，或 Shell 本身已经是 UID 0 时，可直接进行备份、解锁等操作。已有 KernelSU / Magisk 授权可使用相应 Root 通道。
+3. 尚未获得 Root 时，选择 **98260** 或 **64650**，再手动点击**执行提权流程**。配对或连接成功本身不会自动执行提权链；最终以应用的 UID 0 检查结果为准。
+4. 如使用特殊 `su` 可执行文件，在**设置 → 自定义 su 路径**保存绝对路径并开启开关，再回到提权页重新检查。该开关默认关闭。
 
-- **提权**：应用内无线调试配对与 Shell 连接，连接成功后选择 98260 或 64650 并手动执行提权。`Root98260Adapter` 使用 rootd，`Root64650Adapter` 使用 MagicRoot 默认链和 `bfexec`，两条链均由完整 `uname -r` 选择对应内核资产，不按设备型号裁剪。成功时记录链路和 `boot_id`，同一开机周期切换到另一链前必须重启。通过 `RootProcessProvider` 的真实 UID 0 验证后，后续备份和解锁继续使用现有命令通道，不要求另行安装 KSU 管理器或再次授权。无线连接会轮换系统公布的本机候选端口，通过 UID 2000 验证后使用实际可用的端口；Android 14 及以上采用独立服务订阅，避免单个解析阻塞。
-- **备份**：提取 A/B 双槽的 `init_boot`、`abl`，保存四份原始镜像、当前槽位标记、GPT 分区表备份、清单及 SHA-256 校验值。当前槽位通过同目录的 `slot_active_a` 或 `slot_active_b` 记录，文件内容仅为对应字母 `a` 或 `b`。输出目录为内部存储的 `Download/ublbackup_yyyyMMdd_HHmmss`，时间取自实际开始备份时的设备时间。
-- **解锁**：提供假回锁解锁、仅解锁、自定义刷写三个入口。普通两页均从当前槽位 ABL 生成 `efisp.img`，向当前槽位 ABL 分区写入内置 `abl.img`；自定义页分别选择 ABL 写入来源、efisp 来源及解锁模式。执行分区准备、`efisp` 创建或复用、ABL 与 EFI 镜像写入及校验，完成后按所选模式提供 Fastboot 或 Recovery 入口。
-- **设置**：提供 Monet 取色、强调色、玻璃模糊、悬浮底栏等外观选项，页面支持左右滑动切换。
+提权可能需要较长时间。按页面提示清理提权临时文件，并等待日志和权限状态完成更新；若设备重启，需要重新建立无线调试连接后再操作。
 
-## 镜像生成与文字定制
+#### 2. 备份，并将备份导出设备
 
-应用移除预制 `efisp.img` 资源。假回锁与仅解锁在取得 Root 后，使用 `dd` 直接读取当前槽位 ABL，保留原始输入用于本次修补；实际写入 ABL 分区的仍是内置 `abl.img`。两个修补模式使用同一份已提供工具的核心代码，不通过启动另一 APK 完成处理。
-
-自定义 ABL 刷写来源为“使用上传版本 / 使用内置版本”，刷入目标为“当槽刷写 / 对槽刷写 / 双槽刷写”；efisp 来源为“上传 efisp 原样刷入 / 上传 ABL 修补 / 当前槽位 ABL 修补 / 对槽 ABL 修补 / 内置 ABL 修补”。选择生成时可选假回锁或仅解锁模式，默认假回锁。上传来源需先选择文件，各项来源独立；普通假回锁和仅解锁仍使用当前槽位来源并仅向当槽写入内置 ABL。
-
-生成镜像时，fastboot 的 `PHONE unlocked` 定制为 `device freedom (github hawyn2018)`。仅解锁模式同时将开机警告定制为：
+在**备份**页面点击**备份分区与分区表**。备份保存到：
 
 ```text
-your device has been unlocked and now freedom
-unlocktool opensource address
-https://github.com/hawyn2018/honor_8e5_ubl
+内部存储/Download/hnubl/ublbackup_yyyyMMdd_HHmmss/
 ```
 
-假回锁模式保留开机警告资源文字。Fastboot 标签使用完整单行文字；测宽使用固件实际字形宽度，并保留原面板尺寸检查。复制容量保持在分析已证明的缓冲区范围内。通用文字 API 的默认自动分行行为保持不变，本应用生成 efisp 时显式关闭自动分行。
+日期时间来自点击开始备份时的设备时间，例如 `ublbackup_20261103_142705`。主要内容包括：
 
-假回锁模式完成后显示“刷写完成”，点击重启进入 Fastboot 实际执行 `reboot bootloader`。仅解锁及自定义的仅解锁模式保留进入 Recovery 清 data 的提示，重启命令为 `reboot recovery`。两种入口均需用户手动确认。自定义上传 efisp 时保持上传字节原样，所选模式用于完成提示及重启入口；入口按执行开始时固定的选择记录。
+```text
+init_boot_a.img
+init_boot_b.img
+abl_a.img
+abl_b.img
+slot_active_a  或  slot_active_b
+GPT 主备表、分区信息、清单及校验记录
+```
 
-修补、文字回读与输出校验先完成，再固定 SHA-256 和来源记录；分区操作与操作包打包使用该固定镜像，打包时不重新提取 ABL。详细来源、流程与调用说明见 [2.3.7 解锁模式](docs/unlock-modes-2.3.7.md)。
+`slot_active_a` / `slot_active_b` 的内容只有对应字母 `a` / `b`。当前备份功能不包含 vbmeta 修补。请将备份另存到电脑等设备外位置，再进行分区调整、镜像刷写或清除 data。
 
-提权、备份和仅解锁入口均提供等待时间提示。提权提示补充了崩溃重启后的无线调试重连说明。四页内容底部均显示项目 GitHub 链接，点击访问、长按复制。执行分区写入前，请将备份导出设备。
+#### 3. 选择解锁方式
 
-双接口注册方法、模板和命令进程契约见 [2.3.6 提权对接说明](docs/root-adapter-2.3.6.md)。界面的两条提权链说明随选项切换；实际是否就绪，以已注册后端和 UID 0 验证结果为准。
+| 模式 | 默认 EFISP 来源 | 默认 ABL 写入 | 完成后的入口 |
+| --- | --- | --- | --- |
+| **假回锁解锁** | 当前槽位 ABL → 假回锁 EFISP | 内置 ABL，A/B 双槽 | 显示刷写完成，可选择进入 Fastboot。 |
+| **仅解锁** | 当前槽位 ABL → 仅解锁 EFISP | 内置 ABL，A/B 双槽 | 提示进入 Recovery 清除 data。 |
+| **自定义刷写** | 可选来源和修补模式 | 可选上传 / 内置 ABL，以及当槽 / 对槽 / 双槽 | 随所选假回锁或仅解锁模式变化。 |
 
-## 构建
+自定义刷写中的 **ABL 写入来源**与 **EFISP 修补来源**分别选择。上传用于写入的 ABL，不会自动替代另一项修补来源。EFISP 可选上传成品原样刷入，或由上传 ABL、当前槽位 ABL、对槽 ABL、内置 ABL 生成。
 
-构建环境：
+应用不内置预制 EFISP。生成流程先固定所选来源、完成修补与文字定制，然后使用固定的镜像执行后续步骤。默认场景下，当前槽位 ABL 的提取发生在 ABL 刷写之前。
 
-- JDK 21
-- Android SDK Platform 37、Build Tools 37.0.0
-- Android NDK r29，包含 ARM64 编译工具链
-- Gradle 9.6.1，使用仓库中的 Gradle Wrapper
+点击开始后，工具会备份本次任务需要的 GPT 和原始分区，检查 F2FS 与连续尾部空间，按需要调整 userdata 并创建 `efisp`，再写入 ABL 与 EFISP、进行回读校验。**已有 `efisp` 时复用该分区，跳过 userdata 缩容和新建分区。** 分区调整和引导镜像刷写会影响设备启动；请按实际日志确认完成后再重启。
 
-在项目根目录通过 PowerShell 配置 SDK 和 NDK 路径后构建：
+由外部来源修补失败时，完整解锁流程可询问是否使用内置 ABL 重新修补后继续；选择停止会保留失败日志。已有文件的来源选择和实际生成结果可在日志中核对。
+
+### 保留锁态 OTA
+
+此功能用于**系统 OTA 安装完成、尚未重启**的阶段。配套模块负责与系统软件更新协作，hnubl 负责备份及保留锁态处理；最终仍由系统软件更新执行原生收尾与重启。
+
+#### 推荐顺序
+
+1. **开始系统升级前**，进入 hnubl 的 OTA 页面，点击**升级前请点此处安装或更新模块**，确认日志中的模块状态。相同或更高版本的已安装模块不会被降级重装。
+2. 打开系统**软件更新**，按系统流程下载并安装更新。配套模块提供自动更新控制、全量包入口，以及完成后的倒计时 / 重启保护。其 WebUI 可选择**始终获取全量包**：首次安装默认关闭，后续升级保留已有设置；“立即应用”只对软件更新应用应用配置，不重启设备。
+3. 安装完成后，系统更新的重启入口在 hnubl 完整流程成功前显示为**继续流程**，点击进入 hnubl 的 OTA 页面。若显示增强在某个版本未匹配，请以实际模块状态和流程日志为准。
+4. 选择标准、尝鲜或自定义 OTA，执行**保留锁态 OTA**。工具要求设备已有 `efisp`，并在相关分区写入之前完成相应备份。
+5. **hnubl 不修补 `init_boot`。** 若使用 KernelSU 并需要保留它，请在重启前进入 KernelSU，执行**安装到未使用的槽位**。
+6. 完整流程成功后，hnubl 写入完成许可并返回软件更新。确认上述步骤完成，再点击系统软件更新中的**立即重启**，由系统原流程完成重启。若自动返回未成功，可点击 hnubl 的**返回软件更新**或手动打开软件更新。
+
+#### 三种 OTA 方案
+
+| 方案 | ABL 刷写来源 | EFISP 处理来源 |
+| --- | --- | --- |
+| **标准 OTA** | 应用内置 ABL | 当前槽位 ABL 修补。 |
+| **尝鲜 OTA（默认）** | 应用内置 ABL | OTA 写入后的对槽 ABL 修补。 |
+| **自定义 OTA** | 当前槽位 / 内置 / 上传 ABL | 按所选 EFISP 来源和修补模式处理。 |
+
+手动更改 ABL 或 EFISP 来源会切到自定义 OTA。高级来源还包括不操作 EFISP、直接刷入上传的 EFISP、上传 ABL 修补、设备现有 EFISP 增加功能、上传 EFISP 增加功能等。
+
+OTA 备份目录为：
+
+```text
+内部存储/Download/hnubl/hnubl_ota_backup_yyyyMMdd_HHmmss/
+```
+
+**仅刷写 EFISP**用于单独更新 EFISP，**导出 EFISP**用于生成并保存镜像。它们不等同于完整保留锁态 OTA，单独执行不会获得完整 OTA 的重启放行许可。仅刷写完成后的按钮也为“返回软件更新”；导出流程不写入分区。
+
+完整 OTA 修补外部来源失败时可确认使用内置 ABL 重试；仅刷写 / 导出失败会显示重试建议。请根据实际所选来源、备份和输出日志判断结果。
+
+### 2.9.6 更新重点
+
+- 软件更新完成页的按钮已识别且文字正确后，稳定轮询只在后台读取状态，相同状态不再重复扫描、读取或改写页面。
+- 滚动期间延后识别和文字更新；纯滚动不制造整树扫描，真实内容变化在停稳后合并处理。
+- 仅对曾匹配的少量标签使用标准 TextWatcher，兼容固定尺寸控件换字但不触发布局的情况；首次未匹配和监听缺失时保留受滚动保护的低频兜底。
+- 显示增强与实际重启门控分离，既有许可、OTA 事务和分区刷写逻辑保持。
+
+细节见 [2.9.6 完成页性能说明](docs/ota-2.9.6.md)、[OTA 返回与续接](docs/ota-2.9.2.md) 和 [文件来源及自定义 su](docs/app-logic-2.8.14.md)。
+
+---
+
+## English
+
+**hnubl is an all-in-one bootloader unlocking toolkit built specifically for HONOR 8e5 devices, with fake-lock support and integrated OTA handling that preserves the intended lock state.**
+
+It brings wireless-debugging pairing, privilege access, partition backups, ABL-to-EFISP patching, partition preparation, flashing, and post-OTA handling into one application. The interface uses [Miuix](https://github.com/compose-miuix-ui/miuix), with dynamic colors, glass blur, and five swipeable navigation pages.
+
+**Navigation:** [Features](#features) · [Device support](#device-support) · [Getting started](#getting-started) · [OTA workflow](#ota-workflow) · [Build](#building-from-source) · [License](#license-and-third-party-components) · [简体中文](#简体中文)
+
+### Features
+
+| Page | Capabilities |
+| --- | --- |
+| **Privilege access** | In-app wireless-debugging pairing and Shell connection, existing Root detection, manual 98260 / 64650 entry points, and an optional custom `su` path. |
+| **Backup** | Original `init_boot` and ABL images from both A/B slots, an active-slot marker, primary / backup GPT data, partition information, and SHA-256 records. |
+| **OTA** | Standard, Experimental, and Custom presets; installation / updating of the companion KSU module; EFISP-only flashing, image export, and feature upgrades for existing EFISP images. |
+| **Unlock** | Fake-lock unlock, Unlock only, and Custom flashing; EFISP generation; creation or reuse of the `efisp` partition; selectable ABL targets and read-back verification. |
+| **Settings** | Monet colors, accents, glass blur, a floating navigation bar, a launcher shortcut that follows app colors, custom `su`, support, and a bilingual license reader. |
+
+**Function- and data-flow-based patching.** The patcher identifies instructions, protocol arguments, buffers, and call relationships, allocates patch space dynamically, and supports recognized previously patched images. It does not use model, firmware-version, or fixed-address adaptation tables. Missing core targets are reported; optional enhancements follow their own skip policy. This broadens compatibility without guaranteeing every ABL or firmware combination.
+
+**Included KBL environment.** Generated EFISP images include explicitly activated KBL, Fastboot debugging commands, and EFI application loading. `kblstart` and `kbladb` are separate activation steps. File and partition operations, display controls, and other capabilities depend on the firmware interfaces actually identified. KBL runs in the native UEFI environment and has a different program interface from an Android / Linux Shell. See the [PC console documentation](tools/kbl_console/README.md).
+
+### Device support
+
+**Limited support is offered for HONOR devices using the fifth-generation Snapdragon 8 Elite platform.**
+
+| Devices listed as supported in the app | Devices currently confirmed as unsupported |
+| --- | --- |
+| honor magic 8 | honor win rt2 |
+| honor magic 8 pro | honor magic 9 |
+| honor magic 8 rsr | |
+| honor win | |
+| honor robot phone | |
+| honor magic v6 | |
+| honor magicpad3 pro 13.3 | |
+
+The list is informational: the application does not enforce a model allowlist. Devices sharing a processor can still differ in their signed boot chain, device counters, firmware interfaces, and system compatibility. A listed model is not a compatibility guarantee for every system version; check the suitability of your device and images before use.
+
+Fake-lock is an EFISP-based boot policy. Fastboot labels, image-acceptance behavior, and an OEM-issued unlock credential represent different layers of state. A single `locked` / `unlocked` display does not describe the entire boot chain.
+
+### Getting started
+
+#### 1. Establish privilege access
+
+1. Enable **Wireless debugging** in Developer options, then pair and connect from the app's privilege page. The pairing port and connection port are separate; automatic discovery and manual entry are both available.
+2. The app first checks existing access. An authorized `su` session or a Shell already running as UID 0 can be used directly for backup and unlock operations. Existing KernelSU / Magisk authorization can also provide a Root channel.
+3. If Root is still needed, select **98260** or **64650** and manually start the privilege workflow. Successful pairing or connection does **not** automatically execute a privilege chain. Readiness is based on the app's actual UID 0 check.
+4. For a custom `su` executable, save its absolute path under **Settings → Custom su path**, enable the option, then check access again. The option is disabled by default.
+
+Privilege setup may take time. Follow the on-screen temporary-file guidance and wait for the logs and access status to finish updating. If the device restarts, reconnect wireless debugging before proceeding.
+
+#### 2. Back up and copy the backup off the device
+
+Use **Backup partitions and partition tables** on the Backup page. Files are saved under:
+
+```text
+Internal storage/Download/hnubl/ublbackup_yyyyMMdd_HHmmss/
+```
+
+The timestamp uses the device's time when backup starts. The backup includes `init_boot_a.img`, `init_boot_b.img`, `abl_a.img`, `abl_b.img`, GPT data, partition information, manifests, and verification records. `slot_active_a` or `slot_active_b` contains the single corresponding letter, `a` or `b`.
+
+The current backup workflow does not patch vbmeta. Copy the backup to a computer or another off-device location before changing partitions, flashing boot images, or clearing data.
+
+#### 3. Choose an unlock mode
+
+| Mode | Default EFISP source | Default ABL write | Completion action |
+| --- | --- | --- | --- |
+| **Fake-lock unlock** | Current-slot ABL, patched in fake-lock mode | Bundled ABL to both slots | Reports completion and offers Fastboot. |
+| **Unlock only** | Current-slot ABL, patched in unlock-only mode | Bundled ABL to both slots | Offers Recovery with a data-wipe prompt. |
+| **Custom flashing** | Selectable source and patch mode | Uploaded / bundled ABL; current / other / both slots | Follows the selected patch mode. |
+
+The ABL image to flash and the ABL used to generate EFISP are independent selections. Custom EFISP inputs include an uploaded ready-made image, an uploaded ABL, current-slot ABL, other-slot ABL, and bundled ABL.
+
+The app does not bundle a pre-generated EFISP image. It snapshots the selected input, completes patching and text customization, and uses that fixed output for subsequent operations. In the default workflow, extraction of the current-slot ABL happens **before** ABL flashing.
+
+The operation backs up the required GPT and original partitions, checks F2FS and contiguous tail space, adjusts userdata and creates `efisp` when needed, then writes ABL and EFISP with read-back verification. **An existing `efisp` partition is reused; userdata shrinking and partition creation are skipped.** Partition changes and boot-image flashing affect startup, so confirm completion in the logs before rebooting.
+
+If a selected external source fails to patch during a full unlock workflow, the app can ask whether to retry with the bundled ABL and continue. Choosing to stop preserves the failure logs.
+
+### OTA workflow
+
+Run this workflow **after the system OTA has finished installing and before rebooting**. The companion module coordinates with the system updater; hnubl performs the backup and lock-state preservation work. Finalization and reboot remain part of the system updater's native workflow.
+
+1. **Before starting the system upgrade**, open the OTA page and use **Install or update the module before upgrading**. Check the installation / readiness logs. An installed module of the same or a newer version is not downgraded or reinstalled.
+2. Download and install the update in the system updater. The module provides automatic-update control, a full-package entry, and post-install countdown / reboot protection. Its WebUI offers **Always obtain a full package**, disabled on first installation and preserved across subsequent upgrades. **Apply now** applies the setting to the updater application without rebooting the device.
+3. Until the full hnubl OTA workflow succeeds, the updater's restart action is presented as **Continue workflow** and opens hnubl. Presentation is an optional enhancement; check actual module readiness and logs if a particular updater version does not match it.
+4. Select a preset and execute the full **Preserve lock-state OTA** operation. An existing `efisp` partition is required. Relevant backups are completed before the corresponding ABL / EFISP writes.
+5. **hnubl does not patch `init_boot`.** If you use KernelSU and wish to retain it, use **Install to inactive slot** in KernelSU before rebooting.
+6. On full success, hnubl records completion permission and returns to the system updater. After the preceding steps are complete, choose **Restart now** there and let the updater perform its original reboot flow. If the automatic handoff fails, use **Return to system updater** or open it manually.
+
+| Preset | ABL image to flash | EFISP input |
+| --- | --- | --- |
+| **Standard OTA** | Bundled ABL | Current-slot ABL. |
+| **Experimental OTA — default** | Bundled ABL | Other-slot ABL written by the system OTA. |
+| **Custom OTA** | Current-slot / bundled / uploaded ABL | The selected EFISP source and patch mode. |
+
+Changing either source manually selects Custom OTA. Advanced options include leaving EFISP untouched, flashing an uploaded EFISP directly, patching uploaded ABL, or adding features to an existing / uploaded EFISP image.
+
+OTA backups are saved in `Download/hnubl/hnubl_ota_backup_yyyyMMdd_HHmmss/`.
+
+**Flash EFISP only** updates EFISP separately. **Export EFISP** generates and saves an image without writing a partition. Neither replaces the full lock-state preservation workflow or grants its reboot permission. EFISP-only completion also offers **Return to system updater**; image export has no reboot action.
+
+### What's new in 2.9.6
+
+- Once the updater's action label is correct, stable polling reads state in the background without repeatedly scanning, reading, or rewriting the UI.
+- Scrolling delays pending discovery and rendering. Pure scrolling does not request a full-tree scan; real content changes are merged after scrolling settles.
+- Standard TextWatchers observe only the small number of previously matched controls, including fixed-size text changes that do not trigger layout. Scroll-safe fallback checks cover initial discovery and unavailable listeners.
+- Label presentation remains separate from the existing permission gate, OTA transaction, and partition-writing logic.
+
+See [2.9.6 performance notes](docs/ota-2.9.6.md), [OTA handoff and continuation](docs/ota-2.9.2.md), and [file roles / custom su](docs/app-logic-2.8.14.md) for implementation details.
+
+---
+
+## 项目资料 / Project information
+
+### 从源码构建
+
+| 组件 | 当前配置 |
+| --- | --- |
+| JDK | 21 |
+| Android SDK | Platform 37、Build Tools 37.0.0 |
+| Android NDK | r29，含 ARM64 LLVM 工具链 |
+| Gradle | 9.6.1，使用仓库 Wrapper |
+
+在项目根目录通过 PowerShell 配置本机路径：
 
 ```powershell
 $env:ANDROID_HOME = Read-Host "Android SDK 目录"
@@ -80,22 +281,71 @@ $env:ANDROID_NDK_HOME = Read-Host "Android NDK r29 目录"
 .\gradlew.bat :app:assembleRelease
 ```
 
-Release APK 输出至 `app/build/outputs/apk/release/`。当前构建配置使用本地自动生成的 Debug 签名配置签署 Release，仓库不包含签名密钥；不同签名构建之间的覆盖安装需要保持签名一致。
+APK 输出到 `app/build/outputs/apk/release/`。当前构建脚本以本机 Debug 签名配置签署 Release；本仓库不包含签名私钥，覆盖安装需要保持签名一致。
 
-如需构建调试版本，执行 `.\gradlew.bat :app:assembleDebug`。Debug 版本使用 `.debug` 包名后缀，并关闭分区写入入口；实际写入流程使用 Release 构建。
+开发调试可运行 `:app:assembleDebug`。Debug 构建使用 `.debug` 包名后缀，**关闭分区写入入口**；实际写入流程使用 Release 构建。应用最低 API 配置为 28，设备功能是否可用仍取决于系统、权限及固件接口。
 
-## 源码结构
+### 源码导航
 
-| 目录 | 内容 |
+| 路径 | 内容 |
 | --- | --- |
-| `app/` | 主应用、Compose 界面、提权对接、备份、分区处理及镜像资源 |
-| `rootbridge/` | 辅助 Root 桥接应用源码 |
-| `tools/` | 设备检查与 Root 桥调用辅助脚本 |
-| `third_party/toolchain/` | 随附工具对应的上游源码归档、构建脚本和许可证 |
-| `app/src/main/assets/licenses/` | 第三方组件许可证、来源说明与声明 |
+| [`app/`](app/) | Android 应用、Miuix / Compose 界面、权限通道、备份、分区操作与 OTA 事务。 |
+| [`abl-efisp-core/`](abl-efisp-core/) | ABL / EFISP 分析、修补与成品处理核心。 |
+| [`ota-module/`](ota-module/) | 配套模块、原生与 Java 钩子、协议服务、WebUI。 |
+| [`runtime/`](runtime/) | KBL 原生运行环境、UEFI / 文件系统 / ADB 接口。 |
+| [`tools/kbl_console/`](tools/kbl_console/) | KBL 电脑端控制台与传输工具。 |
+| [`rootbridge/`](rootbridge/) | 独立 Root 桥接辅助应用。 |
+| [`docs/`](docs/) | 功能、版本及接口说明。 |
+| [`third_party/`](third_party/) | 第三方组件、工具来源、构建材料与许可证。 |
 
-此仓库仅发布源码和所需资源，不发布 APK 或 GitHub Releases，也不包含运行日志、个人设备日志及签名密钥。
+本仓库侧重源码与所需资源；签名私钥、APK 构建产物、个人设备日志和本地运行日志不纳入源码发布。
 
-## 许可证
+### 许可证与第三方组件
 
-本项目源码采用 **GPL-3.0-only**，详见 [LICENSE](LICENSE)。第三方组件继续适用各自的许可证，原有声明保留在 `app/src/main/assets/licenses/` 及对应第三方目录中。
+hnubl 及随附修补器、模块、KBL 中属于本项目的代码采用 **AGPL-3.0-only**，详见 [LICENSE](LICENSE)。应用内提供中英双语阅读入口，首次打开需要同意后继续使用；中文文本用于阅读参考，许可条款以英文原文为准。
+
+第三方组件沿用各自许可证，项目整体许可不替代其原有声明。请保留 [`app/src/main/assets/licenses/`](app/src/main/assets/licenses/) 及 [`third_party/`](third_party/) 中的许可证、来源和 NOTICE。项目按现状提供，设备和固件适用性需要由使用者确认。
+
+---
+
+### Building from source
+
+The current configuration uses **JDK 21**, **Android SDK Platform 37 / Build Tools 37.0.0**, **NDK r29 with the ARM64 LLVM toolchain**, and the included **Gradle 9.6.1 Wrapper**.
+
+From the project root in PowerShell:
+
+```powershell
+$env:ANDROID_HOME = Read-Host "Android SDK directory"
+$env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
+$env:ANDROID_NDK_HOME = Read-Host "Android NDK r29 directory"
+.\gradlew.bat :app:assembleRelease
+```
+
+The APK is generated under `app/build/outputs/apk/release/`. The current script signs Release with the local Debug signing configuration. Signing private keys are excluded from the repository; updates installed over an existing build must use a matching signing key.
+
+Use `:app:assembleDebug` for development. Debug builds have a `.debug` application-ID suffix and **disable partition-writing entry points**. Use a Release build for the actual writing workflow. The configured minimum API is 28; individual capabilities still depend on the system, permissions, and firmware interfaces.
+
+### Source map
+
+| Path | Contents |
+| --- | --- |
+| [`app/`](app/) | Android app, Miuix / Compose UI, privilege channels, backups, partition operations, and OTA transactions. |
+| [`abl-efisp-core/`](abl-efisp-core/) | ABL / EFISP analysis, patching, and output handling. |
+| [`ota-module/`](ota-module/) | Companion module, native / Java hooks, protocol service, and WebUI. |
+| [`runtime/`](runtime/) | KBL runtime and UEFI, filesystem, and ADB interfaces. |
+| [`tools/kbl_console/`](tools/kbl_console/) | PC console and transfer tools for KBL. |
+| [`rootbridge/`](rootbridge/) | Standalone Root bridge helper. |
+| [`docs/`](docs/) | Feature, version, and interface documentation. |
+| [`third_party/`](third_party/) | Third-party components, source materials, build resources, and licenses. |
+
+The repository focuses on source code and required resources. Signing private keys, APK build outputs, personal device logs, and local runtime logs are excluded from source publication.
+
+### License and third-party components
+
+Project-owned code in hnubl and its included patcher, module, and KBL is licensed under **AGPL-3.0-only**; see [LICENSE](LICENSE). The app includes Chinese and English license readers and requires agreement on first launch. The Chinese text is for reading assistance; the English license text governs.
+
+Third-party components retain their own licenses. Preserve the license, source, and NOTICE files in [`app/src/main/assets/licenses/`](app/src/main/assets/licenses/) and [`third_party/`](third_party/). The project is provided as is; users must establish suitability for their particular device and firmware.
+
+<div align="center">
+  <p><a href="#简体中文">中文版</a> · <a href="#english">English</a> · <a href="https://github.com/hawyn2018/honor_8e5_ubl">GitHub</a></p>
+</div>

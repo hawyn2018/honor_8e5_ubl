@@ -1,0 +1,27 @@
+{
+  "repository": "https://github.com/SuperTurtleDev/gbl_root_canoe",
+  "commit": "4ef438cfde42943694fde5753bbf5d8c0b4ec02e",
+  "purpose": "Read-only upstream reference source and attribution; new command behavior follows one-way BlApply(TRUE, existing critical), not toggle; original file notices retained",
+  "files": [
+    {
+      "upstreamPath": "submodules/uefi/edk2/AndroidToolsPkg/Application/BLTools/BLTools.c",
+      "path": "third_party/gbl_root_canoe/BLTools.c",
+      "sha256": "d34dd73e81a67305dd567e8466aaa4440c996e86974b37eb5448d165a61fd8b1"
+    },
+    {
+      "upstreamPath": "submodules/uefi/edk2/AndroidToolsPkg/Include/AtDevInfo.h",
+      "path": "third_party/gbl_root_canoe/AtDevInfo.h",
+      "sha256": "224fbfe170d90faedf5c5e0f279543fcd66b459cc4a130a6efcc71bc366c5b9c"
+    },
+    {
+      "upstreamPath": "submodules/uefi/edk2/AndroidToolsPkg/Include/AtVerifiedBoot.h",
+      "path": "third_party/gbl_root_canoe/AtVerifiedBoot.h",
+      "sha256": "a4f86d712c2ac77499bbba4c217de9716f90e42926393f84f20f8b2c3d3b788f"
+    },
+    {
+      "upstreamPath": "LICENSE",
+      "path": "third_party/gbl_root_canoe/LICENSE",
+      "sha256": "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809"
+    }
+  ]
+}

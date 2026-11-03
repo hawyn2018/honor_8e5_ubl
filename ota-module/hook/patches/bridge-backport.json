@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "upstreamRepository": "https://github.com/frida-packages/frida-java-bridge",
+  "upstreamPullRequest": "https://github.com/frida-packages/frida-java-bridge/pull/398",
+  "upstreamCommit": "67f1b1116e8b827014825a46693929221136b0c8",
+  "upstreamPatchSha256": "ff67d52d60fe9024dbd2d36f376c29b3ad2e21b7c7e41e989f2a1849899328e7",
+  "author": "Wes Smith (Wes765)",
+  "committer": "Ole Andre Vadla Ravnas (oleavr)",
+  "baseVersion": "7.0.13",
+  "runtimeVersionUnchanged": "17.25.0",
+  "license": "LGPL-2.0 WITH WxWindows-exception-3.1",
+  "licenseSource": "https://raw.githubusercontent.com/frida-packages/frida-java-bridge/67f1b1116e8b827014825a46693929221136b0c8/package.json",
+  "file": "lib/android.js",
+  "originalSha256": "ee119401893ab7353525fe181c99554cd13776c10a47e24ebf29c2d0de28a11c",
+  "patchedSha256": "f9807d3357fe7743e411fdea5e93313004edf50372f055c2ab86eb513680060f",
+  "localDiffSha256": "c9a6936687db7410e540dd34b62db55439b4d2406294b01344c3505c26053d95",
+  "changes": [
+    "Mask kAccNterpEntryPointFastPathFlag during ArtMethod access-flags discovery",
+    "Flush callback literal pool before relocated ExceptionClear body and enter at performEntry"
+  ],
+  "noGlobalDeoptimizationAdded": true
+}

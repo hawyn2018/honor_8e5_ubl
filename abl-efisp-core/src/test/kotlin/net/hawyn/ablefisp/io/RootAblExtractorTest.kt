@@ -66,7 +66,7 @@ class RootAblExtractorTest {
     @Test fun malformedPathsAndOversizedPartitionsAreRejected() {
         fails { select(metadata(partitions = "PART|abl_b|/dev/block/by-name/abl_b|/dev/block/../data/private|4")) }
         fails { select(metadata(partitions = "PART|abl_b|/dev/block/by-name/abl_b|/data/private|4")) }
-        fails { select(metadata(partitions = "PART|abl_b|/dev/block/by-name/abl_b|/dev/block/sde2|67108865")) }
+        fails { select(metadata(partitions = "PART|abl_b|/dev/block/by-name/abl_b|/dev/block/sde2|134217729")) }
         fails { select(metadata(partitions = "PART|abl_b|/dev/block/by-name/abl_b|/dev/block/sde2|0")) }
     }
 

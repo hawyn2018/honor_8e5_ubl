@@ -97,6 +97,28 @@ class A64ValueOriginsTest {
         assertFalse(A64ValueOrigins(synthetic(code), 0x1000, 0x1010).derivesFromEntry(0x1004, 20, 0))
     }
 
+    @Test fun joiningSharedBranchStatesDoesNotMutateEitherPredecessor() {
+        val flow = A64ValueOrigins(synthetic(mapOf(
+            0x1000 to 0xaa0003f5.toInt(), // MOV X21,X0: unchanged caller object.
+            0x1004 to adr(22, 0x1004, 0x1500),
+            0x1008 to adr(20, 0x1008, 0x1400),
+            0x100c to 0xd10103ff.toInt(), // SUB SP,SP,#64
+            0x1010 to conditional(0x34000000, 0x1010, 0x1024),
+            0x1014 to add(19, 31, 8), 0x1018 to A64.branch(0x1018, 0x1030),
+            0x1024 to add(19, 31, 16), 0x1028 to adr(20, 0x1028, 0x1440),
+            0x102c to A64.branch(0x102c, 0x1030), 0x1034 to RET,
+        )), 0x1000, 0x1040)
+        assertEquals(8, flow.stackAddress(0x1018, 19))
+        assertEquals(16, flow.stackAddress(0x102c, 19))
+        assertEquals(0x1400L, flow.globalAddress(0x1018, 20))
+        assertEquals(0x1440L, flow.globalAddress(0x102c, 20))
+        assertNull(flow.stackAddress(0x1030, 19))
+        assertNull(flow.globalAddress(0x1030, 20))
+        assertEquals(0x1500L, flow.globalAddress(0x1030, 22))
+        assertTrue(flow.addressDerivesFromEntry(0x1030, 21, 0))
+        assertFalse(flow.hasOnlyLinearEntry(0x1014, 0x1030))
+    }
+
     private fun tableImage(arrayOffset: Int = 0x130, guardCondition: Int = 8): PeImage = synthetic(mapOf(
         0x1000 to 0xaa0003f3.toInt(), // MOV X19,X0: caller-owned object
         0x1004 to add(23, 19, arrayOffset), 0x1008 to csel(21), 0x100c to storeW(21, 31, 0x5c),
@@ -114,6 +136,10 @@ class A64ValueOriginsTest {
 
     private fun csel(rd: Int) = 0x1a8813e0 or rd // CSEL Wd,WZR,W8,NE
     private fun add(rd: Int, rn: Int, amount: Int) = 0x91000000.toInt() or (amount shl 10) or (rn shl 5) or rd
+    private fun adr(rd: Int, pc: Int, target: Int): Int {
+        val offset = target - pc
+        return 0x10000000 or ((offset and 3) shl 29) or (((offset shr 2) and 0x7ffff) shl 5) or rd
+    }
     private fun mem(base: Int, rt: Int, rn: Int, offset: Int, width: Int) = base or ((offset / width) shl 10) or (rn shl 5) or rt
     private fun loadW(rt: Int, rn: Int, offset: Int) = mem(0xb9400000.toInt(), rt, rn, offset, 4)
     private fun storeW(rt: Int, rn: Int, offset: Int) = mem(0xb9000000.toInt(), rt, rn, offset, 4)

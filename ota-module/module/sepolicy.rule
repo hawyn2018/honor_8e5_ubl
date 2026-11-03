@@ -1,0 +1,3 @@
+# DAC, SO_PEERCRED and certificate checks still authorize every request.
+# The socket lives under the allowed app's own private data directory.
+allow appdomain ksu unix_stream_socket connectto

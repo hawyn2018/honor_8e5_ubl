@@ -4,6 +4,7 @@ import android.os.Build
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -51,10 +52,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
+internal enum class MainPage(val title: String, val label: String) {
+    ROOT("提权", "提权"), BACKUP("分区备份", "备份"), OTA("保留锁态 OTA", "OTA"),
+    UNLOCK("刷入gbl解锁bl", "解锁"), SETTINGS("设置", "设置")
+}
+
 /** Both bars sample the same scrolling content; their foreground is never passed through a blur. */
 @Composable
 internal fun GlassTopBar(
     backdrop: GlassBackdrop?, title: String, blurDp: Float, statusBarHeight: Dp,
+    onBack: (() -> Unit)? = null,
     secondaryContent: @Composable ColumnScope.() -> Unit = {},
 ) {
     val surface = MiuixTheme.colorScheme.surface
@@ -62,12 +69,19 @@ internal fun GlassTopBar(
         // Keep the one full-width backdrop separate from the menu's clipped/ripple layers.
         Box(Modifier.matchParentSize().blurBackground(backdrop, blurDp, surface))
         Column(Modifier.fillMaxWidth().padding(top = statusBarHeight, bottom = 2.dp)) {
-        Row(Modifier.fillMaxWidth().height(50.dp).padding(start = 26.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().height(50.dp).padding(start = if (onBack != null) 10.dp else 26.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (onBack != null) {
+                Box(Modifier.size(44.dp).clip(RoundedCornerShape(16.dp))
+                    .clickable(role = Role.Button, onClick = onBack)
+                    .semantics { contentDescription = "返回设置" }, contentAlignment = Alignment.Center) {
+                    PageChevron(Modifier.size(22.dp), MiuixTheme.colorScheme.onSurface, pointsRight = false)
+                }
+            }
             Text(title, modifier = Modifier.weight(1f), fontSize = MiuixTheme.textStyles.title3.fontSize, fontWeight = FontWeight.Medium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             Box(Modifier.widthIn(min = 36.dp).height(36.dp).clip(RoundedCornerShape(12.dp)).background(MiuixTheme.colorScheme.primary.copy(alpha = .10f))
                 .padding(horizontal = 10.dp), contentAlignment = Alignment.Center) {
-                Text("honor_ubl", fontSize = 11.sp, maxLines = 1, fontWeight = FontWeight.Bold, color = MiuixTheme.colorScheme.primary)
+                Text("honor_8e5_ubl", fontSize = 11.sp, maxLines = 1, fontWeight = FontWeight.Bold, color = MiuixTheme.colorScheme.primary)
             }
         }
             secondaryContent()
@@ -90,7 +104,7 @@ internal fun GlassBottomBar(
     val surface = MiuixTheme.colorScheme.surface
     val primary = MiuixTheme.colorScheme.primary
     val dark = isSystemInDarkTheme()
-    val tabs = listOf("提权", "备份", "解锁", "设置")
+    val tabs = MainPage.entries.map { it.label }
     val shape = if (floating) RoundedCornerShape(31.dp) else RectangleShape
     val container = if (floating) Modifier.padding(start = 22.dp, end = 22.dp, bottom = navigationBottom + 13.dp)
         else Modifier
@@ -208,6 +222,19 @@ private fun NavigationGlyph(index: Int, color: Color, modifier: Modifier = Modif
                 drawLine(color, Offset(w * .25f, h * .17f), Offset(w * .75f, h * .17f), stroke, StrokeCap.Round)
             }
             2 -> {
+                drawArc(color, startAngle = 205f, sweepAngle = 145f, useCenter = false,
+                    topLeft = Offset(w * .14f, h * .14f), size = Size(w * .72f, h * .72f),
+                    style = Stroke(stroke, cap = StrokeCap.Round))
+                drawArc(color, startAngle = 25f, sweepAngle = 145f, useCenter = false,
+                    topLeft = Offset(w * .14f, h * .14f), size = Size(w * .72f, h * .72f),
+                    style = Stroke(stroke, cap = StrokeCap.Round))
+                val arrows = Path().apply {
+                    moveTo(w * .69f, h * .35f); lineTo(w * .85f, h * .44f); lineTo(w * .87f, h * .25f)
+                    moveTo(w * .31f, h * .65f); lineTo(w * .15f, h * .56f); lineTo(w * .13f, h * .75f)
+                }
+                drawPath(arrows, color, style = Stroke(stroke, cap = StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+            }
+            3 -> {
                 drawRoundRect(color, Offset(w * .17f, h * .41f), Size(w * .66f, h * .44f), CornerRadius(w * .10f), style = Stroke(stroke))
                 val shackle = Path().apply {
                     moveTo(w * .30f, h * .43f)

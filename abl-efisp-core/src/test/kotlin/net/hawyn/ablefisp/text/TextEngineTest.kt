@@ -141,7 +141,7 @@ class TextEngineTest {
         val source = fixture().also { it[0x5fff] = 0x7f }
         val result = TextEngine.apply(source, mapOf("fastboot-unlocked" to "a longer unlocked device freedom label"))
         val image = TextPe(result.output)
-        assertTrue(image.sections.any { it.name == ".eftxt" })
+        assertTrue(image.sections.any { it.name == ".texttxt" })
         val entry = TextEngine.scan(result.output).entries.single { it.id == "fastboot-unlocked" }
         assertTrue(entry.editable)
         assertEquals(entry.fileOffset, image.rvaToOffset(entry.rva, entry.text.length + 1))
@@ -155,7 +155,7 @@ class TextEngineTest {
             assertTrue(TextEngine.scan(output).entries.single { it.id == "fastboot-unlocked" }.editable)
         }
         val image = TextPe(output)
-        val added = image.sections.filter { it.name == ".eftxt" }
+        val added = image.sections.filter { it.name == ".texttxt" }
         assertEquals(1, added.size)
         assertTrue(added.single().size > 4096)
         assertEquals(0x1000, image.sections.first { it.name == ".text" }.raw)
@@ -166,7 +166,7 @@ class TextEngineTest {
         val initial = TextEngine.apply(fixture().also { it[0x5fff] = 0x7f },
             mapOf("fastboot-unlocked" to "First longer label needing extra storage")).output
         val initialPe = TextPe(initial)
-        val tail = initialPe.sections.single { it.name == ".eftxt" }
+        val tail = initialPe.sections.single { it.name == ".texttxt" }
         // Model a shared recovery/text tail whose existing contents must survive.
         initial.fill(0, tail.header, tail.header + 8)
         ".bfpol".toByteArray().copyInto(initial, tail.header)

@@ -10,6 +10,7 @@ import dev.honor.bootforge.core.RootProcessProvider
 import dev.honor.bootforge.core.RootShell
 import dev.honor.bootforge.ui.RootUiState
 import dev.honor.bootforge.wireless.ShellAccess
+import dev.honor.bootforge.wireless.WirelessState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -36,11 +37,41 @@ class RootFrameworkModel(application: Application) : AndroidViewModel(applicatio
     fun deploy() = step("部署提权资产") { binding -> deploy(binding) }
 
     /** The execution button is the only entry to deployment + elevation + UID-0 registration. */
-    fun acquire() = step("执行提权流程") { binding ->
-        if (deployedBinding != binding) deploy(binding)
-        state = state.copy(stage = "${binding.chain.id}：正在执行提权链，请耐心等待")
-        val provider = withContext(Dispatchers.IO) { binding.adapter.acquireRoot(ShellAccess, app) }
-        registerProvider(binding, provider)
+    fun acquire() {
+        // A selected external executable is a separate Root route. Do not deploy
+        // or run an integrated elevation chain while the user selected it.
+        val customSuEnabled = try { RootShell.customSuSettings().enabled }
+        catch (error: Exception) {
+            task("正在读取自定义 su 设置") { throw error }
+            return
+        }
+        if (customSuEnabled) {
+            checkRoot()
+            return
+        }
+        if (ShellAccess.uid == 0) {
+            task("正在检查无线 Root 通道") {
+                withContext(Dispatchers.IO) { ShellAccess.check(app) }
+                WirelessState.connected(app)
+                checkCurrentRoot()
+            }
+            return
+        }
+        if (RunState.state.rootStatus in setOf("已提权", "Root 已取得")) {
+            checkRoot()
+            return
+        }
+        step("执行提权流程") { binding ->
+            // step() freshly checks ADB; it may have become UID 0 since the button was pressed.
+            if (RunState.state.rootStatus in setOf("已提权", "Root 已取得")) {
+                checkCurrentRoot()
+                return@step
+            }
+            if (deployedBinding != binding) deploy(binding)
+            state = state.copy(stage = "${binding.chain.id}：正在执行提权链，请耐心等待")
+            val provider = withContext(Dispatchers.IO) { binding.adapter.acquireRoot(ShellAccess, app) }
+            registerProvider(binding, provider)
+        }
     }
 
     private suspend fun deploy(binding: RootBinding) {
@@ -68,10 +99,13 @@ class RootFrameworkModel(application: Application) : AndroidViewModel(applicatio
         step("清理提权临时文件", binding) { owner ->
             withContext(Dispatchers.IO) { owner.adapter.clean(ShellAccess, app) }
             if (activeBinding == owner) {
-                withContext(Dispatchers.IO) { RootShell.invalidate() }
+                withContext(Dispatchers.IO) { RootShell.invalidateIntegrated() }
                 activeBinding = null
-                state = state.copy(rootReady = false)
-                RunState.state = RunState.state.copy(rootStatus = "提权待授权")
+                val ready = withContext(Dispatchers.IO) {
+                    RootShell.check(File(app.filesDir, "root-after-clean-check.log")).exitCode == 0
+                }
+                state = state.copy(rootReady = ready)
+                RunState.state = RunState.state.copy(rootStatus = if (ready) "已提权" else "提权待授权")
             }
             if (deployedBinding == owner) {
                 deployedBinding = null
@@ -81,11 +115,13 @@ class RootFrameworkModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun checkRoot() = task("正在检查本应用提权状态") {
+    fun checkRoot() = task("正在检查本应用提权状态") { checkCurrentRoot() }
+
+    private suspend fun checkCurrentRoot() {
         val result = withContext(Dispatchers.IO) { RootShell.check(File(app.filesDir, "root-readonly-check.log")) }
         val ready = result.exitCode == 0
-        if (!ready) activeBinding = null
-        state = state.copy(rootReady = ready, stage = if (ready) "本应用提权通道已就绪" else "本应用尚未完成提权")
+        // Keep cleanup ownership until that backend is explicitly cleaned, even if its proof expired.
+        state = state.copy(rootReady = ready, stage = if (ready) "已 Root，可进行备份解锁操作" else "本应用尚未完成提权")
         append(result.output)
         RunState.state = RunState.state.copy(rootStatus = if (ready) "已提权" else "提权待授权")
     }
@@ -108,6 +144,7 @@ class RootFrameworkModel(application: Application) : AndroidViewModel(applicatio
             binding.adapter.setLogCallback(callback)
             (binding.adapter as? MagicRootAdapter)?.onLog = callback
             withContext(Dispatchers.IO) { ShellAccess.check(app) }
+            WirelessState.connected(app)
             operation(binding)
         }
     }

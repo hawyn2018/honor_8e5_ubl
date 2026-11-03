@@ -46,47 +46,71 @@ internal object LateBootStatePatcher {
             val access = StateBranchEvaluator.access(raw) ?: return@filter false
             !access.load && access.width == 4 && access.rt != 31 && sameContext(pc, access.rn, access.offset.toLong())
         }
-        val found = ArrayList<Plan>()
-        for ((selector, raw) in body) {
-            if (!isSelector(raw)) continue
-            val state = raw and 31
-            val compare = body.lastOrNull { (pc, word) ->
-                pc < selector && pc >= selector - 0x100 && A64.cmpImmediate(word)?.second == 0 &&
-                    StraightLineLiveness.preserves(source, pc + 4, selector, flags = true)
-            } ?: continue
-            val allow = requireNotNull(A64.cmpImmediate(compare.second)).first
-            if (allow == 31) continue
-            for ((store, storeWord) in stores) {
-                if (store <= selector || store > selector + 0x100) continue
-                val access = requireNotNull(StateBranchEvaluator.access(storeWord))
-                if (!flow.derivesFrom(store, access.rt, selector, state)) continue
-                for ((branch, branchWord) in body.filter { it.first in store + 4..store + 32 }) {
-                    // This is the pending 64-bit local return value: nonzero
-                    // enters the existing formatter/failure path, zero returns.
-                    if (branchWord and 0xff000000.toInt() != 0xb5000000.toInt()) continue
-                    val error = branchWord and 31
-                    if (error !in 0..29 || error == state || error == facts.contextBaseRegister ||
-                        !StraightLineLiveness.preserves(source, selector + 4, branch, setOf(error))) continue
-                    val failed = branch + (signExtend(((branchWord ushr 5) and 0x7ffff).toLong(), 19) shl 2)
-                    if (failed !in facts.functionStart..<facts.functionEnd) continue
-                    if (!reachesFormatter(source, facts, flow, failed, formatterTargets)) continue
-                    if (!reachesReturnValue(source, facts, branch + 4, error, formatterTargets)) continue
-                    val zeroDefinitions = body.filter { (_, word) ->
-                        A64.movXZero(word) == error || A64.movWImmediate(word) == (error to 0)
+        val normalFlow by lazy { CompletionFlow(source, facts.functionStart, facts.functionEnd, objectAliases = flow::objectOffset) }
+        val spins by lazy { SpinProof(source) }
+        fun discover(requirePolicyHistory: Boolean): List<Plan> {
+            val found = ArrayList<Plan>()
+            for ((selector, raw) in body) {
+                if (!isSelector(raw)) continue
+                val state = raw and 31
+                val compare = body.lastOrNull { (pc, word) ->
+                    pc < selector && pc >= selector - 0x100 && A64.cmpImmediate(word)?.second == 0 &&
+                        StraightLineLiveness.preserves(source, pc + 4, selector, flags = true)
+                } ?: continue
+                val allow = requireNotNull(A64.cmpImmediate(compare.second)).first
+                if (allow == 31) continue
+                for ((store, storeWord) in stores) {
+                    if (store <= selector || store > selector + 0x100) continue
+                    val access = requireNotNull(StateBranchEvaluator.access(storeWord))
+                    if (!flow.derivesFrom(store, access.rt, selector, state)) continue
+                    for ((branch, branchWord) in body.filter { it.first in store + 4..store + 32 }) {
+                        // This is the pending 64-bit local return value: nonzero
+                        // enters the existing formatter/failure path, zero returns.
+                        if (branchWord and 0xff000000.toInt() != 0xb5000000.toInt()) continue
+                        val error = branchWord and 31
+                        if (error !in 0..29 || error == state || error == facts.contextBaseRegister ||
+                            !StraightLineLiveness.preserves(source, selector + 4, branch, setOf(error))) continue
+                        val failed = branch + (signExtend(((branchWord ushr 5) and 0x7ffff).toLong(), 19) shl 2)
+                        if (failed !in facts.functionStart..<facts.functionEnd) continue
+                        if (!reachesFormatter(source, facts, flow, failed, formatterTargets)) continue
+                        if (!reachesReturnValue(source, facts, branch + 4, error, formatterTargets)) continue
+                        val zeroDefinitions = body.filter { (_, word) ->
+                            A64.movXZero(word) == error || A64.movWImmediate(word) == (error to 0)
+                        }
+                        val normalZeros = zeroDefinitions.filter { (pc, _) ->
+                            reachable(source, facts, facts.normalStateStore, pc) &&
+                                reachesPreserving(source, facts, pc + 4, branch, error)
+                        }
+                        if (normalZeros.isEmpty()) continue
+                        if (requirePolicyHistory) {
+                            if (!normalPolicySource(source, facts, flow, body,
+                                    compare.first, allow, normalZeros.map { it.first }, formatterTargets)) continue
+                        } else {
+                            // This selector already reports 1 in the identified boot-
+                            // state field when its Boolean is nonzero. On a proven
+                            // successful completion only that 1 becomes green; the
+                            // stub retains the original selector for nonzero errors.
+                            // Reprove the normal field and successful cleanup route
+                            // instead of requiring its Boolean's initial GP history.
+                            if (!normalFlow.hasDefinitionPath(compare.first, facts.normalStateStore,
+                                    facts.contextBaseRegister, facts.contextFieldOffset.toInt(), 4)) continue
+                            if (normalZeros.any { (zero, _) ->
+                                    pathNodes(source, facts, zero + 4, compare.first, formatterTargets, spins = spins) == null ||
+                                        !reachesPreserving(source, facts, zero + 4, compare.first, error)
+                                }) continue
+                        }
+                        val prior = existing[selector]
+                        if (prior != null && (prior.original != raw || prior.error != error)) continue
+                        found += Plan(selector, raw, store, error, state, allow, prior?.stub)
                     }
-                    val normalZeros = zeroDefinitions.filter { (pc, _) ->
-                        reachable(source, facts, facts.normalStateStore, pc) &&
-                            reachesPreserving(source, facts, pc + 4, branch, error)
-                    }
-                    if (normalZeros.isEmpty() || !normalPolicySource(source, facts, flow, body,
-                            compare.first, allow, normalZeros.map { it.first }, formatterTargets)) continue
-                    val prior = existing[selector]
-                    if (prior != null && (prior.original != raw || prior.error != error)) continue
-                    found += Plan(selector, raw, store, error, state, allow, prior?.stub)
                 }
             }
+            return found.distinct()
         }
-        val distinct = found.distinct()
+        // Keep every established strict result, including ambiguity. Only an
+        // image with no strict completion uses the field/cleanup proof.
+        val strict = discover(requirePolicyHistory = true)
+        val distinct = if (strict.isNotEmpty()) strict else discover(requirePolicyHistory = false)
         if (distinct.isEmpty() || distinct.groupBy { it.storeRva }.any { it.value.size != 1 }) incomplete()
         if (existing.keys.any { key -> distinct.none { it.selectorRva == key } }) incomplete()
         return distinct

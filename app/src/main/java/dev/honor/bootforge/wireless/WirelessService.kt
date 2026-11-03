@@ -131,7 +131,7 @@ class WirelessService : Service() {
                     CONNECT -> connectShell()
                     CHECK -> {
                         val result = runInterruptible(Dispatchers.IO) { ShellAccess.check(this@WirelessService) }
-                        WirelessState.state = WirelessState.state.copy(shellReady = true, stage = "本应用 Shell 权限已就绪 · UID 2000")
+                        WirelessState.connected(this@WirelessService)
                         diagnostic(result.output)
                     }
                 }
@@ -145,8 +145,7 @@ class WirelessService : Service() {
                     action == CHECK -> "Shell 检查未通过，请重新连接无线调试"
                     else -> "Shell 连接未完成，请核对无线调试主页的连接端口"
                 }
-                WirelessState.state = WirelessState.state.copy(error = detail, shellReady = false,
-                    pairingCode = "", stage = stage)
+                WirelessState.connectionFailed(this@WirelessService, detail, stage)
                 diagnostic("${if (pairedThisAttempt) "CONNECT_AFTER_PAIR_FAILED" else "WIRELESS_FAILED"} ${error.javaClass.simpleName}: $detail")
             } finally {
                 if (keepPairingOpen) {
@@ -186,7 +185,7 @@ class WirelessService : Service() {
             try {
                 val remaining = policy.remaining(SystemClock.elapsedRealtime())
                 if (remaining <= 0) break
-                val connected = withTimeoutOrNull(minOf(5_000L, remaining)) {
+                val connected = withTimeoutOrNull(minOf(25_000L, remaining)) {
                     runInterruptible(Dispatchers.IO) {
                         ShellAccess.connect(this@WirelessService, input.host.trim(), connectPort)
                     }
@@ -194,9 +193,10 @@ class WirelessService : Service() {
                 check(connected.exitCode == 0)
                 WirelessState.state = WirelessState.state.copy(shellReady = true, paired = true,
                     connectPort = connectPort.toString(),
-                    stage = "本应用 Shell 权限已就绪 · UID 2000",
                     discovery = "已验证本机连接端口 $connectPort")
-                diagnostic("SHELL_SUCCESS port=$connectPort uid=2000")
+                WirelessState.connected(this@WirelessService)
+                diagnostic("SHELL_SUCCESS port=$connectPort uid=${ShellAccess.uid}")
+                diagnostic(connected.output)
                 return
             } catch (cancel: CancellationException) { throw cancel }
             catch (error: Exception) {

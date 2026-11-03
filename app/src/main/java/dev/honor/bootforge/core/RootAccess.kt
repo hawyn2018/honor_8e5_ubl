@@ -16,10 +16,16 @@ internal class RootAccess(
     @Synchronized
     fun check(timeoutSeconds: Long, probe: (String, Long) -> ShellResult): ShellResult {
         require(timeoutSeconds > 0) { "提权检查超时必须大于零" }
+        return checkMillis(TimeUnit.SECONDS.toMillis(timeoutSeconds), probe)
+    }
+
+    @Synchronized
+    fun checkMillis(timeoutMillis: Long, probe: (String, Long) -> ShellResult): ShellResult {
+        require(timeoutMillis > 0) { "提权检查超时必须大于零" }
         // An explicit check always verifies again, including after a revoked permission.
         validatedPath = null
         val started = nanoTime()
-        val budget = TimeUnit.SECONDS.toNanos(timeoutSeconds)
+        val budget = TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
         val diagnostics = mutableListOf<String>()
         var lastCode = 1
         for (path in candidates().distinct()) {
@@ -55,6 +61,14 @@ internal class RootAccess(
         (listOf("ROOT_UID=unknown", message) + diagnostics).joinToString("\n", postfix = "\n")
 
     companion object {
+        fun candidatePaths(path: String?, custom: CustomSuSettings): List<String> {
+            if (!custom.enabled) return candidatePaths(path)
+            require(custom.validationError() == null) { custom.validationError().orEmpty() }
+            // A renamed su need not be visible/executable to an unprivileged stat.
+            // Starting it and proving stdout UID 0 is the actual authorization check.
+            return listOf(custom.path)
+        }
+
         /** Resolve PATH's su first so the cached selection is normally an absolute path. */
         fun candidatePaths(
             path: String?,

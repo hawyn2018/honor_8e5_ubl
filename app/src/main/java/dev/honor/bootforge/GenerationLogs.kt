@@ -4,7 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.runInterruptible
 
 /** Keep file generation on IO and ordered UI log updates on Main, including on failure. */
 internal suspend fun <T> withGenerationLogs(operation: (log: (String) -> Unit) -> T): T = coroutineScope {
@@ -13,7 +13,7 @@ internal suspend fun <T> withGenerationLogs(operation: (log: (String) -> Unit) -
         for (message in messages) RunState.append(message)
     }
     try {
-        withContext(Dispatchers.IO) {
+        runInterruptible(Dispatchers.IO) {
             operation { message -> messages.trySend(message) }
         }
     } finally {

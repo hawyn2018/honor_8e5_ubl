@@ -30,7 +30,7 @@ for p in sources:
  for cls in re.findall(r'^class (\w+Test)\b',text,re.M):classes.append(package.group(1)+'.'+cls)
 source_hashes={str(p.relative_to(WORKSPACE)):sha(p) for p in sources}
 compile=[shutil.which('java'),'-Xmx2g','-cp',cp(compiler),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-jvm-target','17','-classpath',cp([stdlib,junit,hamcrest,annotations,xz]),'-d',str(OUT/'classes'),*map(str,sources)]
-run=[shutil.which('java'),'-Xmx2g','-Djava.io.tmpdir='+str(OUT/'tmp'),'-cp',cp([OUT/'classes',stdlib,junit,hamcrest,annotations,xz]),'org.junit.runner.JUnitCore',*classes]
+run=[shutil.which('java'),'-Xmx2g','-Djava.io.tmpdir='+str(OUT/'tmp'),'-cp',cp([OUT/'classes',MODULE/'src/main/resources',stdlib,junit,hamcrest,annotations,xz]),'org.junit.runner.JUnitCore',*classes]
 compiled=subprocess.run(compile,cwd=WORKSPACE,capture_output=True,text=True,encoding='utf-8',errors='replace')
 log='COMPILE\n'+compiled.stdout+compiled.stderr
 report={'scope':'Unchanged supplied ABL-EFISP production engine plus file-only host wrapper; no Android/device/root commands','productionAndTestSources':source_hashes,'testClasses':classes,'compileExitCode':compiled.returncode,'compileCommand':compile,'testCommand':run}

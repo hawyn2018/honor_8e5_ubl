@@ -1,0 +1,9 @@
+# Keep audited source/resource bytes identical in Git and source releases.
+* -text
+*.zip binary
+*.xz binary
+*.jar binary
+*.img binary
+*.efi binary
+*.so binary
+*.png binary

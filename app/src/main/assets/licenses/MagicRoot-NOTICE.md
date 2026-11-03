@@ -1,9 +1,10 @@
 # MagicRoot 提权资产说明（旧版 assets/magic/ 与 1.0.4 assets/magic104/）
 
-honor_ubl 2.4（versionCode 30）同时保留 98260 与 64650 两条链，且每条链都包含
-6.12.58 和 6.12.38 两套精确内核 profile。运行时按完整 `uname -r` 选择，不按设备型号删减。
-98260 使用 rootd，64650 使用 MagicRoot 默认链与 `bfexec`；两条链均不要求另行安装
-KernelSU 管理器或再次授权。失败只记录现场和 `boot_id`，不强制阻断重试或换链。
+honor_ubl 2.5.4（versionCode 42）同时保留 98260 与 64650 两条链，且每条链都保留
+6.12.58 和 6.12.38 profile，并新增 APH-AN00 112 的独立实现；APH 136 经偏移复核后复用 61258。
+运行时按完整 `uname -r` 选择，不按机型限制。98260 使用 rootd，64650 使用 MagicRoot 默认链与
+`bfexec`；两条链均不要求另行安装 KernelSU 管理器或再次授权。失败只记录现场和 `boot_id`，不强制阻断重试或换链。
+112 的新增资产位于 `assets/root_extra/g459a/`，与既有 `assets/magic104/` 分离。
 
 ## 1.0.4 资产来源与许可
 

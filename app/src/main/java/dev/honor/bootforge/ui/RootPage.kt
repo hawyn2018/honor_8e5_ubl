@@ -99,11 +99,11 @@ fun RootPage(
     ) {
         item {
             Column(Modifier.padding(horizontal = 4.dp, vertical = 4.dp)) {
-                RootBadge(if (wirelessState.shellReady) "Shell · UID 2000" else "权限与连接")
+                RootBadge(if (wirelessState.shellReady) "Shell · UID ${wirelessState.shellUid}" else "权限与连接")
                 Spacer(Modifier.height(18.dp))
                 Text("连接 Shell，\n准备后续操作", fontSize = 34.sp, lineHeight = 45.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(10.dp))
-                RootHint("在本应用内完成无线调试配对，建立 Shell 通道；连接成功后选择提权方式，手动点击执行提权流程。")
+                RootHint("无线调试连接后先请求 su 授权。su 授权成功或 Shell 本身为 UID 0 时，可直接备份解锁；两者均未就绪时再手动提权。")
             }
         }
         item {
@@ -119,14 +119,14 @@ fun RootPage(
                     })
                 }
                 Spacer(Modifier.height(10.dp))
-                RootInfoLine("Shell 权限", if (wirelessState.shellReady) "通道已就绪 · UID 2000" else "等待配对或连接")
+                RootInfoLine("Shell 权限", if (wirelessState.shellReady) "通道已就绪 · UID ${wirelessState.shellUid}" else "等待配对或连接")
                 RootInfoLine("配对状态", if (wirelessState.paired) "已完成配对，可直接连接" else "等待完成配对")
                 RootDivider()
                 RootInfoLine("自动发现", wirelessState.discovery)
                 Spacer(Modifier.height(8.dp))
                 RootHint(wirelessState.stage)
                 Spacer(Modifier.height(10.dp))
-                RootHint("Shell 使用 UID 2000，使用时请保持无线调试开启。连接成功后请手动提权，成功后由所选后端执行后续命令。")
+                RootHint("使用时请保持无线调试开启。Shell 为 UID 0 或 su 授权成功后，可直接进行备份解锁操作。")
                 RootError(wirelessState.error)
             }
         }
@@ -239,7 +239,7 @@ fun RootPage(
                     RootBadge(if (rootState.busy) "进行中" else if (rootState.rootReady) "已就绪" else "待提权")
                 }
                 Spacer(Modifier.height(10.dp))
-                RootInfoLine("提权通道", if (rootState.rootReady) "已就绪" else "等待 Shell 就绪或手动提权")
+                RootInfoLine("提权通道", if (rootState.rootReady) "已 Root，可进行备份解锁操作" else "等待 Shell 就绪或手动提权")
                 RootDivider()
                 RootInfoLine("提权资产", if (rootState.deployed) "已部署" else "尚未部署")
                 Spacer(Modifier.height(8.dp))

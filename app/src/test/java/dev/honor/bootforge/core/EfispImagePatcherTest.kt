@@ -20,6 +20,23 @@ class EfispImagePatcherTest {
         return File(workspace!!, "analysis/ablpatcher-fixtures/files/stock-container.fixture.elf")
     }
 
+    private fun assertFinalTopology(bytes: ByteArray, mode: PatchMode): Int {
+        val proof = AblEfisp.patchWithKbl(bytes, mode)
+        assertTrue("Completed Recovery/KBL mappings must reimport without edits", proof.alreadyPatched)
+        assertArrayEquals(bytes, proof.output)
+        assertEquals(ImageIo.sha256(bytes), proof.sourceSha256)
+        assertEquals(proof.sourceSha256, proof.outputSha256)
+        assertEquals(bytes.size, proof.imageSize)
+        assertTrue(proof.patches.any { it.name.startsWith("KBL") })
+        assertTrue(proof.patches.any { it.name == "EFISP 返回边界隔离" })
+        for (patch in proof.patches) {
+            val expected = patch.after.replace(" ", "").chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            assertArrayEquals(patch.name, expected,
+                bytes.copyOfRange(patch.fileOffset, patch.fileOffset + expected.size))
+        }
+        return proof.patches.size
+    }
+
     @Test fun refusesSameInputAndOutputBeforeChangingSource() {
         val source = directory.newFile("abl.img").apply { writeBytes(byteArrayOf(1, 2, 3)) }
         assertThrows(IllegalArgumentException::class.java) { EfispImagePatcher.patch(source, source, false) }
@@ -45,12 +62,19 @@ class EfispImagePatcherTest {
         val source = localAbl()
         val sourceBefore = source.readBytes()
         val output = File(directory.root, "efisp.img")
-        val result = EfispImagePatcher.patch(source, output, false)
+        val logs = mutableListOf<String>()
+        val result = EfispImagePatcher.patch(source, output, false, onLog = { logs += it })
         assertEquals(output.length(), result.bytes)
         assertEquals(ImageIo.sha256(output.readBytes()), result.sha256)
         assertEquals(ImageIo.sha256(sourceBefore), result.sourceSha256)
         assertFalse(result.fakeLock)
         assertTrue(result.patchCount > 0)
+        assertEquals(result.patchCount, assertFinalTopology(output.readBytes(), PatchMode.FREEDOM))
+        assertTrue(logs.any { it.contains("文字定制前补丁 ") && it.contains("RVA ") && it.contains("PE 文件偏移 ") })
+        assertTrue(logs.any { it.contains("文字定制前原始字节=") })
+        assertTrue(logs.any { it.contains("文字定制前修补字节=") })
+        assertTrue(logs.any { it.contains("最终补丁 ") && it.contains("文字定制后字节校验通过") })
+        assertTrue(logs.any { it.contains("最终镜像重导入、完整字节与核心补丁回读校验通过") })
         val entries = AblEfisp.scanText(output.readBytes()).entries
         assertEquals("device freedom (github hawyn2018)", EfispImagePatcher.FASTBOOT_TEXT)
         assertEquals(EfispImagePatcher.FASTBOOT_TEXT, entries.single { it.id == "fastboot-unlocked" }.text)
@@ -74,6 +98,7 @@ class EfispImagePatcherTest {
         assertEquals(EfispImagePatcher.FASTBOOT_TEXT, entries.single { it.id == "fastboot-unlocked" }.text)
         assertEquals(originalMenus, entries.filter { it.id.startsWith("resource-") }.associate { it.id to it.text })
         assertEquals(ImageIo.sha256(output.readBytes()), result.sha256)
+        assertEquals(result.patchCount, assertFinalTopology(output.readBytes(), PatchMode.FREEDOM_FAKE_LOCK))
     }
 
     @Test fun missingFastbootCustomizationStopsWithoutReplacingOutput() {

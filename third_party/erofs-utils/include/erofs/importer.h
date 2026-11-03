@@ -1,0 +1,83 @@
+/* SPDX-License-Identifier: GPL-2.0+ OR MIT */
+/*
+ * Copyright (C) 2025 Alibaba Cloud
+ */
+#ifndef __EROFS_IMPORTER_H
+#define __EROFS_IMPORTER_H
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+#include "internal.h"
+
+enum {
+	EROFS_FORCE_INODE_COMPACT = 1,
+	EROFS_FORCE_INODE_EXTENDED,
+};
+
+enum {
+	EROFS_DEDUPE_UNSPECIFIED,
+	EROFS_DEDUPE_FORCE_OFF,
+	EROFS_DEDUPE_FORCE_ON,
+};
+
+enum {
+	EROFS_FRAGDEDUPE_FULL,
+	EROFS_FRAGDEDUPE_INODE,
+	EROFS_FRAGDEDUPE_OFF,
+};
+
+#define EROFS_COMPRESSED_EXTENT_UNSPECIFIED	0
+
+struct erofs_importer_params {
+	struct z_erofs_paramset *z_paramsets;
+	char *source;
+	u32 mt_async_queue_limit;
+	u32 fixed_uid;
+	u32 fixed_gid;
+	u32 uid_offset;
+	u32 gid_offset;
+	u32 fsalignblks;
+	u32 pclusterblks_max;
+	u32 pclusterblks_def;
+	u32 pclusterblks_packed;
+	s32 pclusterblks_metabox;
+	s32 max_compressed_extent_size;
+	s64 build_time;
+	char force_inodeversion;
+	bool ignore_mtime;
+	bool no_datainline;
+	/* Issue directory data (except inline data) separately from regular inodes */
+	bool grouped_dirdata;
+	bool dirdata_in_metazone;
+	bool hard_dereference;
+	bool ovlfs_strip;
+	bool dot_omitted;
+	bool no_xattrs;			/* don't store extended attributes */
+	bool no_zcompact;
+	bool ztailpacking;
+	char dedupe;
+	bool fragments;
+	bool all_fragments;
+	bool compress_dir;
+	char fragdedupe;
+};
+
+struct erofs_importer {
+	struct erofs_importer_params *params;
+	struct erofs_sb_info *sbi;
+	struct erofs_inode *root;
+};
+
+void erofs_importer_preset(struct erofs_importer_params *params);
+int erofs_importer_init(struct erofs_importer *im);
+int erofs_importer_flush_all(struct erofs_importer *im);
+void erofs_importer_exit(struct erofs_importer *im);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

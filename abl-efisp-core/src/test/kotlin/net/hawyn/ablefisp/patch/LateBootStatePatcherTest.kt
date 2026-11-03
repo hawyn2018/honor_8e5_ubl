@@ -81,12 +81,16 @@ class LateBootStatePatcherTest {
         })
     }
 
-    @Test fun unrelatedPolicyAndReversedFailureBranchAreRejected() {
+    @Test fun policyRegisterHistoryCanVaryWhileFailureAndContextRolesRemainRequired() {
         val source = image("analysis/ablnew-compat/ablnew-inner.pe"); val facts = facts(source)
         val plan = LateBootStatePatcher.analyze(source, facts).single()
         val cmp = requireNotNull(source.word(plan.selectorRva - 4))
         val wrongPolicy = replace(source, plan.selectorRva - 4, (cmp and 0xfffffc1f.toInt()) or (17 shl 5))
-        assertThrows(PatchException::class.java) { LateBootStatePatcher.analyze(wrongPolicy, facts) }
+        val changedPolicy = LateBootStatePatcher.analyze(wrongPolicy, facts).single()
+        assertEquals(plan.selectorRva, changedPolicy.selectorRva)
+        assertEquals(plan.storeRva, changedPolicy.storeRva)
+        assertEquals(plan.errorRegister, changedPolicy.errorRegister)
+        assertEquals(17, changedPolicy.allowRegister)
         val branch = plan.storeRva + 4
         val reversed = replace(source, branch, requireNotNull(source.word(branch)) xor 0x01000000)
         assertThrows(PatchException::class.java) { LateBootStatePatcher.analyze(reversed, facts) }
@@ -95,17 +99,21 @@ class LateBootStatePatcherTest {
         assertThrows(PatchException::class.java) { LateBootStatePatcher.analyze(source, facts.copy(contextFieldOffset = facts.contextFieldOffset + 4)) }
     }
 
-    @Test fun overwritingThePrivatePolicyReloadIsRejected() {
+    @Test fun anOverwrittenBooleanCacheDoesNotHideTheProvedStateAndErrorRoles() {
         val source = image("analysis/ablnew-compat/ablnew-inner.pe"); val facts = facts(source)
         val output = source.bytes.copyOf()
-        // A nearby scalar slot is not assumed to retain the normal AVB policy
-        // after an explicit overwrite on the successful cleanup route.
+        // The original Boolean history is unnecessary once this selector's
+        // state field, normal completion and failure return are proved.
         for ((pc, word) in listOf(0x49d14L to 0x910173f0.toInt(), // ADD X16,SP,#5C
             0x49d18L to 0x52800051, // MOV W17,#2: unrelated nonzero source
             0x49d1cL to 0xb9000211.toInt(), // STR W17,[X16]
             0x49d20L to 0xb9400217.toInt())) // LDR W23,[X16]
             output.putWord(requireNotNull(source.rvaToOffset(pc, 4)), word)
-        assertThrows(PatchException::class.java) { LateBootStatePatcher.analyze(PeImage.parse(output), facts) }
+        val baseline = LateBootStatePatcher.analyze(source, facts).single()
+        val changedCache = LateBootStatePatcher.analyze(PeImage.parse(output), facts).single()
+        assertEquals(baseline.selectorRva, changedCache.selectorRva)
+        assertEquals(baseline.storeRva, changedCache.storeRva)
+        assertEquals(baseline.errorRegister, changedCache.errorRegister)
     }
 
     @Test fun aDamagedExistingDetourDoesNotSilentlyProduceAnotherPatch() {
@@ -136,7 +144,7 @@ class LateBootStatePatcherTest {
         assertThrows(PatchException::class.java) { LateBootStatePatcher.analyze(PeImage.parse(output), facts) }
     }
 
-    @Test fun indexedAndVectorStoresCannotClobberThePrivatePolicySpill() {
+    @Test fun indexedAndVectorBooleanCacheWritesDoNotReplaceContextAndErrorProofs() {
         val source = image("analysis/ablnew-compat/ablnew-inner.pe"); val facts = facts(source)
         for (store in listOf(0xb82f6a11.toInt(), // STR W17,[X16,X15]
             0xb8000211.toInt(), // STUR W17,[X16]
@@ -150,9 +158,11 @@ class LateBootStatePatcherTest {
                 0x49d18L to 0x52800051, 0x49d1cL to 0xaa1f03ef.toInt(),
                 0x49d20L to store, 0x49d24L to 0xb9400217.toInt()))
                 output.putWord(requireNotNull(source.rvaToOffset(pc, 4)), word)
-            assertThrows("store ${store.toUInt().toString(16)}", PatchException::class.java) {
-                LateBootStatePatcher.analyze(PeImage.parse(output), facts)
-            }
+            val baseline = LateBootStatePatcher.analyze(source, facts).single()
+            val changedCache = LateBootStatePatcher.analyze(PeImage.parse(output), facts).single()
+            assertEquals("store ${store.toUInt().toString(16)}", baseline.selectorRva, changedCache.selectorRva)
+            assertEquals(baseline.storeRva, changedCache.storeRva)
+            assertEquals(baseline.errorRegister, changedCache.errorRegister)
         }
     }
 

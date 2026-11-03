@@ -63,6 +63,9 @@ internal class A64ValueOrigins(
         if (start >= 0 && end > start && (end - start) / 4 <= MAX_INSTRUCTIONS && image.isCode(start)) {
             buildGraph()
             buildAddresses()
+            // Subsequent proof queries use predecessors and the settled input
+            // states. Outgoing edges are needed only during state propagation.
+            successors.clear()
         } else budgetExceeded = true
     }
 
@@ -107,6 +110,10 @@ internal class A64ValueOrigins(
         val sp = state[31]
         return if (isStack(address) && isStack(sp)) address - sp else null
     }
+
+    /** SP relative to this analysis entry, before execution; null retains ambiguity. */
+    fun stackPointerOffset(pc: Long): Int? =
+        if (budgetExceeded) null else addresses[pc]?.get(31)?.takeIf(::isStack)
 
     /** Unique ADR/ADRP-based address at an instruction, represented as a PE RVA. */
     fun globalAddress(pc: Long, register: Int): Long? =
@@ -197,27 +204,32 @@ internal class A64ValueOrigins(
             for (at in successors[pc].orEmpty()) {
                 val prior = addresses[at]
                 var changed = prior == null
-                val joined = if (prior == null) after.copyOf() else prior.copyOf().also { result ->
-                    for (r in result.indices) {
-                        if (result[r] != after[r] && result[r] != UNKNOWN_ADDRESS) {
-                            result[r] = UNKNOWN_ADDRESS
-                            changed = true
-                        }
+                // Published states are immutable. Share unchanged states and
+                // clone only on the first differing join, rather than creating
+                // three arrays for every edge on every work-list iteration.
+                var joined = prior ?: after
+                if (prior != null) for (r in prior.indices) {
+                    if (prior[r] != after[r] && prior[r] != UNKNOWN_ADDRESS) {
+                        if (joined === prior) joined = prior.copyOf()
+                        joined[r] = UNKNOWN_ADDRESS
+                        changed = true
                     }
                 }
                 val priorGlobals = globals[at]
-                val joinedGlobals = if (priorGlobals == null) afterGlobals.copyOf() else priorGlobals.copyOf().also { result ->
-                    for (r in result.indices) {
-                        if (result[r] != afterGlobals[r] && result[r] != UNKNOWN_GLOBAL) {
-                            result[r] = UNKNOWN_GLOBAL
-                            changed = true
-                        }
+                var joinedGlobals = priorGlobals ?: afterGlobals
+                if (priorGlobals != null) for (r in priorGlobals.indices) {
+                    if (priorGlobals[r] != afterGlobals[r] && priorGlobals[r] != UNKNOWN_GLOBAL) {
+                        if (joinedGlobals === priorGlobals) joinedGlobals = priorGlobals.copyOf()
+                        joinedGlobals[r] = UNKNOWN_GLOBAL
+                        changed = true
                     }
                 }
                 val priorRegions = regions[at]
-                val joinedRegions = if (priorRegions == null) afterRegions.copyOf() else priorRegions.copyOf().also { result ->
-                    for (r in result.indices) if (result[r] != afterRegions[r] && result[r] != null) {
-                        result[r] = null
+                var joinedRegions = priorRegions ?: afterRegions
+                if (priorRegions != null) for (r in priorRegions.indices) {
+                    if (priorRegions[r] != afterRegions[r] && priorRegions[r] != null) {
+                        if (joinedRegions === priorRegions) joinedRegions = priorRegions.copyOf()
+                        joinedRegions[r] = null
                         changed = true
                     }
                 }
@@ -231,10 +243,10 @@ internal class A64ValueOrigins(
         }
     }
 
-    private fun addressTransfer(pc: Long, before: IntArray): IntArray {
+    private fun addressTransfer(pc: Long, before: IntArray, after: IntArray = IntArray(before.size)): IntArray {
         val word = requireNotNull(words[pc] ?: image.word(pc))
         val d = decode(pc)
-        val after = before.copyOf()
+        before.copyInto(after)
         if (d.writes == null) for (r in 0..30) after[r] = UNKNOWN_ADDRESS
         else d.writes.forEach { if (it != 31) after[it] = UNKNOWN_ADDRESS }
         if (d.call) {
@@ -660,7 +672,8 @@ internal class A64ValueOrigins(
         // Publish the negative seed first to stop recursive helper inspection.
         spinCalls[target] = false
         val constants = HashMap<Int, Int>()
-        val state = IntArray(32) { if (it == 31) 0 else NON_STACK }
+        var state = IntArray(32) { if (it == 31) 0 else NON_STACK }
+        var scratch = IntArray(32)
         val stored = HashMap<Int, Int>()
         var pc = target
         repeat(96) {
@@ -699,10 +712,11 @@ internal class A64ValueOrigins(
                     if (value != null) stored[at] = value
                 }
             }
-            val nextState = addressTransfer(pc, state)
+            val nextState = addressTransfer(pc, state, scratch)
             d.writes.forEach(constants::remove)
             A64.movWImmediate(word)?.let { constants[it.first] = it.second }
-            nextState.copyInto(state)
+            scratch = state
+            state = nextState
             pc += 4
         }
         return false

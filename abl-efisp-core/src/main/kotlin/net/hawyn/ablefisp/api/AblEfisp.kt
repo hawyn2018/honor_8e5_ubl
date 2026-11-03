@@ -7,6 +7,11 @@ import net.hawyn.ablefisp.patch.PatchException
 import net.hawyn.ablefisp.patch.PatchFailureKind
 import net.hawyn.ablefisp.patch.PatchResult
 import net.hawyn.ablefisp.patch.PatchMode
+import net.hawyn.ablefisp.patch.KblPatchEngine
+import net.hawyn.ablefisp.patch.KblPatcher
+import net.hawyn.ablefisp.patch.BundledKblDriver
+import net.hawyn.ablefisp.patch.ExecutableSectionCompatibility
+import net.hawyn.ablefisp.patch.FastbootRecoveryPatcher
 import net.hawyn.ablefisp.text.TextEngine
 import net.hawyn.ablefisp.text.TextEntry
 import net.hawyn.ablefisp.text.TextPatchResult
@@ -56,8 +61,18 @@ object AblEfisp {
     @JvmStatic
     fun patch(input: ByteArray, mode: PatchMode): PatchResult = patchSnapshot(input.copyOf(), mode)
 
+    /** Existing patch functions, explicit-start KBL and child-local Fastboot recovery. */
+    @JvmStatic
+    @JvmOverloads
+    fun patchWithKbl(input:ByteArray, mode:PatchMode=PatchMode.FREEDOM):PatchResult =
+        // KblPatchEngine makes its own snapshot before extraction/analysis.
+        KblPatchEngine.analyzeAndPatch(input,mode).let {
+            it.copy(patches=immutable(it.patches),notes=immutable(it.notes))
+        }
+
     /**
-     * Prepare a new import for text editing, matching the standalone UI workflow.
+     * Prepare a new import through the core-only embedding API. Hosts needing
+     * KBL/recovery use [patchWithKbl] followed by [scanText], as the UI does.
      * First try core patching for every input, including bare PE. Only a bare MZ
      * image with [PatchFailureKind.NO_CORE_FEATURE] falls back to direct text
      * editing. Incomplete/ambiguous core matches and malformed containers propagate
@@ -105,8 +120,20 @@ object AblEfisp {
     fun editText(pe: ByteArray, edits: Map<String, String>, autoWrapFastboot: Boolean): TextPatchResult {
         val snapshot = pe.copyOf()
         val requested = LinkedHashMap(edits)
-        return TextEngine.apply(snapshot, requested, autoWrapFastboot).let {
-            it.copy(changes = immutable(it.changes), notes = immutable(it.notes))
+        // Remove nested owned mappings in reverse order. Recovery's receipt
+        // describes the complete KBL-bearing image, not the bare original PE.
+        val withoutRecovery=FastbootRecoveryPatcher.remove(snapshot)
+        val hadRecovery=!withoutRecovery.contentEquals(snapshot)
+        val removed = KblPatcher.removeAdapterDetails(withoutRecovery)
+        val compatible=ExecutableSectionCompatibility.normalize(removed.bytes)
+        return TextEngine.apply(compatible.bytes, requested, autoWrapFastboot).let {
+            val compatibilityNotes=if(compatible.changes.isEmpty())emptyList()else listOf("已兼容本工具旧版追加的可执行节名称。")
+            val withKbl=if(removed.hadAdapter)KblPatcher.patch(it.output,BundledKblDriver.load()).bytes else it.output
+            val recovered=if(hadRecovery || removed.hadAdapter)FastbootRecoveryPatcher.patch(withKbl) else null
+            val rebuiltNotes=if(removed.hadAdapter)listOf("文字定制后已按 KBL → Fastboot 恢复的顺序重建自有映射，文字分配未使用其代码零尾。")
+                else if(hadRecovery)listOf("文字定制后已重新追加原有 Fastboot 恢复映射。")else emptyList()
+            it.copy(output=recovered?.bytes ?: withKbl, changes=immutable(it.changes),
+                notes=immutable(it.notes+compatibilityNotes+rebuiltNotes+recovered?.notes.orEmpty()))
         }
     }
 
@@ -116,7 +143,8 @@ object AblEfisp {
         }
 
     private fun scanSnapshot(pe: ByteArray): TextScanResult =
-        TextEngine.scan(pe).let { it.copy(entries = immutable(it.entries), notes = immutable(it.notes)) }
+        TextEngine.scan(ExecutableSectionCompatibility.normalize(KblPatcher.removeAdapter(FastbootRecoveryPatcher.remove(pe))).bytes)
+            .let { it.copy(entries = immutable(it.entries), notes = immutable(it.notes)) }
 
     private fun <T> immutable(values: List<T>): List<T> = Collections.unmodifiableList(ArrayList(values))
 }

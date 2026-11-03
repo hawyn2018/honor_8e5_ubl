@@ -62,10 +62,11 @@ internal class PeImage private constructor(
             if (input.u16(pe + 4) != 0xaa64) throw PatchException("目标 PE 的指令架构需要为 ARM64。")
             val count = input.u16(pe + 6)
             val optionalSize = input.u16(pe + 20)
-            if (count !in 1..64 || optionalSize < 112) throw PatchException("PE 节表结构无效。")
+            if (count < 1 || optionalSize < 112) throw PatchException("PE 节表结构无效。")
             val optional = pe + 24
-            val sectionTable = optional + optionalSize
-            if (sectionTable.toLong() + count * 40 > start.toLong() + available) throw PatchException("PE 节表被截断。")
+            val sectionTableLong = optional.toLong() + optionalSize
+            if (sectionTableLong + count * 40L > start.toLong() + available) throw PatchException("PE 节表被截断。")
+            val sectionTable = sectionTableLong.asBoundedInt("PE 节表位置")
             if (input.u16(optional) != 0x20b) throw PatchException("目标需要为 PE32+ 格式。")
             val headers = input.u32(optional + 60).asBoundedInt("PE 头长度")
             if (headers < sectionTable + count * 40 - start || headers > available) throw PatchException("PE 头长度无效。")
@@ -85,13 +86,16 @@ internal class PeImage private constructor(
                 sections += PeSection(name, rva, vs, raw, rawSize, input.u32(at + 36))
                 extent = maxOf(extent, raw + rawSize)
             }
-            for (left in sections.indices) for (right in left + 1 until sections.size) {
-                val a = sections[left]; val b = sections[right]
-                if (a.rawSize > 0 && b.rawSize > 0 && a.raw < b.raw.toLong() + b.rawSize && b.raw < a.raw.toLong() + a.rawSize) {
-                    throw PatchException("PE 原始节范围重叠。")
-                }
-                val aSize = maxOf(a.virtualSize, a.rawSize.toLong()); val bSize = maxOf(b.virtualSize, b.rawSize.toLong())
-                if (aSize > 0 && bSize > 0 && a.rva < b.rva + bSize && b.rva < a.rva + aSize) throw PatchException("PE 加载节范围重叠。")
+            // Iterate actual uint16 count; only nonempty ranges need ordering.
+            // Sorting avoids a quadratic scan on a valid large section table.
+            val rawOrder=sections.filter { it.rawSize>0 }.sortedBy { it.raw }
+            for(i in 1 until rawOrder.size)if(rawOrder[i].raw.toLong()<rawOrder[i-1].raw.toLong()+rawOrder[i-1].rawSize)
+                throw PatchException("PE 原始节范围重叠。")
+            val virtualOrder=sections.filter { maxOf(it.virtualSize,it.rawSize.toLong())>0 }.sortedBy { it.rva }
+            for(i in 1 until virtualOrder.size) {
+                val previous=virtualOrder[i-1]
+                if(virtualOrder[i].rva<previous.rva+maxOf(previous.virtualSize,previous.rawSize.toLong()))
+                    throw PatchException("PE 加载节范围重叠。")
             }
             if (optionalSize >= 152 && input.u32(optional + 108) > 4) {
                 val certificate = input.u32(optional + 144)

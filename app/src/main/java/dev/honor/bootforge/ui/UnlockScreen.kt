@@ -67,10 +67,17 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
@@ -103,6 +110,9 @@ data class UnlockUiState(
     val partitionSummary: String = "可直接开始流程，或先读取 userdata 与 efisp 信息",
     val efispFileName: String = "efisp.img",
     val ablFileName: String = "abl.img",
+    val efispAblFileName: String = "尚未上传用于修补 EFISP 的 ABL",
+    val efispAblCustom: Boolean = false,
+    val efispAblImage: String = "尚未上传用于修补 EFISP 的 ABL",
     val efispCustom: Boolean = false,
     val ablCustom: Boolean = false,
     val efispImage: String = "efisp.img · 运行时生成或使用上传文件",
@@ -129,6 +139,8 @@ data class UnlockActions(
     val onPrepareTools: () -> Unit = {},
     val onSelectEfisp: () -> Unit = {},
     val onSelectAbl: () -> Unit = {},
+    val onSelectEfispAbl: () -> Unit = {},
+    val onResetEfispAbl: () -> Unit = {},
     val onResetEfisp: () -> Unit = {},
     val onResetAbl: () -> Unit = {},
     val onBuildRecovery: (UnlockRequest) -> Unit = {},
@@ -153,10 +165,16 @@ fun UnlockScreen(
     appearance: AppearanceSettings = AppearanceSettings(),
     onAppearanceChange: (AppearanceSettings) -> Unit = {},
     rootBusy: Boolean = false,
+    otaBusy: Boolean = false,
     rootOpenRequest: Int = 0,
+    otaOpenRequest: Int = 0,
+    startupDestination: dev.honor.bootforge.StartupDestination = dev.honor.bootforge.StartupDestination.PRIVILEGE,
     rootContent: @Composable (PaddingValues, Boolean) -> Unit = { _, _ -> },
+    otaContent: @Composable (PaddingValues, Boolean) -> Unit = { _, _ -> },
+    onShowSupportedDevices: () -> Unit = {},
 ) {
-    val pagerState = rememberPagerState(initialPage = 0, pageCount = { 4 })
+    val pagerState = rememberPagerState(initialPage = if (startupDestination == dev.honor.bootforge.StartupDestination.OTA)
+        MainPage.OTA.ordinal else MainPage.ROOT.ordinal, pageCount = { MainPage.entries.size })
     val navigationScope = rememberCoroutineScope()
     var navigationJob by remember { mutableStateOf<Job?>(null) }
     val selectPage: (Int) -> Unit = { destination ->
@@ -164,12 +182,15 @@ fun UnlockScreen(
         navigationJob = navigationScope.launch { pagerState.animateScrollToPage(destination) }
     }
     LaunchedEffect(rootOpenRequest) { if (rootOpenRequest > 0) selectPage(0) }
+    LaunchedEffect(otaOpenRequest) { if (otaOpenRequest > 0) selectPage(MainPage.OTA.ordinal) }
     val page = pagerState.currentPage
+    val settingsNavigation = rememberSettingsNavigation()
+    val settingsDetailVisible = settingsNavigation.detailVisible
     var showConfirm by remember { mutableStateOf(false) }
     var confirmationState by remember { mutableStateOf(state) }
     var rebootChoice by remember { mutableStateOf<UnlockCompletion?>(null) }
     val target = targetPartition(state.slot)
-    val operationState = state.copy(busy = state.busy || backupState.busy || rootBusy)
+    val operationState = state.copy(busy = state.busy || backupState.busy || rootBusy || otaBusy)
     val unlockNavigation = rememberUnlockNavigation(operationState, actions)
     val density = LocalDensity.current
     var unlockTabsHeight by remember { mutableStateOf(74.dp) }
@@ -182,12 +203,21 @@ fun UnlockScreen(
     )
     val backdrop = if (Build.VERSION.SDK_INT >= 33) GlassRendererApi33.rememberBackdrop() else null
     val pageStates = rememberSaveableStateHolder()
-    val navigating = pagerState.isScrollInProgress || pagerState.targetPage != 2
-    BackHandler(enabled = page != 2 || navigating || state.request.mode != UnlockMode.FAKE_LOCK) {
-        if (page != 2 || navigating) selectPage(2)
+    val unlockPage = MainPage.UNLOCK.ordinal
+    val navigating = pagerState.isScrollInProgress || pagerState.targetPage != unlockPage
+    BackHandler(enabled = page != unlockPage || navigating || state.request.mode != UnlockMode.FAKE_LOCK) {
+        // Read the live route: a Back event can arrive before recomposition after the tap.
+        if (pagerState.currentPage == MainPage.SETTINGS.ordinal && settingsNavigation.detailVisible) {
+            android.util.Log.i("HnublBack", "fallback Back while settings detail is visible")
+            settingsNavigation.closeSupport()
+        }
+        else if (page != unlockPage || navigating) selectPage(unlockPage)
         else if (!operationState.busy) actions.onRequestChanged(state.request.copy(mode = UnlockMode.FAKE_LOCK))
     }
     Box(Modifier.fillMaxSize().background(MiuixTheme.colorScheme.background)) {
+        Box(Modifier.fillMaxSize()
+            .supportUnderlay(settingsNavigation, page == MainPage.SETTINGS.ordinal)
+            .let { if (page == MainPage.SETTINGS.ordinal && settingsDetailVisible) it.clearAndSetSemantics {} else it }) {
         // Record an opaque page background too, so blur edges never sample transparent gaps.
         // Navigation stays sharp above its captured backdrop.
         Box(Modifier.fillMaxSize()
@@ -197,20 +227,25 @@ fun UnlockScreen(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
                 key = { pageIndex -> pageIndex },
+                userScrollEnabled = !(page == MainPage.SETTINGS.ordinal && settingsDetailVisible),
             ) { pageIndex ->
                 pageStates.SaveableStateProvider(pageIndex) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                        when (pageIndex) {
-                            0 -> rootContent(contentPadding, operationState.busy)
-                            1 -> BackupPage(backupState, operationState.busy, onBackup, contentPadding)
-                            3 -> Box(Modifier.widthIn(max = 760.dp).fillMaxSize()) {
-                                SettingsPage(appearance, onAppearanceChange, contentPadding)
+                        when (MainPage.entries[pageIndex]) {
+                            MainPage.ROOT -> rootContent(contentPadding, operationState.busy)
+                            MainPage.BACKUP -> BackupPage(backupState, operationState.busy, onBackup, contentPadding)
+                            MainPage.OTA -> otaContent(contentPadding, operationState.busy)
+                            MainPage.SETTINGS -> Box(Modifier.widthIn(max = 760.dp).fillMaxSize()) {
+                                SettingsPage(appearance, onAppearanceChange, contentPadding,
+                                    onSupport = settingsNavigation::openSupport,
+                                    onLicense = settingsNavigation::openLicense)
                             }
-                            else -> UnlockPage(operationState, actions, target,
+                            MainPage.UNLOCK -> UnlockPage(operationState, actions, target,
                                 PaddingValues(start = 20.dp, end = 20.dp,
                                     top = contentPadding.calculateTopPadding() + unlockTabsHeight,
                                     bottom = contentPadding.calculateBottomPadding()),
                                 unlockNavigation,
+                                onShowSupportedDevices = onShowSupportedDevices,
                                 onConfirm = { request ->
                                     confirmationState = operationState.copy(request = request.resolved())
                                     showConfirm = true
@@ -223,11 +258,11 @@ fun UnlockScreen(
         }
         GlassTopBar(
             backdrop = backdrop,
-            title = listOf("提权", "分区备份", "刷入gbl解锁bl", "设置")[page],
+            title = MainPage.entries[page].title,
             blurDp = appearance.topBlurDp,
             statusBarHeight = statusTop,
         ) {
-            if (page == 2) {
+            if (page == MainPage.UNLOCK.ordinal) {
                 Box(Modifier.fillMaxWidth().onSizeChanged { size ->
                     unlockTabsHeight = with(density) { size.height.toDp() }
                 }, contentAlignment = Alignment.TopCenter) {
@@ -244,10 +279,16 @@ fun UnlockScreen(
         }
         GlassBottomBar(
             backdrop, page,
-            { (pagerState.currentPage + pagerState.currentPageOffsetFraction).coerceIn(0f, 3f) },
+            { (pagerState.currentPage + pagerState.currentPageOffsetFraction).coerceIn(0f, MainPage.entries.lastIndex.toFloat()) },
             appearance, navigationBottom, Modifier.align(Alignment.BottomCenter),
             onSelect = selectPage,
         )
+        }
+        SupportWindow(settingsNavigation, active = page == MainPage.SETTINGS.ordinal) {
+            SupportScene(appearance, contentPadding, statusTop, navigationBottom,
+                onBack = settingsNavigation::closeSupport,
+                page = settingsNavigation.detailPage)
+        }
     }
     if (showConfirm) {
         val frozenState = confirmationState.copy(busy = operationState.busy, canExecute = operationState.canExecute)
@@ -372,6 +413,8 @@ private fun UnlockActions.whenNavigationReady(ready: () -> Boolean): UnlockActio
     onPrepareTools = { if (ready()) onPrepareTools() },
     onSelectEfisp = { if (ready()) onSelectEfisp() },
     onSelectAbl = { if (ready()) onSelectAbl() },
+    onSelectEfispAbl = { if (ready()) onSelectEfispAbl() },
+    onResetEfispAbl = { if (ready()) onResetEfispAbl() },
     onResetEfisp = { if (ready()) onResetEfisp() },
     onResetAbl = { if (ready()) onResetAbl() },
     onBuildRecovery = { if (ready()) onBuildRecovery(it) },
@@ -387,7 +430,7 @@ private fun UnlockActions.whenNavigationReady(ready: () -> Boolean): UnlockActio
 private fun UnlockPage(
     state: UnlockUiState, actions: UnlockActions, target: String?,
     contentPadding: PaddingValues, navigation: UnlockNavigation,
-    onConfirm: (UnlockRequest) -> Unit, onReboot: () -> Unit,
+    onConfirm: (UnlockRequest) -> Unit, onReboot: () -> Unit, onShowSupportedDevices: () -> Unit,
 ) {
     val modes = UnlockMode.entries
     val pager = navigation.pager
@@ -416,6 +459,7 @@ private fun UnlockPage(
                     contentPadding = contentPadding,
                     onConfirm = { if (navigation.canInteract(mode)) onConfirm(it) },
                     onReboot = { if (navigation.canInteract(mode)) onReboot() },
+                    onShowSupportedDevices = onShowSupportedDevices,
                 )
             }
         }
@@ -460,7 +504,7 @@ private fun UnlockModeTabs(
 @Composable
 private fun UnlockModePage(
     state: UnlockUiState, actions: UnlockActions, target: String?,
-    contentPadding: PaddingValues, onConfirm: (UnlockRequest) -> Unit, onReboot: () -> Unit,
+    contentPadding: PaddingValues, onConfirm: (UnlockRequest) -> Unit, onReboot: () -> Unit, onShowSupportedDevices: () -> Unit,
 ) {
     val request = state.request
     val effective = request.resolved()
@@ -468,8 +512,7 @@ private fun UnlockModePage(
     val customPage = request.mode == UnlockMode.CUSTOM
     val rootReady = state.rootStatus == "已提权" || state.rootStatus == "Root 已取得"
     val generatedEfisp = effective.efispSource != EfispSource.UPLOADED_EFISP
-    val needsUploadedAbl = customPage &&
-        (request.ablSource == AblWriteSource.UPLOADED || request.efispSource == EfispSource.UPLOADED_ABL)
+    val needsUploadedAbl = customPage && request.ablSource == AblWriteSource.UPLOADED
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = contentPadding,
@@ -484,9 +527,19 @@ private fun UnlockModePage(
                 }, fontSize = 30.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(7.dp))
                 MutedText(if (customPage) "分别选择 ABL 写入来源、efisp 来源和修补方式。"
-                    else "提取当前槽位 ABL，采用${effective.patchMode.label}修补生成 efisp.img，并写入内置 abl.img。", fontSize = 11, lineHeight = 18)
+                    else "提取当前槽位 ABL，采用${effective.patchMode.label}生成 efisp.img，并向 A/B 双槽写入内置 abl.img。", fontSize = 11, lineHeight = 18)
                 Spacer(Modifier.height(6.dp))
-                Text("仅适用于搭载8e5芯片的荣耀设备，其他设备请勿尝试。",
+                Text(buildAnnotatedString {
+                    append("仅适用于搭载8e5芯片的荣耀设备，")
+                    withLink(LinkAnnotation.Clickable(
+                        tag = "supported_devices",
+                        styles = TextLinkStyles(style = SpanStyle(
+                            color = Color(0xFFE53935), textDecoration = TextDecoration.Underline,
+                        )),
+                        linkInteractionListener = { onShowSupportedDevices() },
+                    )) { append("点此查看支持设备列表") }
+                    append("。\n如果进入fastboot后刷写分区时提示错误无法刷入，请勿直接使用临时root强行刷入，再操作一次解锁流程即可。")
+                },
                     fontSize = 11.sp, lineHeight = 18.sp, color = Color(0xFFE53935))
             }
         }
@@ -514,6 +567,13 @@ private fun UnlockModePage(
                     }
                     Spacer(Modifier.height(10.dp))
                     MutedText("所选 ABL 将写入 $ablDestination。", fontSize = 12, lineHeight = 20)
+                    if (needsUploadedAbl) {
+                        Spacer(Modifier.height(16.dp))
+                        CustomImageControls("ABL", "上传用于刷写的 ABL", "所选文件用于 ABL 分区刷写",
+                            if (state.ablCustom) state.ablFileName else "请选择刷写用 ABL 文件",
+                            if (state.ablCustom) state.ablImage else "尚未选择刷写用 ABL", state.ablCustom,
+                            state.busy, actions.onSelectAbl, actions.onResetAbl)
+                    }
                 }
             }
             item {
@@ -526,6 +586,20 @@ private fun UnlockModePage(
                                 actions.onRequestChanged(request.copy(efispSource = source))
                             }
                         }
+                    }
+                    if (request.efispSource == EfispSource.UPLOADED_ABL) {
+                        Spacer(Modifier.height(16.dp))
+                        CustomImageControls("ABL", "上传用于修补 EFISP 的 ABL", "所选文件用于生成 efisp.img",
+                            if (state.efispAblCustom) state.efispAblFileName else "请选择修补 EFISP 用的 ABL",
+                            state.efispAblImage, state.efispAblCustom, state.busy,
+                            actions.onSelectEfispAbl, actions.onResetEfispAbl)
+                    }
+                    if (request.efispSource == EfispSource.UPLOADED_EFISP) {
+                        Spacer(Modifier.height(16.dp))
+                        CustomImageControls("PE", "上传的 efisp 文件", "所选文件原样写入 efisp",
+                            if (state.efispCustom) state.efispFileName else "请选择 efisp 文件",
+                            if (state.efispCustom) state.efispImage else "尚未选择上传的 efisp", state.efispCustom,
+                            state.busy, actions.onSelectEfisp, actions.onResetEfisp)
                     }
                     run {
                         Spacer(Modifier.height(16.dp))
@@ -546,25 +620,9 @@ private fun UnlockModePage(
                     }
                 }
             }
-            if (needsUploadedAbl) {
-                item {
-                    CustomImagePanel("ABL", "上传的 ABL 文件", "用于所选 ABL 刷写或 efisp 生成来源",
-                        if (state.ablCustom) state.ablFileName else "请选择 ABL 文件",
-                        if (state.ablCustom) state.ablImage else "尚未选择上传的 ABL 文件", state.ablCustom,
-                        state.busy, actions.onSelectAbl, actions.onResetAbl)
-                }
-            }
-            if (request.efispSource == EfispSource.UPLOADED_EFISP) {
-                item {
-                    CustomImagePanel("PE", "上传的 efisp 文件", "所选文件原样写入 efisp",
-                        if (state.efispCustom) state.efispFileName else "请选择 efisp 文件",
-                        if (state.efispCustom) state.efispImage else "尚未选择上传的 efisp 文件", state.efispCustom,
-                        state.busy, actions.onSelectEfisp, actions.onResetEfisp)
-                }
-            }
-            item { MutedText("从文件管理中选择文件，不限制扩展名。已上传的 ABL 可同时用于 ABL 刷写和 efisp 生成。", Modifier.padding(horizontal = 4.dp), fontSize = 12, lineHeight = 20) }
+            item { MutedText("ABL 刷写文件与 EFISP 修补来源分别保存，可选择不同镜像。文件扩展名不限。", Modifier.padding(horizontal = 4.dp), fontSize = 12, lineHeight = 20) }
         } else {
-            item { HeroCard(target, state) }
+            item { HeroCard(state) }
             item {
                 Panel {
                     Text("本次镜像来源", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
@@ -599,12 +657,14 @@ private fun UnlockModePage(
             SectionTitle("操作步骤", "02")
             Spacer(Modifier.height(10.dp))
             Panel {
+                MutedText("按所选来源生成或使用上传的 efisp 镜像，核对镜像后执行以下步骤。", fontSize = 12, lineHeight = 20)
+                Spacer(Modifier.height(14.dp))
                 StepRow("1", "备份 GPT 与原始分区", "保存本次任务所需的恢复备份", false)
                 StepRow("2", "核对 F2FS 文件系统", "连续尾部空间不足时再缩容", false)
                 StepRow("3", "调整 userdata 并创建 efisp", "按实际文件系统边界修正 GPT，使用连续尾部空间", false)
-                StepRow("4", if (generatedEfisp) "提取 ABL 并准备 efisp.img" else "准备上传的 efisp 镜像",
-                    if (generatedEfisp) "${effective.efispSource.label} · ${effective.patchMode.label}修补与文字定制"
-                        else "${state.efispFileName} · 按上传内容写入", false)
+                StepRow("4", "核对已准备的 efisp.img",
+                    if (generatedEfisp) "${effective.efispSource.label} · 已在分区操作前修补并完成文字定制"
+                        else "${state.efispFileName} · 已在分区操作前检查上传镜像", false)
                 StepRow("5", when (effective.ablTarget) {
                     AblWriteTarget.CURRENT -> "刷入当前槽位的 abl 分区"
                     AblWriteTarget.OTHER -> "刷入对槽的 abl 分区"
@@ -662,16 +722,46 @@ private fun UnlockModePage(
             else "分区调整与引导镜像写入会影响设备启动并可能清空全部数据。请自行确认所选文件及操作。", Modifier.padding(horizontal = 4.dp), fontSize = 12, lineHeight = 19) }
         item(key = "github_footer") { ProjectRepositoryFooter() }
     }
+
+}
+
+@Composable
+internal fun SupportedDevicesDialog(onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Panel(Modifier.widthIn(max = 460.dp).padding(horizontal = 22.dp, vertical = 24.dp)) {
+            Column(Modifier.heightIn(max = 560.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text("支持设备列表", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                Column(Modifier.weight(1f, fill = false).fillMaxWidth().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("在搭载高通第五代骁龙8至尊版的荣耀设备上提供有限支持", fontSize = 13.sp, lineHeight = 22.sp,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                    Text("支持的设备", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                    Text("honor magic 8\nhonor magic 8 pro\nhonor magic 8 rsr\nhonor win\nhonor robot phone\nhonor magic v6\nhonor magicpad3 pro 13.3",
+                        fontSize = 15.sp, lineHeight = 24.sp)
+                    Text("目前确定不支持的设备", fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFFE53935))
+                    Text("honor win rt2\nhonor magic 9", fontSize = 15.sp, lineHeight = 24.sp)
+                }
+                Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColorsPrimary()) { Text("确定") }
+            }
+        }
+    }
 }
 
 private fun ablWriteName(state: UnlockUiState, request: UnlockRequest): String =
     if (request.ablSource == AblWriteSource.UPLOADED) state.ablFileName else "abl.img（内置）"
 
 private fun efispWriteName(state: UnlockUiState, request: UnlockRequest): String =
-    if (request.efispSource == EfispSource.UPLOADED_EFISP) state.efispFileName else "efisp.img（运行时生成）"
+    when (request.efispSource) {
+        EfispSource.UPLOADED_EFISP -> state.efispFileName
+        EfispSource.UPLOADED_ABL -> "efisp.img（由 ${state.efispAblFileName} 修补）"
+        else -> "efisp.img（运行时生成）"
+    }
 
 @Composable
-private fun SourceChoice(label: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+internal fun SourceChoice(label: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
     val color = if (selected) Accent else MiuixTheme.colorScheme.onSurfaceVariantSummary
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(13.dp))
@@ -721,7 +811,7 @@ private fun BackupPage(state: BackupUiState, operationBusy: Boolean, onBackup: (
             Panel {
                 Text("保存到内部存储", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(10.dp))
-                SelectionContainer { Text("Download/ublbackup_日期_时间", fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = Accent) }
+                SelectionContainer { Text("Download/hnubl/ublbackup_日期_时间", fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = Accent) }
                 Spacer(Modifier.height(12.dp))
                 MutedText("目录时间取点击备份时的设备时间。原始镜像先保存并回读校验；当前槽位保存在 slot_active_a 或 slot_active_b，文件内仅写 a 或 b。主备 GPT 各自保留原始字节与 CRC 状态。", lineHeight = 22)
                 Spacer(Modifier.height(18.dp))
@@ -803,7 +893,7 @@ private fun BackupPage(state: BackupUiState, operationBusy: Boolean, onBackup: (
 }
 
 @Composable
-private fun PageButton(label: String, selected: Boolean, modifier: Modifier, enabled: Boolean = true, onClick: () -> Unit) {
+internal fun PageButton(label: String, selected: Boolean, modifier: Modifier, enabled: Boolean = true, onClick: () -> Unit) {
     Box(
         modifier.heightIn(min = 48.dp).clip(RoundedCornerShape(15.dp)).background(if (selected) Accent.copy(alpha = .12f) else MiuixTheme.colorScheme.surface)
             .selectable(selected = selected, enabled = enabled, role = Role.Tab, onClick = onClick).padding(vertical = 13.dp),
@@ -814,8 +904,8 @@ private fun PageButton(label: String, selected: Boolean, modifier: Modifier, ena
 }
 
 @Composable
-private fun CustomImagePanel(icon: String, title: String, destination: String, fileName: String, information: String, custom: Boolean, busy: Boolean, onSelect: () -> Unit, onReset: () -> Unit) {
-    Panel {
+private fun CustomImageControls(icon: String, title: String, destination: String, fileName: String, information: String, custom: Boolean, busy: Boolean, onSelect: () -> Unit, onReset: () -> Unit) {
+    Column {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(44.dp).background(Accent.copy(alpha = .10f), RoundedCornerShape(13.dp)), contentAlignment = Alignment.Center) {
                 Text(icon, color = Accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
@@ -874,9 +964,10 @@ private fun ablWriteDestination(slot: String, request: UnlockRequest): String {
 }
 
 @Composable
-private fun HeroCard(target: String?, state: UnlockUiState) {
+private fun HeroCard(state: UnlockUiState) {
     val shape = RoundedCornerShape(26.dp)
     val ink = MiuixTheme.colorScheme.onPrimary
+    val request = state.request.resolved()
     Box(
         Modifier.fillMaxWidth().clip(shape)
             .background(Brush.linearGradient(listOf(Accent, androidx.compose.ui.graphics.lerp(Accent, Color.Black, .17f))))
@@ -897,18 +988,22 @@ private fun HeroCard(target: String?, state: UnlockUiState) {
             Spacer(Modifier.height(22.dp))
             Text("更自由的使用设备", color = ink, fontSize = 22.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
-            Text("按连续尾部空间创建 efisp  ·  当前槽位刷写", color = ink.copy(alpha = .8f), fontSize = 13.sp)
+            Text("按连续尾部空间创建 efisp  ·  ${request.ablTarget.label}", color = ink.copy(alpha = .8f), fontSize = 13.sp)
             Spacer(Modifier.height(22.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("目标分区", color = ink.copy(alpha = .67f), fontSize = 12.sp, maxLines = 1)
                 Spacer(Modifier.width(10.dp))
-                Text(target ?: "当前槽位abl待识别", modifier = Modifier.weight(1f), color = ink, fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold, fontFamily = if (target != null) FontFamily.Monospace else FontFamily.Default,
+                Text(if (request.ablTarget == AblWriteTarget.BOTH) "abl_a + abl_b" else ablWriteDestination(state.slot, request), modifier = Modifier.weight(1f), color = ink, fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold, fontFamily = if (state.slot.trimStart('_') in listOf("a", "b")) FontFamily.Monospace else FontFamily.Default,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.width(12.dp))
                 Box(Modifier.widthIn(min = 56.dp).background(ink.copy(alpha = .15f), RoundedCornerShape(20.dp))
                     .padding(horizontal = 11.dp, vertical = 6.dp), contentAlignment = Alignment.Center) {
-                    Text(if (state.busy) "处理中" else "A / B", fontSize = 11.sp, color = ink, maxLines = 1, softWrap = false)
+                    Text(if (state.busy) "处理中" else when (state.slot.trimStart('_').lowercase()) {
+                        "a" -> "现槽A"
+                        "b" -> "现槽B"
+                        else -> "待识别"
+                    }, fontSize = 11.sp, color = ink, maxLines = 1, softWrap = false)
                 }
             }
         }
@@ -916,7 +1011,7 @@ private fun HeroCard(target: String?, state: UnlockUiState) {
 }
 
 @Composable
-private fun Panel(modifier: Modifier = Modifier, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+internal fun Panel(modifier: Modifier = Modifier, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
     Card(modifier = modifier.fillMaxWidth(), cornerRadius = 22.dp, insideMargin = PaddingValues(20.dp), content = content)
 }
 
@@ -1101,6 +1196,8 @@ private fun ConfirmWriteDialog(state: UnlockUiState, onDismiss: () -> Unit, onCo
             Text("按流程写入设备", fontSize = 24.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(10.dp))
             MutedText("本次流程会调整 userdata 分区并写入引导镜像。当前槽位由工具自动读取，使用者自行确认适用性。", lineHeight = 22)
+            Spacer(Modifier.height(10.dp))
+            MutedText("按所选来源生成或使用上传的 efisp 镜像，核对镜像后执行原有分区与刷写流程。", fontSize = 12, lineHeight = 20)
             Spacer(Modifier.height(18.dp))
             Box(Modifier.fillMaxWidth().background(Accent.copy(alpha = .08f), RoundedCornerShape(14.dp)).padding(14.dp)) {
                 val request = state.request.resolved()

@@ -1,0 +1,9 @@
+{
+  "hnublBase": "2.5.2",
+  "hnublBaseArchiveSha256": "f62620a07d0a7f72cd09efa93a12b7d751dbe529b9292b2d2db5099ee5864e54",
+  "patcherVersion": "Freedom/fakebl 1.3.2",
+  "patcherArchiveSha256": "2025d0546ae31f35c37f5e766465050d039bf3f34c45b28b324e2556dee7c251",
+  "consoleFiles": 13,
+  "algorithmChangesToPatcher": false,
+  "hostTextCustomization": "EfispImagePatcher.FASTBOOT_TEXT / BOOT_WARNING retained"
+}

@@ -6,6 +6,7 @@ import net.hawyn.ablefisp.patch.PatchMode
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.concurrent.CancellationException
 
 /** File-only adapter around the supplied ABL-EFISP engine; never accesses a partition. */
 object EfispImagePatcher {
@@ -28,31 +29,63 @@ object EfispImagePatcher {
     @JvmOverloads
     fun patch(input: File, output: File, fakeLock: Boolean, onLog: (String) -> Unit = {}): Result {
         // A diagnostic consumer must not change whether a verified image is published.
-        val log: (String) -> Unit = { message -> runCatching { onLog("[ABL修补] $message") } }
-        log("开始 · ${if (fakeLock) "假回锁模式" else "仅解锁模式"}")
+        val log: (String) -> Unit = { message ->
+            try { onLog("[ABL修补] $message") }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (interrupted: InterruptedException) { throw interrupted }
+            catch (_: Exception) { /* Diagnostics alone do not publish/reject an image. */ }
+        }
         return try {
-            patchVerified(input, output, fakeLock, log)
-        } catch (error: Exception) {
-            log("修补失败：${error.message ?: error.javaClass.simpleName}")
+            ImagePatchFailureBoundary.run {
+                log("开始 · ${if (fakeLock) "假回锁模式" else "仅解锁模式"}")
+                patchVerified(input, output, fakeLock, log)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (interrupted: InterruptedException) {
+            throw interrupted
+        } catch (error: OutOfMemoryError) {
+            failureLog(log, "修补器内存不足，已停止本次操作")
             throw error
+        } catch (error: Exception) {
+            failureLog(log, "修补失败：${error.message ?: error.javaClass.simpleName}")
+            throw error
+        }
+    }
+
+    /** Preserve the original failure even when its diagnostic callback also fails. */
+    private fun failureLog(log: (String) -> Unit, message: String) {
+        try { log(message) }
+        catch (_: Exception) { /* The original operation failure is rethrown. */ }
+        catch (error: Error) {
+            if (error !is OutOfMemoryError && ImagePatchFailureBoundary.reportable(error) == null) throw error
         }
     }
 
     private fun patchVerified(input: File, output: File, fakeLock: Boolean, log: (String) -> Unit): Result {
         require(input.isFile) { "ABL 源文件缺失" }
         require(input.canonicalFile != output.canonicalFile) { "ABL 源文件与 efisp 输出须使用不同路径" }
-        val source = input.inputStream().use { ImageIo.readBounded(it) }
-        require(source.isNotEmpty()) { "ABL 源文件为空" }
-        val sourceHash = ImageIo.sha256(source)
-        log("输入 ${input.name} · ${source.size} 字节")
+        require(input.length() > 0) { "ABL 源文件为空" }
+        val prepared = ImageIo.prepareFile(input)
+        val sourceHash = prepared.sourceSha256
+        log("输入 ${input.name} · ${prepared.sourceBytes} 字节")
         log("源 SHA-256=$sourceHash")
+        if (prepared.trimmedPaddingBytes > 0) {
+            log("按 PE 节表与证书边界保留 ${prepared.bytes.size} 字节分析输入；跳过 ${prepared.trimmedPaddingBytes} 字节分区尾部填充，原文件与完整来源摘要保留")
+            log("分析输入 SHA-256=${prepared.analysisSha256}")
+        }
         val mode = if (fakeLock) PatchMode.FREEDOM_FAKE_LOCK else PatchMode.FREEDOM
         log("正在提取 PE、分析并应用核心补丁")
-        val patched = AblEfisp.patch(source, mode)
-        check(patched.sourceSha256 == sourceHash) { "ABL 来源哈希与修补结果不一致" }
+        val patched = AblEfisp.patchWithKbl(prepared.bytes, mode)
+        check(patched.sourceSha256 == prepared.analysisSha256) { "ABL 分析输入哈希与修补结果不一致" }
         log("输入格式=${patched.sourceFormat} · PE 大小=${patched.imageSize} 字节 · 核心补丁=${patched.patches.size} 项")
         log("核心修补后 SHA-256（文字定制前）=${patched.outputSha256}")
         log("偏移说明：RVA 为 PE 相对虚拟地址；PE 文件偏移相对于提取后的 PE/efisp 文件")
+        patched.patches.forEachIndexed { index, match ->
+            log("文字定制前补丁 ${index + 1}/${patched.patches.size}：${match.name} · RVA ${hex(match.rva)} · PE 文件偏移 ${hex(match.fileOffset.toLong())} · ${if (match.alreadyApplied) "原已应用" else "已应用"}")
+            log("文字定制前原始字节=${match.before}")
+            log("文字定制前修补字节=${match.after}")
+        }
 
         log("正在扫描 Fastboot 与开机提示文字")
         val catalogue = AblEfisp.scanText(patched.output)
@@ -98,18 +131,28 @@ object EfispImagePatcher {
             log("旧文字=${quoted(change.oldText)}")
             log("新文字=${quoted(change.newText)}")
         }
-        // The text engine keeps original offsets. Preserve every core edit in the published image.
-        patched.patches.forEachIndexed { index, match ->
+        // Text customization removes and rebuilds the nested Recovery/KBL layers. Their
+        // generated code and hooks may legitimately move; verify the final topology rather
+        // than applying the pre-customization offsets to the rebuilt image.
+        log("正在重新分析最终镜像并校验核心、KBL 与故障恢复拓扑")
+        val finalProof = AblEfisp.patchWithKbl(customized.output, mode)
+        val customizedHash = ImageIo.sha256(customized.output)
+        check(finalProof.sourceSha256 == customizedHash && finalProof.outputSha256 == customizedHash &&
+            finalProof.imageSize == customized.output.size && finalProof.alreadyPatched &&
+            finalProof.output.contentEquals(customized.output)) {
+            "文字定制后最终镜像重导入校验不一致"
+        }
+        finalProof.patches.forEachIndexed { index, match ->
             val expected = match.after.replace(" ", "").chunked(2).map { it.toInt(16).toByte() }.toByteArray()
             check(match.fileOffset >= 0 && match.fileOffset.toLong() + expected.size <= customized.output.size &&
                 customized.output.copyOfRange(match.fileOffset, match.fileOffset + expected.size).contentEquals(expected)) {
                 "文字定制后核心修补结果不一致：${match.name}"
             }
-            log("补丁 ${index + 1}/${patched.patches.size}：${match.name} · RVA ${hex(match.rva)} · PE 文件偏移 ${hex(match.fileOffset.toLong())} · ${if (match.alreadyApplied) "原已应用" else "已应用"} · 文字定制后字节校验通过")
-            log("修改前字节=${match.before}")
-            log("修改后字节=${match.after}")
+            log("最终补丁 ${index + 1}/${finalProof.patches.size}：${match.name} · RVA ${hex(match.rva)} · PE 文件偏移 ${hex(match.fileOffset.toLong())} · 文字定制后字节校验通过")
+            log("最终校验字节=${match.after}")
         }
-        val notes = (patched.notes + catalogue.notes + customized.notes).distinct()
+        log("最终镜像重导入、完整字节与核心补丁回读校验通过")
+        val notes = (patched.notes + catalogue.notes + customized.notes + finalProof.notes).distinct()
         notes.forEach { note ->
             val clarification = if (note.contains("Fastboot") && note.contains("自动分行"))
                 "（扫描器通用说明；本次已关闭自动换行）" else ""
@@ -124,11 +167,11 @@ object EfispImagePatcher {
         try {
             log("正在写入临时文件并校验大小、SHA-256")
             temporary.outputStream().use { stream -> stream.write(image); stream.fd.sync() }
-            check(temporary.length() == image.size.toLong() && ImageIo.sha256(temporary.readBytes()) == hash) {
+            check(temporary.length() == image.size.toLong() && temporary.inputStream().use(ImageIo::sha256) == hash) {
                 "efisp 临时文件写入回读不一致"
             }
             Files.move(temporary.toPath(), output.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-            check(output.isFile && output.length() == image.size.toLong() && ImageIo.sha256(output.readBytes()) == hash) {
+            check(output.isFile && output.length() == image.size.toLong() && output.inputStream().use(ImageIo::sha256) == hash) {
                 "efisp 输出文件写入回读不一致"
             }
             log("输出文件回读校验通过 · ${output.name} · ${image.size} 字节")
@@ -136,9 +179,9 @@ object EfispImagePatcher {
         } finally {
             temporary.delete()
         }
-        log("修补完成 · 核心补丁=${patched.patches.size} 项 · 文字定制=${customized.changes.size} 项")
+        log("修补完成 · 核心补丁=${finalProof.patches.size} 项 · 文字定制=${customized.changes.size} 项")
         return Result(image.size.toLong(), hash, sourceHash, patched.sourceFormat, fakeLock,
-            patched.patches.size, customized.changes.size,
+            finalProof.patches.size, customized.changes.size,
             notes)
     }
 

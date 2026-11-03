@@ -1,0 +1,43 @@
+--- a/lib/android.js
++++ b/lib/android.js
+@@ -545,6 +545,11 @@
+ }
+ 
+ function tryGetEnvJvmti (vm, runtime) {
++  // hnubl scoped API-37 policy: use JNI reflection without loading the JVMTI plugin.
++  if (getAndroidApiLevel() >= 37) {
++    return null;
++  }
++
+   let env = null;
+ 
+   vm.perform(() => {
+--- a/lib/class-model.js
++++ b/lib/class-model.js
+@@ -1,4 +1,4 @@
+-import { withRunnableArtThread, getArtClassSpec, getArtMethodSpec, getArtFieldSpec } from './android.js';
++import { withRunnableArtThread, getArtClassSpec, getArtMethodSpec, getArtFieldSpec, getAndroidApiLevel } from './android.js';
+ import getApi from './api.js';
+ 
+ const code = `#include <json-glib/json-glib.h>
+@@ -1354,8 +1354,10 @@
+     });
+ 
+   const artApi = javaApi.add(javaApiSize);
++  // The existing JNI reflection branch does not require raw mirror::Class offsets.
++  artApi.writeUInt(0);
+   const { vm } = env;
+-  if (api.flavor === 'art') {
++  if (api.flavor === 'art' && getAndroidApiLevel() < 37) {
+     let artClassOffsets;
+     if (jvmti !== null) {
+       artClassOffsets = [0, 0, 0, 0];
+@@ -1421,7 +1423,7 @@
+ function makeHandleUnwrapper (cm, vm) {
+   const api = getApi();
+ 
+-  if (api.flavor !== 'art') {
++  if (api.flavor !== 'art' || getAndroidApiLevel() >= 37) {
+     return nullUnwrap;
+   }
+ 

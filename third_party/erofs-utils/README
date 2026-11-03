@@ -1,0 +1,29 @@
+erofs-utils
+===========
+
+Userspace tools for the EROFS filesystem, currently including:
+
+  mkfs.erofs    Filesystem formatter
+  mount.erofs   Mount helper for EROFS
+  erofsfuse     FUSE daemon alternative
+  dump.erofs    Filesystem analyzer
+  fsck.erofs    Filesystem compatibility and consistency checker,
+                also capable of extracting filesystem contents
+
+For more information about the EROFS filesystem, please refer to:
+
+  https://docs.kernel.org/filesystems/erofs.html
+  https://erofs.docs.kernel.org
+
+For build and installation instructions, see:
+
+  docs/INSTALL.md
+
+Contributing
+------------
+
+erofs-utils is part of the EROFS filesystem project, a fully
+community-driven open source software. If you are interested in EROFS,
+feel free to send feedback and/or patches to:
+
+  linux-erofs mailing list <linux-erofs@lists.ozlabs.org>

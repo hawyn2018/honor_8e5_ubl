@@ -14,22 +14,9 @@ data class VerificationResult(val checks: List<VerificationCheck>) {
 object OutputVerifier {
     private fun freedomPlan(image: PeImage): List<PlannedEdit> {
         val recovery = BootFailurePolicyPatcher.analyze(image)
-        val pending = recovery.filter { item ->
-            val stub = item.existingStubRva
-            stub == null || image.sections.none { section ->
-                val length = minOf(section.rawSize.toLong(), section.virtualSize.takeIf { it > 0 } ?: section.rawSize.toLong())
-                section.executable && !section.writable && section.characteristics and 0x02000000L == 0L &&
-                    item.callRva >= section.rva && item.callRva + 4 <= section.rva + length &&
-                    stub >= section.rva && stub + BootFailurePolicyPatcher.STUB_BYTES <= section.rva + length
-            }
-        }
-        val slots = MappedRxCodeAllocator.allocate(image, pending.map {
-            MappedRxCodeAllocator.Request(it.callRva, BootFailurePolicyPatcher.STUB_BYTES)
-        })
-        val destinations = pending.zip(slots).associate { (item, slot) -> item.callRva to slot.rva }
-        return SemanticPatcher.plan(image) + recovery.flatMap {
-            BootFailurePolicyPatcher.edits(it, destinations[it.callRva] ?: requireNotNull(it.existingStubRva))
-        } + RollbackUpdatePatcher.analyze(image).edits
+        return SemanticPatcher.plan(image) +
+            recovery.flatMap(BootFailurePolicyPatcher::nativeReportingEdits) +
+            RollbackUpdatePatcher.analyze(image).edits + SpecialSdamCompatibilityPatcher.analyze(image).edits
     }
 
     fun verifyCore(sourcePe: ByteArray, outputPe: ByteArray, patches: List<PatchMatch>): VerificationResult {
@@ -44,12 +31,13 @@ object OutputVerifier {
         try {
             val expected = freedomPlan(source)
             val finalPlan = freedomPlan(output)
-            val finalTargets = SemanticPatcher.plan(source).size in 3..4 && finalPlan.size == expected.size && finalPlan.all { edit ->
+            val stable = expected.filterNot { it.name == "恢复原生 AVB hash 故障上报调用" }
+            val finalTargets = SemanticPatcher.plan(source).size in 3..4 && finalPlan.size == stable.size && expected.all { edit ->
                 output.rvaToOffset(edit.rva, edit.replacement.size)?.let { output.bytes.matches(it, edit.replacement) } == true
             }
-            checks += check("核心分支、加载目标与条件恢复均为最终状态", finalTargets,
+            checks += check("核心分支、加载目标与原生报告调用均为最终状态", finalTargets,
                 finalPlan.joinToString { "${it.name}@0x${it.rva.toString(16)}" })
-            val sourceTargets = expected.map { it.name to it.rva }
+            val sourceTargets = stable.map { it.name to it.rva }
             checks += check("功能目标身份保持", finalPlan.map { it.name to it.rva } == sourceTargets,
                 "读取记录、共享验签调用、成功状态写入、日志循环和分区加载链重新匹配。")
             val allowed = HashSet<Int>()

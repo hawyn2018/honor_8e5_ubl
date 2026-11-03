@@ -8,14 +8,16 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.honor.bootforge.core.Payloads
+import dev.honor.bootforge.core.PatchRetryTask
 import dev.honor.bootforge.core.UnlockCompletion
 import dev.honor.bootforge.core.UnlockRequest
-import dev.honor.bootforge.core.ImageTarget
+import dev.honor.bootforge.core.UploadRole
 import dev.honor.bootforge.core.ToolReport
 import dev.honor.bootforge.core.Probe
 import dev.honor.bootforge.core.RootShell
 import dev.honor.bootforge.core.scriptCommand
 import dev.honor.bootforge.ui.UnlockUiState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -44,7 +46,9 @@ class UnlockModel(application: Application) : AndroidViewModel(application) {
     val state get() = RunState.state
     private val app get() = getApplication<Application>()
     init {
+        val restored = runCatching { app.getSharedPreferences("unlock-selection", 0).getString("request", null)?.let(UnlockRequest::decode) }.getOrNull()
         RunState.state = state.copy(
+            request = if (state.busy) state.request else restored ?: state.request,
             readOnlyBuild = !BuildConfig.ALLOW_PARTITION_WRITES,
         )
         RunState.preparedJob = RunState.preparedJob ?: JobBackups.load(app)
@@ -53,11 +57,17 @@ class UnlockModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun refreshImages() {
-        val efisp = Payloads.info(app, ImageTarget.EFISP)
-        val abl = Payloads.info(app, ImageTarget.ABL)
+        fun image(role: UploadRole) = runCatching { Payloads.info(app, role) }.getOrElse {
+            RunState.append(it.message.orEmpty()); Payloads.info(app, role, false)
+        }
+        val efisp = image(UploadRole.EFISP_IMAGE); val abl = image(UploadRole.ABL_FLASH); val sourceAbl = image(UploadRole.EFISP_ABL)
         fun describe(info: Payloads.ImageInfo) = if (info.bytes > 0) "${info.name} · ${info.bytes} B\nSHA-256 ${info.sha256}" else info.name
         RunState.state = state.copy(efispFileName = efisp.name, ablFileName = abl.name,
+            efispAblFileName = sourceAbl.name, efispAblCustom = sourceAbl.custom, efispAblImage = describe(sourceAbl),
             efispCustom = efisp.custom, ablCustom = abl.custom, efispImage = describe(efisp), ablImage = describe(abl))
+    }
+    private fun saveRequest(request: UnlockRequest) {
+        check(app.getSharedPreferences("unlock-selection", 0).edit().putString("request", request.encode()).commit()) { "解锁选项保存失败" }
     }
 
     private fun invalidatePreparedSelection() {
@@ -75,10 +85,11 @@ class UnlockModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun changeRequest(request: UnlockRequest) {
-        if (state.busy || request == state.request) return
+        if (state.busy || OtaState.state.busy || BackupState.state.busy || request == state.request) return
         if (RunState.preparedJob == null) {
             // Ordinary page/option changes are local selections, not running partition tasks.
             // Avoid pulsing the entire screen's busy/progress state on every settled swipe.
+            try { saveRequest(request) } catch (error: Exception) { RunState.append(error.message.orEmpty()); return }
             RunState.preparedArchive = null
             RunState.state = state.copy(request = request, stage = "已选择 ${request.mode.label}",
                 recoveryPackageReady = false, backupExported = false,
@@ -90,15 +101,16 @@ class UnlockModel(application: Application) : AndroidViewModel(application) {
         task("正在切换解锁方式") {
             cancelPreparedSelection()
             invalidatePreparedSelection()
+            saveRequest(request)
             RunState.state = state.copy(request = request, stage = "已选择 ${request.mode.label}")
         }
     }
 
     fun selectCustomImage(target: String, uri: Uri) = task("正在保存自定义文件") {
-        val imageTarget = requireNotNull(ImageTarget.fromId(target))
+        val role = requireNotNull(UploadRole.fromKey(target))
         cancelPreparedSelection()
         withContext(Dispatchers.IO) {
-            Payloads.importImage(app, imageTarget, uri)
+            Payloads.importImage(app, role, uri)
         }
         invalidatePreparedSelection()
         refreshImages()
@@ -106,14 +118,14 @@ class UnlockModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resetCustomImage(target: String) = task("正在清除上传文件选择") {
-        val imageTarget = requireNotNull(ImageTarget.fromId(target))
+        val role = requireNotNull(UploadRole.fromKey(target))
         cancelPreparedSelection()
         withContext(Dispatchers.IO) {
-            Payloads.resetImage(app, imageTarget)
+            Payloads.resetImage(app, role)
         }
         invalidatePreparedSelection()
         refreshImages()
-        RunState.state = state.copy(stage = "${imageTarget.id} 已清除上传文件选择")
+        RunState.state = state.copy(stage = "${role.label}已清除上传文件选择")
     }
 
     fun prepareTools() = task("正在准备分区与刷写工具") {
@@ -125,7 +137,8 @@ class UnlockModel(application: Application) : AndroidViewModel(application) {
     }
     fun inspect(request: UnlockRequest = state.request) = task("正在以 root 只读检测") {
         RunState.state = state.copy(canRebootRecovery = false, canRebootBootloader = false, completedRequest = null)
-        val dir = withGenerationLogs { log -> Payloads.stage(app, request, onLog = log) }
+        val dir = withGenerationLogs { log -> Payloads.stage(app, request, onLog = log,
+            onPatchFailure = { error -> PatchRetryPrompt.awaitChoice(PatchRetryTask.UNLOCK, error) }) }
         val result = withContext(Dispatchers.IO) {
             val legacy = RootShell.run(scriptCommand(File(dir, "unlock.sh").absolutePath, "--check"), File(app.filesDir, "inspect.log"), 60)
             val legacyProbe = Probe.parse(legacy.output)
@@ -163,7 +176,8 @@ class UnlockModel(application: Application) : AndroidViewModel(application) {
     }
     fun prepareBundle(request: UnlockRequest = state.request) = task("正在准备工具与操作包") {
         RunState.state = state.copy(recoveryPackageReady = false)
-        val dir = withGenerationLogs { log -> Payloads.stage(app, request, onLog = log) }
+        val dir = withGenerationLogs { log -> Payloads.stage(app, request, onLog = log,
+            onPatchFailure = { error -> PatchRetryPrompt.awaitChoice(PatchRetryTask.UNLOCK, error) }) }
         val report = withContext(Dispatchers.IO) { RuntimeTools.inspect(app, dir) }
         RunState.tools(report)
         val mode = withContext(Dispatchers.IO) { RuntimeTools.mode(app) }
@@ -220,11 +234,10 @@ class UnlockModel(application: Application) : AndroidViewModel(application) {
             UnlockCompletion.BOOTLOADER -> state.canRebootBootloader
             UnlockCompletion.RECOVERY -> state.canRebootRecovery
         }
-        val command = completion.commandIfReady(ready, BuildConfig.ALLOW_PARTITION_WRITES, state.busy) ?: return
+        completion.commandIfReady(ready, BuildConfig.ALLOW_PARTITION_WRITES, state.busy) ?: return
         task("正在按你的选择重启进入 ${completion.destination}") {
             try {
-                val result = withContext(Dispatchers.IO) { RootShell.run(command, File(app.filesDir, "reboot.log"), 30) }
-                check(result.exitCode == 0) { result.output.ifBlank { "${completion.destination} 重启命令未成功" } }
+                withContext(Dispatchers.IO) { AppRebootCommands.request(app, completion, File(app.filesDir, "reboot.log")) }
                 RunState.state = state.copy(stage = if (completion == UnlockCompletion.BOOTLOADER)
                     "已请求进入 Fastboot" else "已请求进入 Recovery，请完成恢复出厂设置")
             } finally {
@@ -233,16 +246,21 @@ class UnlockModel(application: Application) : AndroidViewModel(application) {
         }
     }
     private fun task(label: String, operation: suspend () -> Unit) {
-        if (state.busy) return
+        if (state.busy || OtaState.state.busy || BackupState.state.busy) return
         RunState.state = state.copy(busy = true, stage = label, progress = 0.1f)
         viewModelScope.launch {
             try { operation(); RunState.state = state.copy(progress = 1f) }
-            catch (e: Exception) {
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (e: Throwable) {
+                if (e is VirtualMachineError || e is ThreadDeath) throw e
                 RunState.append(e.message ?: e.javaClass.simpleName)
                 // Inspection, file selection and export do not mutate partitions.
                 // Preserve any existing write lockout; their errors must not disable direct mode.
                 RunState.state = state.copy(stage = "操作已停止，请查看日志")
-            } finally { RunState.state = state.copy(busy = false) }
+            } finally {
+                PatchRetryPrompt.cancel(PatchRetryTask.UNLOCK)
+                RunState.state = state.copy(busy = false)
+            }
         }
     }
 }

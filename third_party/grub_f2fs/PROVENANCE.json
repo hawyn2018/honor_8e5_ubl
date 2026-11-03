@@ -1,0 +1,11 @@
+{
+  "source": "https://ftp.gnu.org/gnu/grub/grub-2.14.tar.xz",
+  "version": "GNU GRUB 2.14",
+  "archive_sha256": "bc8d3c73535b8838d8c8e2654d73edc4e6ae8c8acdb45d5df5dc9a1547446d43",
+  "upstream_path": "grub-core/fs/f2fs.c",
+  "license": "GPL-3.0-or-later",
+  "upstream_sha256": "6b0d88504c0e5dca2f7c074ab5bcff65432583668e5971f412548678ac6947f3",
+  "derived_sha256": "7c417998e7cf6f757c913e5553bb35e0ef12ef97b6f5a1600588e93901fe4dac",
+  "license_sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+  "local_changes": "See README.KBL.md; core extraction plus bounds/modern inode-layout/read-only KBL adaptation."
+}

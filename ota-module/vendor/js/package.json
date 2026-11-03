@@ -1,0 +1,1 @@
+{"name":"hnubl-ota-agent-build","version":"2.7.3","private":true,"dependencies":{"buffer":"^6.0.3","esbuild":"^0.28.2","frida-java-bridge":"^7.0.13"}}

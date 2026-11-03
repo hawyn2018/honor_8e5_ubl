@@ -1,0 +1,48 @@
+{
+  "profile_id": "61258",
+  "firmware_version": "136",
+  "kernel_release": "6.12.58-android16-6-g3a7ac1674240-abogki541502914-4k",
+  "image_sha256": "2b158518f3436f2f7efb31c012137d14d06e301b7570ab187a9df1be856fe8ab",
+  "reuse_existing_61258": true,
+  "links": {
+    "LINK_SELINUX_STATE": "0xffffffc0827e7a60",
+    "LINK_INIT_USER_NS": "0xffffffc082572138",
+    "LINK_ROOT_USER": "0xffffffc0825723b0",
+    "LINK_INIT_GROUPS": "0xffffffc082573878",
+    "LINK_INIT_UCOUNTS": "0xffffffc082573d48",
+    "LINK_ALLOC_TIMER": "0xffffffc08051a110",
+    "LINK_ALLOC_CRED": "0xffffffc08019c474",
+    "LINK_ALLOC_TASK": "0xffffffc0801f0d64",
+    "GEOM_MEMSTART_ADDR": "0xffffffc08193af78",
+    "BNE_LINK": "0xffffffc0806c82bc"
+  },
+  "function_offsets": {
+    "do_timer_create": "0xac",
+    "prepare_creds": "0x2c",
+    "copy_process": "0x190",
+    "begin_new_exec.release_task": "0x410",
+    "begin_new_exec.down_read_killable": "0x50c",
+    "begin_new_exec.posix_cpu_timers_exit": "0x87c",
+    "begin_new_exec.exit_itimers": "0x88c"
+  },
+  "btf_geometry": {
+    "task_struct.cred": "0x900",
+    "task_struct.real_cred": "0x8f8",
+    "task_struct.comm": "0x910",
+    "cred.size": "0xb8",
+    "cred.cap_effective": "0x40",
+    "cred.cap_bset": "0x48",
+    "cred.cap_ambient": "0x50",
+    "k_itimer.size": "0x100",
+    "k_itimer.it.cpu.node": "0x78",
+    "selinux_state.size": "0x80",
+    "selinux_state.enforcing": "0x0",
+    "selinux_state.initialized": "0x1",
+    "selinux_write_target": "-0x7"
+  },
+  "runtime": {
+    "GEO_TASK_OBJSIZE": "/proc/slabinfo overrides header fallback 5696",
+    "GEOM_MEMSTART_PFN": "0x80000 (inferred; confirm on device)",
+    "KASLR_SLIDE": "derived per boot, not hardcoded"
+  }
+}

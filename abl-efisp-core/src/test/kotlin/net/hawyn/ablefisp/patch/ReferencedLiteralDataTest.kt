@@ -209,7 +209,7 @@ class ReferencedLiteralDataTest {
         assertFalse(classified(bytes))
     }
 
-    @Test fun allocatorIgnoresOnlyTheProvenLiteralSourceNotAnUnalignedRealReference() {
+    @Test fun allocatorUsesTheSameZeroTailForLiteralBytesAndUnalignedReferences() {
         val target = requireNotNull(A64.adr(pseudoAdrPc, 0x50746f6c)).second
         val size = (((target + 0x1000 - codeRva) + 0xfff) and -0x1000L).toInt()
         val bytes = fixture(size)
@@ -221,12 +221,14 @@ class ReferencedLiteralDataTest {
         assertArrayEquals(original, bytes)
 
         put(bytes, 0x1100, adr(0x1100, target + 1, 8)) // Real, legally unaligned data pointer.
-        assertThrows(PatchException::class.java) {
-            MappedRxCodeAllocator.allocate(PeImage.parse(bytes), listOf(MappedRxCodeAllocator.Request(codeRva, 20)))
-        }
+        val referenced = bytes.copyOf()
+        val referencedSlot = MappedRxCodeAllocator.allocate(
+            PeImage.parse(bytes), listOf(MappedRxCodeAllocator.Request(codeRva, 20))).single()
+        assertEquals(slot, referencedSlot)
+        assertArrayEquals(referenced, bytes)
     }
 
-    @Test fun xzrAddressDefinitionsHaveNoLivePointerButOtherDestinationsStayProtected() {
+    @Test fun xzrAndLiveAddressDefinitionsRemainDistinctWithoutGatingCodeStorage() {
         for (page in listOf(false, true)) {
             val bytes = fixture()
             put(bytes, 0x1004, 0xd503201f.toInt()) // Isolate XZR from the separate opaque-last-object escape guard.
@@ -237,11 +239,18 @@ class ReferencedLiteralDataTest {
             put(bytes, 0x1100, word)
             val image = PeImage.parse(bytes)
             assertTrue(A64.references(image).none { it.pc == 0x1100L })
-            MappedRxCodeAllocator.allocate(image, listOf(MappedRxCodeAllocator.Request(codeRva, 20)))
-            put(bytes, 0x1100, word and 31.inv() or 8)
-            assertThrows(PatchException::class.java) {
-                MappedRxCodeAllocator.allocate(PeImage.parse(bytes), listOf(MappedRxCodeAllocator.Request(codeRva, 20)))
-            }
+            val slot = MappedRxCodeAllocator.allocate(image,
+                listOf(MappedRxCodeAllocator.Request(codeRva, 20))).single()
+            val liveWord = word and 31.inv() or 8
+            put(bytes, 0x1100, liveWord)
+            val referenced = bytes.copyOf()
+            val live = PeImage.parse(bytes)
+            // A bare ADRP has no completed address use for references() to emit.
+            val decoded = if (page) A64.adrp(0x1100, liveWord) else A64.adr(0x1100, liveWord)
+            assertEquals(8, decoded?.first)
+            assertEquals(slot, MappedRxCodeAllocator.allocate(live,
+                listOf(MappedRxCodeAllocator.Request(codeRva, 20))).single())
+            assertArrayEquals(referenced, bytes)
         }
     }
 }

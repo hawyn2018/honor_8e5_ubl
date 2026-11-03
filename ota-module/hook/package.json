@@ -1,0 +1,15 @@
+{
+  "name": "hnubl-ota-agent",
+  "version": "2.9.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test/policy.test.mjs && node test/version-policy.test.mjs && node test/agent-lifecycle.test.mjs && node test/native-slot-policy.test.mjs && node test/native-slot-locator.test.mjs && node test/native-slot-agent.test.mjs && node test/reboot-labels.test.mjs"
+  },
+  "dependencies": {
+    "frida-java-bridge": "7.0.13"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

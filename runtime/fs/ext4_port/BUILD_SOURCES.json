@@ -1,0 +1,33 @@
+{
+  "sources": [
+    "runtime/fs/kbl_ext4.c",
+    "third_party/lwext4/src/ext4.c",
+    "third_party/lwext4/src/ext4_balloc.c",
+    "third_party/lwext4/src/ext4_bcache.c",
+    "third_party/lwext4/src/ext4_bitmap.c",
+    "third_party/lwext4/src/ext4_block_group.c",
+    "third_party/lwext4/src/ext4_blockdev.c",
+    "third_party/lwext4/src/ext4_crc32.c",
+    "third_party/lwext4/src/ext4_dir.c",
+    "third_party/lwext4/src/ext4_dir_idx.c",
+    "third_party/lwext4/src/ext4_extent.c",
+    "third_party/lwext4/src/ext4_fs.c",
+    "third_party/lwext4/src/ext4_hash.c",
+    "third_party/lwext4/src/ext4_ialloc.c",
+    "third_party/lwext4/src/ext4_inode.c",
+    "third_party/lwext4/src/ext4_journal.c",
+    "third_party/lwext4/src/ext4_super.c",
+    "third_party/lwext4/src/ext4_trans.c",
+    "third_party/lwext4/src/ext4_xattr.c"
+  ],
+  "include": [
+    "runtime/fs/ext4_port/include",
+    "third_party/lwext4/include"
+  ],
+  "forceInclude": "runtime/fs/ext4_port/include/kbl_ext4_config.h",
+  "additionalFlags": [
+    "-Wno-unused-function",
+    "-Wno-unused-but-set-variable"
+  ],
+  "entry": "kbl_ext4_mount"
+}

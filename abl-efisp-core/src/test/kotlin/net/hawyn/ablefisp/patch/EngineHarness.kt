@@ -3,9 +3,8 @@ package net.hawyn.ablefisp.patch
 import java.io.File
 
 /** Core discovery contracts over independently generated relocation/corruption fixtures.
- * These original fixtures also contain deliberate unrelated tail references, so
- * they are not whole-image allocation fixtures for the later recovery adapter.
- * FreedomRecoveryTest covers the complete current PatchEngine separately. */
+ * FreedomRecoveryTest also checks whole-image patching and repeated import of
+ * fixtures containing deliberate unrelated tail references. */
 object EngineHarness {
     data class Outcome(val name: String, val passed: Boolean, val detail: String)
 

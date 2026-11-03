@@ -4,6 +4,7 @@ import java.time.Instant
 import java.util.Date
 import java.util.TimeZone
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class BackupNamingTest {
@@ -24,5 +25,20 @@ class BackupNamingTest {
         } finally {
             TimeZone.setDefault(previous)
         }
+    }
+
+    @Test fun allPublishedFilesShareTheHnublDownloadDirectory() {
+        val folder = BackupNaming.folderName(now, TimeZone.getTimeZone("Asia/Shanghai"))
+        assertEquals("Download/hnubl/ublbackup_20261024_000506/", BackupNaming.relativePath(folder))
+        assertEquals("内部存储/Download/hnubl/ublbackup_20261024_000506", BackupNaming.displayDirectory(folder))
+    }
+
+    @Test fun malformedFoldersNeverBecomePublicStoragePaths() {
+        listOf("", "../ublbackup_20261024_000506", "ublbackup_20261024_000506/extra",
+            "/ublbackup_20261024_000506", "ublbackup_20261024_000506 ", "ublbackup_20261024_000506\n")
+            .forEach { folder ->
+                assertThrows(IllegalArgumentException::class.java) { BackupNaming.relativePath(folder) }
+                assertThrows(IllegalArgumentException::class.java) { BackupNaming.displayDirectory(folder) }
+            }
     }
 }

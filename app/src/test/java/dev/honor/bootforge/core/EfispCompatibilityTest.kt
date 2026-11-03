@@ -1,6 +1,7 @@
 package dev.honor.bootforge.core
 
 import net.hawyn.ablefisp.api.AblEfisp
+import net.hawyn.ablefisp.io.ImageIo
 import net.hawyn.ablefisp.patch.PatchMode
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
@@ -25,14 +26,21 @@ class EfispCompatibilityTest {
         val before = source.readBytes()
         for (fake in listOf(false, true)) {
             val mode = if (fake) PatchMode.FREEDOM_FAKE_LOCK else PatchMode.FREEDOM
-            val core = AblEfisp.patch(before, mode)
+            val core = AblEfisp.patchWithKbl(before, mode)
             val generated = File(directory.root, "generated-$fake.img")
             val logs = mutableListOf<String>()
             val result = EfispImagePatcher.patch(source, generated, fake, onLog = { logs += it })
             assertTrue(result.patchCount > 0)
-            assertEquals(core.patches.size, result.patchCount)
             val bytes = generated.readBytes()
-            for (patch in core.patches) {
+            val finalProof = AblEfisp.patchWithKbl(bytes, mode)
+            assertTrue(finalProof.alreadyPatched)
+            assertArrayEquals("Final nested Recovery/KBL ownership must be stable", bytes, finalProof.output)
+            assertEquals(ImageIo.sha256(bytes), finalProof.sourceSha256)
+            assertEquals(finalProof.sourceSha256, finalProof.outputSha256)
+            assertEquals(finalProof.patches.size, result.patchCount)
+            assertTrue(finalProof.patches.any { it.name.startsWith("KBL") })
+            assertTrue(finalProof.patches.any { it.name == "EFISP 返回边界隔离" })
+            for (patch in finalProof.patches) {
                 val expected = patch.after.replace(" ", "").chunked(2).map { it.toInt(16).toByte() }.toByteArray()
                 assertArrayEquals(patch.name, expected,
                     bytes.copyOfRange(patch.fileOffset, patch.fileOffset + expected.size))
@@ -56,14 +64,28 @@ class EfispCompatibilityTest {
         assertArrayEquals("Reading and patching must not change the selected ABL", before, source.readBytes())
     }
 
-    @Test fun existingSuccessfulFakeLockImageKeepsItsBytesAndReimports() {
+    @Test fun previousSuccessfulFakeLockProductsReceiveCurrentFeaturesAndReimportStably() {
         val source = fixture("analysis/postfakebl-v244-20261027/source-abl-before.full.img")
-        val golden = fixture("analysis/postfakebl-v244-20261027/actual-efisp.img")
-        val generated = File(directory.root, "existing-image.img")
-        EfispImagePatcher.patch(source, generated, true)
-        assertArrayEquals("The previously tested image must not change", golden.readBytes(), generated.readBytes())
-        val imported = File(directory.root, "existing-reimport.img")
-        EfispImagePatcher.patch(golden, imported, true)
-        assertArrayEquals(golden.readBytes(), imported.readBytes())
+        val previous = fixture("analysis/postfakebl-v244-20261027/actual-efisp.img")
+        for ((index, input) in listOf(source, previous).withIndex()) {
+            val original = input.readBytes()
+            val generated = File(directory.root, "upgraded-$index.img")
+            EfispImagePatcher.patch(input, generated, true)
+            val bytes = generated.readBytes()
+            val plan = AblEfisp.patchWithKbl(bytes, PatchMode.FREEDOM_FAKE_LOCK)
+            assertTrue(plan.patches.any { it.name.startsWith("AVB HashDescriptor") })
+            assertTrue(plan.patches.any { it.name.startsWith("KBL") })
+            assertTrue(plan.patches.any { it.name == "EFISP 返回边界隔离" })
+            assertTrue(plan.alreadyPatched)
+            assertEquals(ImageIo.sha256(bytes), plan.sourceSha256)
+            assertEquals(plan.sourceSha256, plan.outputSha256)
+            assertArrayEquals("The completed image must retain the current Recovery/KBL topology", bytes, plan.output)
+            assertEquals(EfispImagePatcher.FASTBOOT_TEXT,
+                AblEfisp.scanText(bytes).entries.single { it.id == "fastboot-unlocked" }.text)
+            val imported = File(directory.root, "upgraded-reimport-$index.img")
+            EfispImagePatcher.patch(generated, imported, true)
+            assertArrayEquals(bytes, imported.readBytes())
+            assertArrayEquals("The legacy source remains available", original, input.readBytes())
+        }
     }
 }

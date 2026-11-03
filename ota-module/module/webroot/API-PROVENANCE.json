@@ -1,0 +1,13 @@
+{
+  "checkedDate": "2026-11-01",
+  "offlineAssets": true,
+  "remoteRuntimeDependencies": [],
+  "bridge": {
+    "call": "ksu.exec(command, JSON.stringify(options), callbackName)",
+    "callback": "callback(errno, stdout, stderr)",
+    "officialImplementation": "https://github.com/tiann/KernelSU/blob/main/js/index.js",
+    "officialTypes": "https://github.com/tiann/KernelSU/blob/main/js/index.d.ts",
+    "officialGuide": "https://kernelsu.org/guide/module-webui.html",
+    "adapter": "bridge.js is a module-specific implementation with fixed command validation, timeout and callback cleanup; no npm runtime is needed."
+  }
+}

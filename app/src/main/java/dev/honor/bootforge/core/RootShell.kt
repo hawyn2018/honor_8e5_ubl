@@ -10,32 +10,132 @@ import kotlin.concurrent.thread
 
 data class ShellResult(val exitCode: Int, val output: String)
 
+internal data class CustomSuProof(val path: String, val result: ShellResult)
+
 fun interface RootProcessProvider {
     /** Start a fresh process promptly, with distinct stdout and stderr streams. */
     fun start(command: String): Process
 }
 
 object RootShell {
-    private val access = RootAccess({ RootAccess.candidatePaths(System.getenv("PATH")) })
+    @Volatile private var customSu = CustomSuSettings()
+    @Volatile private var customSuReader: (() -> CustomSuSettings)? = null
+    private var configurationRevision = 0L
+    internal var startSuProcess: (List<String>) -> Process = { ProcessBuilder(it).start() }
+    private val access = RootAccess({ RootAccess.candidatePaths(System.getenv("PATH"), customSu) })
     @Volatile private var integratedProvider: RootProcessProvider? = null
+    @Volatile private var wirelessProvider: RootProcessProvider? = null
+    @Volatile private var moduleProvider: RootProcessProvider? = null
+    @Volatile private var moduleCandidate: (() -> RootProcessProvider?)? = null
+    @Volatile private var preferExternalSu = false
 
-    /** Fresh read-only proof: ROOT_UID=0 with either SU_PATH or ROOT_PROVIDER=integrated. */
+    /** Every app/service process installs the same private-file reader at Application startup. */
+    @Synchronized
+    fun configureCustomSuSettings(reader: (() -> CustomSuSettings)?) {
+        customSuReader = reader
+        customSu = CustomSuSettings()
+        configurationRevision++
+        invalidate()
+    }
+
+    @Synchronized
+    fun customSuSettings(): CustomSuSettings {
+        val current = try { customSuReader?.invoke() ?: CustomSuSettings() }
+        catch (error: Exception) {
+            configurationRevision++
+            invalidate()
+            throw error
+        }
+        if (current != customSu) {
+            customSu = current
+            configurationRevision++
+            invalidate()
+        }
+        require(current.validationError() == null) { current.validationError().orEmpty() }
+        return current
+    }
+
+    /** Custom mode is exclusive: a failed proof never falls back to an old provider. */
+    @Synchronized
+    internal fun checkCustomSu(log: File, timeoutMillis: Long): CustomSuProof? {
+        val settings = customSuSettings()
+        if (!settings.enabled) return null
+        val checked = access.checkMillis(timeoutMillis) { path, remaining -> probe(path, remaining, log) }
+        val result = ShellResult(checked.exitCode, checked.output + "ROOT_PROVIDER=custom-su\n")
+        try { log.writeText(result.output) }
+        catch (error: Exception) { access.invalidate(); throw error }
+        return CustomSuProof(settings.path, result)
+    }
+
+    /** Each check starts a new process; a failed operation is never replayed. */
     @Synchronized
     fun check(log: File, timeoutSeconds: Long = 20): ShellResult {
         require(timeoutSeconds > 0)
-        val provider = integratedProvider
+        checkCustomSu(log, TimeUnit.SECONDS.toMillis(timeoutSeconds))?.let { return it.result }
+        val wireless = wirelessProvider
+        val provider = wireless ?: if (preferExternalSu) null else integratedProvider
         val result = if (provider != null) {
             access.invalidate()
             val checked = probe({ provider.start("id -u") }, TimeUnit.SECONDS.toMillis(timeoutSeconds), log)
-            if (checked.exitCode == 0 && checked.output.trim() == "0") integratedSuccess()
+            if (checked.exitCode == 0 && checked.output.trim() == "0") providerSuccess(wireless != null)
             else {
                 // A failed proof is not reused by a subsequent partition operation.
-                if (integratedProvider === provider) integratedProvider = null
+                if (wireless != null) {
+                    if (wirelessProvider === provider) wirelessProvider = null
+                } else if (integratedProvider === provider) integratedProvider = null
                 ShellResult(if (checked.exitCode == 0) 1 else checked.exitCode,
                     "ROOT_UID=unknown\n${checked.output}\n")
             }
-        } else access.check(timeoutSeconds) { path, timeoutMillis -> probe(path, timeoutMillis, log) }
+        } else {
+            val module = checkModule(log, TimeUnit.SECONDS.toMillis(timeoutSeconds))
+            if (module?.exitCode == 0) module
+            else access.check(timeoutSeconds) { path, timeoutMillis -> probe(path, timeoutMillis, log) }
+        }
+        if (wireless == null && provider == null && result.exitCode != 0) preferExternalSu = false
         log.writeText(result.output)
+        return result
+    }
+
+    /** Check installed-module delegation first, then ask the existing su manager from the app UID. */
+    @Synchronized
+    fun requestExternalSu(log: File, timeoutSeconds: Long = 20): ShellResult {
+        require(timeoutSeconds > 0)
+        checkCustomSu(log, TimeUnit.SECONDS.toMillis(timeoutSeconds))?.let { return it.result }
+        val module = checkModule(log, TimeUnit.SECONDS.toMillis(timeoutSeconds))
+        if (module?.exitCode == 0) return module
+        val checked = access.check(timeoutSeconds) { path, timeoutMillis -> probe(path, timeoutMillis, log) }
+        val result = ShellResult(checked.exitCode, checked.output + "ROOT_PROVIDER=external-su\n")
+        try { log.writeText(result.output) }
+        catch (error: Exception) { preferExternalSu = false; access.invalidate(); throw error }
+        preferExternalSu = result.exitCode == 0
+        return result
+    }
+
+    /** Discovery is unprivileged; a candidate becomes a launcher only after a fresh UID proof. */
+    @Synchronized
+    fun configureModuleProvider(candidate: (() -> RootProcessProvider?)?) {
+        moduleCandidate = candidate
+        moduleProvider = null
+    }
+
+    /** Only the read-only identity probe may fall back to an existing authorization path. */
+    @Synchronized
+    internal fun checkModule(log: File, timeoutMillis: Long): ShellResult? {
+        require(timeoutMillis > 0)
+        if (customSuSettings().enabled) return null
+        val candidate = moduleProvider ?: try { moduleCandidate?.invoke() } catch (_: Exception) { null }
+            ?: return null
+        val checked = probe({ candidate.start("id -u") }, timeoutMillis, log)
+        val granted = checked.exitCode == 0 && checked.output.trim() == "0"
+        val result = if (granted) ShellResult(0, "ROOT_UID=0\nROOT_PROVIDER=module\n") else ShellResult(
+            if (checked.exitCode == 0) 1 else checked.exitCode, "ROOT_UID=unknown\n${checked.output}\n")
+        if (!granted && moduleProvider === candidate) moduleProvider = null
+        // Do not publish a proof whose diagnostic file could not be recorded.
+        log.writeText(result.output)
+        if (granted) {
+            moduleProvider = candidate
+            access.invalidate()
+        }
         return result
     }
 
@@ -43,22 +143,62 @@ object RootShell {
     @Synchronized
     fun setIntegratedProvider(provider: RootProcessProvider, log: File, timeoutSeconds: Long = 20): ShellResult {
         require(timeoutSeconds > 0)
+        if (customSuSettings().enabled) return customProviderSelected()
         val checked = probe({ provider.start("id -u") }, TimeUnit.SECONDS.toMillis(timeoutSeconds), log)
         val granted = checked.exitCode == 0 && checked.output.trim() == "0"
-        val result = if (granted) integratedSuccess() else ShellResult(if (checked.exitCode == 0) 1 else checked.exitCode,
+        val result = if (granted) providerSuccess(false) else ShellResult(if (checked.exitCode == 0) 1 else checked.exitCode,
             "ROOT_UID=unknown\n${checked.output}\n")
         log.writeText(result.output)
         if (granted) {
             access.invalidate()
             integratedProvider = provider
+            preferExternalSu = false
         }
         return result
+    }
+
+    /** The supplied provider owns a fixed, already authenticated ADB endpoint. */
+    @Synchronized
+    fun setWirelessProvider(provider: RootProcessProvider, log: File, timeoutSeconds: Long = 20): ShellResult {
+        require(timeoutSeconds > 0)
+        if (customSuSettings().enabled) return customProviderSelected()
+        val checked = probe({ provider.start("id -u") }, TimeUnit.SECONDS.toMillis(timeoutSeconds), log)
+        val granted = checked.exitCode == 0 && checked.output.trim() == "0"
+        val result = if (granted) providerSuccess(true) else ShellResult(
+            if (checked.exitCode == 0) 1 else checked.exitCode, "ROOT_UID=unknown\n${checked.output}\n")
+        // Record the proof before publishing a replacement, just like integrated providers.
+        log.writeText(result.output)
+        if (granted) {
+            access.invalidate()
+            wirelessProvider = provider
+        }
+        return result
+    }
+
+    @Synchronized
+    fun clearWirelessProvider(provider: RootProcessProvider): Boolean {
+        if (wirelessProvider !== provider) return false
+        wirelessProvider = null
+        return true
+    }
+
+    @Synchronized fun hasWirelessProvider(): Boolean = !customSuSettings().enabled && wirelessProvider != null
+    @Synchronized fun hasIntegratedProvider(): Boolean = !customSuSettings().enabled && integratedProvider != null
+    @Synchronized fun hasModuleProvider(): Boolean = !customSuSettings().enabled && moduleProvider != null
+
+    /** Cleaning an old integrated backend must not revoke an independent ADB grant. */
+    @Synchronized
+    fun invalidateIntegrated() {
+        integratedProvider = null
     }
 
     /** Explicit invalidation clears both cached su and the in-process provider proof. */
     @Synchronized
     fun invalidate() {
+        preferExternalSu = false
+        wirelessProvider = null
         integratedProvider = null
+        moduleProvider = null
         access.invalidate()
     }
 
@@ -81,17 +221,47 @@ object RootShell {
 
     @Synchronized
     private fun resolveLauncher(command: String, log: File): () -> Process {
-        val provider = integratedProvider
-        if (provider != null) return { provider.start(command) }
+        val custom = customSuSettings()
+        val revision = configurationRevision
+        if (custom.enabled) {
+            val su = access.resolve { path, timeoutMillis -> probe(path, timeoutMillis, log) }
+            return pinned(revision) { startSuProcess(suCommand(su, command)) }
+        }
+        val wireless = wirelessProvider
+        if (wireless != null) return pinned(revision) { wireless.start(command) }
+        val integrated = integratedProvider
+        if (!preferExternalSu && integrated != null) return pinned(revision) { integrated.start(command) }
+        val existingModule = moduleProvider
+        if (existingModule != null) return pinned(revision) { existingModule.start(command) }
+        // Discovery can submit only id -u here. The requested task starts exactly
+        // once, after the provider has been pinned; its failures are never replayed.
+        if (checkModule(log, TimeUnit.SECONDS.toMillis(20))?.exitCode == 0) {
+            val module = checkNotNull(moduleProvider)
+            return pinned(revision) { module.start(command) }
+        }
         val su = access.resolve { path, timeoutMillis -> probe(path, timeoutMillis, log) }
         // Pin exactly one launcher. A failed task is never replayed using a different provider.
-        return { ProcessBuilder(su, "-c", command).start() }
+        return pinned(revision) { startSuProcess(suCommand(su, command)) }
     }
 
-    private fun integratedSuccess() = ShellResult(0, "ROOT_UID=0\nROOT_PROVIDER=integrated\n")
+    private fun pinned(revision: Long, start: () -> Process): () -> Process = {
+        synchronized(this) {
+            customSuSettings()
+            check(revision == configurationRevision) { "提权设置已变更，请重新执行操作" }
+            start()
+        }
+    }
+
+    internal fun suCommand(path: String, command: String): List<String> = listOf(path, "-c", command)
+
+    private fun customProviderSelected() = ShellResult(1,
+        "ROOT_UID=unknown\nROOT_PROVIDER=custom-su\n已启用自定义 su，请通过所选路径检查提权\n")
+
+    private fun providerSuccess(wireless: Boolean) = ShellResult(0,
+        "ROOT_UID=0\nROOT_PROVIDER=${if (wireless) "wireless-adb" else "integrated"}\n")
 
     private fun probe(path: String, timeoutMillis: Long, log: File): ShellResult =
-        probe({ ProcessBuilder(path, "-c", "id -u").start() }, timeoutMillis, log)
+        probe({ startSuProcess(suCommand(path, "id -u")) }, timeoutMillis, log)
 
     private fun probe(start: () -> Process, timeoutMillis: Long, log: File): ShellResult {
         val directory = checkNotNull(log.absoluteFile.parentFile)

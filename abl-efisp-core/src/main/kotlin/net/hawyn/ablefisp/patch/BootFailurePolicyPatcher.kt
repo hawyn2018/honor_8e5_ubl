@@ -1,13 +1,15 @@
 package net.hawyn.ablefisp.patch
 
 /**
- * Repair an OEM hash-error recovery call without changing the AVB result itself.
+ * Restore native hash-failure reporting in imported historical images.
  *
- * The report is also reached by invalid metadata on some loaders, so the injected
- * leaf checks both the actual allow-error value and the actual result == 3. It
- * never changes a global recovery switch or the original recovery function.
+ * Fresh inputs retain their original reporter call. Exact legacy-stub decoding
+ * and the caller's functional/dataflow proof identify only an owned redirect;
+ * restoration changes that BL and preserves the old, now-unreferenced RX bytes.
+ * No new report-suppression stub or global logging policy is generated.
  */
 internal object BootFailurePolicyPatcher {
+    // Historical import format only; no new allocation or stub emission.
     const val STUB_BYTES = 20
 
     data class Plan(
@@ -97,21 +99,13 @@ internal object BootFailurePolicyPatcher {
         return distinct
     }
 
-    /** The caller must allocate mapped RX space; this method never chooses padding. */
-    fun edits(plan: Plan, stubRva: Long): List<PlannedEdit> {
-        require(plan.allowRegister in 2..30 && plan.errorRegister in 2..30 && plan.allowRegister != plan.errorRegister)
-        val code = ByteArray(STUB_BYTES)
-        // allow==0 -> original; otherwise only ERROR_VERIFICATION(3) skips it.
-        code.putWord(0, 0x34000080 or plan.allowRegister)
-        code.putWord(4, 0x71000c1f or (plan.errorRegister shl 5))
-        code.putWord(8, 0x54000041)
-        code.putWord(12, 0xd65f03c0.toInt())
-        code.putWord(16, A64.branch(stubRva + 16, plan.originalTarget))
-        val call = ByteArray(4).also { it.putWord(0, A64.branch(plan.callRva, stubRva) or 0x80000000.toInt()) }
-        return listOf(
-            PlannedEdit("AVB hash 错误的条件恢复调用", plan.callRva, call),
-            PlannedEdit("仅允许验签错误时跳过厂商恢复", stubRva, code),
-        )
+    /** Restore only a fully proved historical redirect; fresh calls stay native. */
+    fun nativeReportingEdits(plan: Plan): List<PlannedEdit> {
+        if (plan.existingStubRva == null) return emptyList()
+        val call = ByteArray(4).also {
+            it.putWord(0, A64.branch(plan.callRva, plan.originalTarget) or 0x80000000.toInt())
+        }
+        return listOf(PlannedEdit("恢复原生 AVB hash 故障上报调用", plan.callRva, call))
     }
 
     private fun decodeStub(image: PeImage, target: Long): Existing? {

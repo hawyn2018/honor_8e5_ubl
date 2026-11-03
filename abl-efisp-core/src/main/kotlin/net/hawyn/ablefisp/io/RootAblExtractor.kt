@@ -133,7 +133,7 @@ internal data class AblSourceSelection(
         if (unique.size != 1) throw AblReadException("当前槽位对应多个不同 ABL 分区，提取已停止")
         val selected = unique.single()
         if (selected.bytes <= 0 || selected.bytes > ImageIo.MAX_INPUT_BYTES) {
-            throw AblReadException("ABL 分区大小超出支持范围（1 字节至 64 MiB）")
+            throw AblReadException("ABL 分区大小超出支持范围（1 字节至 128 MiB）")
         }
         return SelectedAblSource(sourceSlot, selected)
     }

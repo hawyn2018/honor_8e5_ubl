@@ -12,8 +12,8 @@ android {
         applicationId = "net.hawyn.honor8e5ubl"
         minSdk = 28
         targetSdk = 37
-        versionCode = 39
-        versionName = "2.5.1"
+        versionCode = 95
+        versionName = "2.9.6"
         manifestPlaceholders["appLabel"] = "hnubl"
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -200,6 +200,32 @@ val compileGptTool = tasks.register<Exec>("compileGptTool") {
 
 tasks.named("preBuild").configure { dependsOn(compileGptTool) }
 
+val compileModuleRootClient = tasks.register<Exec>("compileModuleRootClient") {
+    val source = layout.projectDirectory.file("src/main/cpp/hnubl_module_client.c")
+    val output = layout.buildDirectory.file("generated/fsprobeJni/arm64-v8a/libbootforge_module_client.so")
+    inputs.file(source)
+    outputs.file(output)
+    doFirst {
+        val sdk = androidComponents.sdkComponents.sdkDirectory.get().asFile
+        val ndk = System.getenv("ANDROID_NDK_HOME")?.let(::File)
+            ?: File(sdk, "ndk").listFiles()?.sortedByDescending { it.name }?.firstOrNull {
+                File(it, "toolchains/llvm/prebuilt").isDirectory
+            } ?: error("Android NDK is required for the module IPC client")
+        val prebuilt = File(ndk, "toolchains/llvm/prebuilt").listFiles()?.firstOrNull { it.isDirectory }
+            ?: error("NDK LLVM toolchain is missing")
+        val windows = System.getProperty("os.name").startsWith("Windows")
+        val clang = File(prebuilt, "bin/aarch64-linux-android28-clang" + if (windows) ".cmd" else "")
+        val target = output.get().asFile
+        target.parentFile.mkdirs()
+        val temp = layout.buildDirectory.dir("nativeTemp").get().asFile.apply { mkdirs() }
+        environment("TMP", temp.absolutePath)
+        environment("TEMP", temp.absolutePath)
+        commandLine(clang.absolutePath, "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2", "-static",
+            source.asFile.absolutePath, "-o", target.absolutePath)
+    }
+}
+tasks.named("preBuild").configure { dependsOn(compileModuleRootClient) }
+
 dependencies {
     implementation(project(":abl-efisp-core"))
     implementation("androidx.activity:activity-compose:1.13.0")
@@ -210,6 +236,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.conscrypt:conscrypt-android:2.8.0")
     testImplementation("junit:junit:4.13.2")
+    // Exercise actual JSON parsing in local business-flow tests, rather than Android stubs.
+    testImplementation("org.json:json:20240303")
 }
 
 configurations.configureEach {

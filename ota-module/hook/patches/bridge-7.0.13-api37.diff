@@ -1,0 +1,39 @@
+--- a/lib/android.js
++++ b/lib/android.js
+@@ -1187,7 +1187,7 @@
+     const entrypointFieldSize = (apiLevel <= 21) ? 8 : pointerSize;
+ 
+     const expectedAccessFlags = kAccPublic | kAccStatic | kAccFinal | kAccNative;
+-    const relevantAccessFlagsMask = ~(kAccFastInterpreterToInterpreterInvoke | kAccPublicApi | kAccNterpInvokeFastPathFlag) >>> 0;
++    const relevantAccessFlagsMask = ~(kAccFastInterpreterToInterpreterInvoke | kAccPublicApi | kAccNterpInvokeFastPathFlag | kAccNterpEntryPointFastPathFlag) >>> 0;
+ 
+     let jniCodeOffset = null;
+     let accessFlagsOffset = null;
+@@ -4866,15 +4866,14 @@
+ 
+   const writer = new Arm64Writer(buffer, { pc });
+ 
+-  writer.putBLabel('performTransition');
+-
+   const invokeCallback = pc.add(writer.offset);
+   writer.putPushAllXRegisters();
+   writer.putCallAddressWithArguments(callback, ['x0']);
+   writer.putPopAllXRegisters();
+   writer.putRet();
+-
+-  writer.putLabel('performTransition');
++  writer.flush();
++
++  const performEntry = pc.add(writer.offset);
+ 
+   let foundCore = false;
+   let threadReg = null;
+@@ -5004,7 +5003,7 @@
+     throwThreadStateTransitionParseError();
+   }
+ 
+-  return new NativeFunction(pc, 'void', ['pointer'], nativeFunctionOptions);
++  return new NativeFunction(performEntry, 'void', ['pointer'], nativeFunctionOptions);
+ }
+ 
+ function throwThreadStateTransitionParseError () {

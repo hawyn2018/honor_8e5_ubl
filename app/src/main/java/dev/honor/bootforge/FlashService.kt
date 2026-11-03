@@ -12,6 +12,9 @@ import android.os.PowerManager
 import dev.honor.bootforge.core.UnlockCompletion
 import dev.honor.bootforge.core.UnlockRequest
 import dev.honor.bootforge.core.Payloads
+import dev.honor.bootforge.core.ImagePatchFailureBoundary
+import java.util.concurrent.CancellationException
+import dev.honor.bootforge.core.PatchRetryTask
 import dev.honor.bootforge.core.Probe
 import dev.honor.bootforge.core.RootShell
 import dev.honor.bootforge.core.scriptCommand
@@ -35,6 +38,16 @@ class FlashService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var running = false
     override fun onBind(intent: Intent?): IBinder? = null
+    override fun onDestroy() {
+        PatchRetryPrompt.cancel(PatchRetryTask.UNLOCK)
+        super.onDestroy()
+    }
+    private fun operationFailed(error: Exception) {
+        RunState.append(error.message ?: error.javaClass.simpleName)
+        RunState.state = RunState.state.copy(stage = "执行已停止，请查看日志并核对分区状态",
+            canRebootRecovery = false, canRebootBootloader = false, completedRequest = null)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (running) return START_NOT_STICKY
         if (!BuildConfig.ALLOW_PARTITION_WRITES || !RunState.state.canExecute || RunState.state.busy) {
@@ -53,12 +66,14 @@ class FlashService : Service() {
             .setContentText("正在检查并写入分区，请保持设备供电")
             .setContentIntent(open).setOngoing(true).build())
         running = true
-        RunState.state = RunState.state.copy(busy = true, canExecute = false, canRebootRecovery = false, canRebootBootloader = false, completedRequest = null, recoveryPackageReady = false, stage = "提取 ABL 并生成 efisp，准备工具与备份", progress = 0.1f)
+        RunState.state = RunState.state.copy(busy = true, canExecute = false, canRebootRecovery = false, canRebootBootloader = false, completedRequest = null, recoveryPackageReady = false, stage = "正在准备所选 ABL 与 efisp 镜像", progress = 0.1f)
         scope.launch {
-            val wake = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BootForge:partition")
+            var wake: PowerManager.WakeLock? = null
             try {
-                wake.acquire(2 * 60 * 60 * 1000L)
-                val dir = withGenerationLogs { log -> Payloads.stage(this@FlashService, request, onLog = log) }
+                wake = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BootForge:partition")
+                checkNotNull(wake).acquire(2 * 60 * 60 * 1000L)
+                val dir = withGenerationLogs { log -> Payloads.stage(this@FlashService, request, onLog = log,
+                    onPatchFailure = { error -> PatchRetryPrompt.awaitChoice(PatchRetryTask.UNLOCK, error) }) }
                 val report = withContext(Dispatchers.IO) { RuntimeTools.inspect(this@FlashService, dir) }
                 RunState.tools(report)
                 RunState.append(report.checks.joinToString("\n") { "${it.label} · ${it.source} · ${it.detail}" })
@@ -143,13 +158,23 @@ class FlashService : Service() {
                     canRebootRecovery = completion == UnlockCompletion.RECOVERY,
                     canRebootBootloader = completion == UnlockCompletion.BOOTLOADER)
 
+            } catch (e: CancellationException) {
+                operationFailed(e)
+                throw e
+            } catch (e: InterruptedException) {
+                operationFailed(e)
+                throw CancellationException("操作已中断").also { it.initCause(e) }
+            } catch (e: OutOfMemoryError) {
+                operationFailed(IllegalStateException("系统分配给应用的内存不足，本次操作已停止；保留日志与备份，不自动重试刷写", e))
             } catch (e: Exception) {
-                RunState.append(e.message ?: e.javaClass.simpleName)
-                RunState.state = RunState.state.copy(stage = "执行已停止，请查看日志并核对分区状态", canRebootRecovery = false, canRebootBootloader = false, completedRequest = null)
+                operationFailed(e)
+            } catch (e: Error) {
+                operationFailed(ImagePatchFailureBoundary.reportable(e) ?: throw e)
             } finally {
-                if (wake.isHeld) wake.release()
                 running = false
                 RunState.state = RunState.state.copy(busy = false)
+                PatchRetryPrompt.cancel(PatchRetryTask.UNLOCK)
+                try { wake?.takeIf { it.isHeld }?.release() } catch (_: Exception) { /* busy was already reset */ }
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }

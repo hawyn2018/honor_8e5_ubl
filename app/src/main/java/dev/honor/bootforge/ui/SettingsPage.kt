@@ -38,8 +38,16 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.honor.bootforge.BackupState
+import dev.honor.bootforge.OtaState
+import dev.honor.bootforge.RunState
+import dev.honor.bootforge.core.CustomSuSettings
+import dev.honor.bootforge.core.CustomSuSettingsStore
+import dev.honor.bootforge.core.RootShell
+import dev.honor.bootforge.wireless.WirelessState
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
@@ -50,6 +58,9 @@ import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -58,10 +69,25 @@ fun SettingsPage(
     settings: AppearanceSettings,
     onChange: (AppearanceSettings) -> Unit,
     contentPadding: PaddingValues = PaddingValues(),
+    onSupport: () -> Unit = {},
+    onLicense: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var iconRequestBusy by remember { mutableStateOf(false) }
+    val suStore = remember(context.applicationContext) { CustomSuSettingsStore.inDirectory(context.filesDir) }
+    val initialSu = remember(suStore) { runCatching { suStore.read() } }
+    var savedSu by remember { mutableStateOf(initialSu.getOrDefault(CustomSuSettings())) }
+    var suEnabled by rememberSaveable { mutableStateOf(savedSu.enabled) }
+    var suPath by rememberSaveable { mutableStateOf(savedSu.path) }
+    var suBusy by remember { mutableStateOf(false) }
+    var suError by rememberSaveable { mutableStateOf(initialSu.exceptionOrNull()?.message) }
+    var suMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    val operationBusy = RunState.state.busy || BackupState.state.busy || OtaState.state.busy ||
+        WirelessState.state.busy || WirelessState.state.waiting
+    val suDraft = CustomSuSettings(suEnabled, suPath)
+    val suValidation = suDraft.validationError()
+    val suEditable = !operationBusy && !suBusy
     val iconColor = MiuixTheme.colorScheme.primary
     val iconPreview = remember(iconColor) { AppLauncherIcon.bitmap(iconColor.toArgb()).asImageBitmap() }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
@@ -69,15 +95,100 @@ fun SettingsPage(
             modifier = Modifier.widthIn(max = 760.dp).fillMaxSize(),
             contentPadding = PaddingValues(
                 start = 20.dp, end = 20.dp,
-                top = contentPadding.calculateTopPadding() + 12.dp,
+                top = contentPadding.calculateTopPadding(),
                 bottom = contentPadding.calculateBottomPadding() + 28.dp,
             ),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item {
                 Column(Modifier.padding(horizontal = 4.dp, vertical = 4.dp)) {
-                    Text("随心设定", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-                    SettingsHint("玻璃效果、强调色与动态调色板，修改后即时生效。")
+                    Text("随心设定", fontSize = 34.sp, lineHeight = 45.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(10.dp))
+                    Text("玻璃效果、强调色与动态调色板，修改后即时生效。",
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary, fontSize = 13.sp, lineHeight = 22.sp)
+                }
+            }
+            item(key = "support_and_license") {
+                Card(
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)),
+                    cornerRadius = 24.dp,
+                    insideMargin = PaddingValues(0.dp),
+                ) {
+                    Column {
+                        SettingsDetailRow("支持", onSupport) { SupportHeart(Modifier.size(38.dp)) }
+                        Box(Modifier.padding(horizontal = 20.dp).fillMaxWidth().height(1.dp)
+                            .background(MiuixTheme.colorScheme.onSurface.copy(alpha = .06f)))
+                        SettingsDetailRow("许可证", onLicense) { LicenseDocumentIcon(Modifier.size(38.dp)) }
+                    }
+                }
+            }
+            item(key = "custom_su") {
+                SettingsCard {
+                    SettingsSectionTitle("自定义 su 路径")
+                    SettingsToggle("使用自定义 su", "默认关闭；开启后使用下面保存的路径获取提权权限。", suEnabled,
+                        enabled = suEditable) {
+                        suEnabled = it
+                        suError = null
+                        suMessage = null
+                    }
+                    Box(Modifier.fillMaxWidth()) {
+                        TextField(
+                            value = suPath,
+                            onValueChange = { suPath = it; suError = null; suMessage = null },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "",
+                            singleLine = true,
+                            enabled = suEditable,
+                        )
+                        if (suPath.isEmpty()) Text(
+                            "绝对路径，例如 /system/bin/su",
+                            modifier = Modifier.align(Alignment.CenterStart).fillMaxWidth().padding(horizontal = 20.dp),
+                            fontSize = 13.sp,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    SettingsHint("保存后重新检查授权；仅实际返回 UID 0 的路径可用于备份、刷写和设备检查。关闭后恢复原有提权方式。")
+                    val error = suError ?: suValidation
+                    if (error != null) Text(error, color = Color(0xFFD9363E), fontSize = 12.sp, lineHeight = 19.sp)
+                    else suMessage?.let { SettingsHint(it) }
+                    if (operationBusy && !suBusy) SettingsHint("任务进行中，请在任务结束后修改提权设置。")
+                    Button(
+                        onClick = {
+                            // Reserve on the main thread before starting IO, just like other app jobs.
+                            if (RunState.state.busy || BackupState.state.busy || OtaState.state.busy ||
+                                WirelessState.state.busy || WirelessState.state.waiting || suBusy) return@Button
+                            val selected = CustomSuSettings(suEnabled, suPath)
+                            if (selected.validationError() != null) return@Button
+                            suBusy = true
+                            suError = null
+                            suMessage = null
+                            RunState.state = RunState.state.copy(busy = true, rootStatus = "提权待授权")
+                            scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                                try {
+                                    // Finish this short atomic save even if the settings page is disposed.
+                                    withContext(NonCancellable + Dispatchers.IO) {
+                                        suStore.save(selected)
+                                        RootShell.customSuSettings()
+                                    }
+                                    savedSu = selected
+                                    suMessage = "设置已保存，请在提权页重新检查授权。"
+                                } catch (cancel: CancellationException) {
+                                    throw cancel
+                                } catch (error: Exception) {
+                                    suError = "保存提权设置失败：${error.message ?: error.javaClass.simpleName}"
+                                } finally {
+                                    suBusy = false
+                                    RunState.state = RunState.state.copy(busy = false)
+                                }
+                            }
+                        },
+                        enabled = suEditable && suValidation == null && (suDraft != savedSu || suError != null),
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColorsPrimary(),
+                    ) { Text(if (suBusy) "正在保存…" else "保存设置") }
                 }
             }
             item {
@@ -201,6 +312,17 @@ fun SettingsPage(
 }
 
 @Composable
+private fun SettingsDetailRow(title: String, onClick: () -> Unit, icon: @Composable () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick)
+        .padding(horizontal = 20.dp, vertical = 18.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        icon()
+        Text(title, modifier = Modifier.weight(1f), fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+        PageChevron(Modifier.size(20.dp), MiuixTheme.colorScheme.onSurfaceVariantSummary)
+    }
+}
+
+@Composable
 private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
     Card(modifier = Modifier.fillMaxWidth(), cornerRadius = 24.dp, insideMargin = PaddingValues(20.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
@@ -230,13 +352,13 @@ private fun BlurSetting(title: String, description: String, value: Float, onChan
 }
 
 @Composable
-private fun SettingsToggle(title: String, description: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun SettingsToggle(title: String, description: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(title, fontSize = 15.sp, fontWeight = FontWeight.Medium)
             SettingsHint(description)
         }
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
 

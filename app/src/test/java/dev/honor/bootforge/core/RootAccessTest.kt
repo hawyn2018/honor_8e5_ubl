@@ -116,4 +116,23 @@ class RootAccessTest {
         assertTrue(candidates.indexOf("/system/bin/su") > candidates.indexOf("/data/adb/ksu/bin/su"))
         assertEquals("su", RootAccess.candidatePaths(null) { false }.first())
     }
+
+    @Test fun `custom candidates are literal exclusive and do not need to exist at discovery time`() {
+        val configured = CustomSuSettings(true, "/private path/renamed-su;literal")
+        assertEquals(listOf(configured.path), RootAccess.candidatePaths(null, configured))
+        assertEquals(RootAccess.candidatePaths(null),
+            RootAccess.candidatePaths(null, configured.copy(enabled = false)))
+    }
+
+    @Test fun `millisecond identity check honors the short external startup budget`() {
+        var now = 0L
+        val budgets = mutableListOf<Long>()
+        val access = RootAccess({ listOf("first", "second") }, { now })
+        access.checkMillis(750) { path, timeout ->
+            budgets += timeout
+            now += TimeUnit.MILLISECONDS.toNanos(250)
+            if (path == "first") ShellResult(1, "denied") else ShellResult(0, "0")
+        }
+        assertEquals(listOf(750L, 500L), budgets)
+    }
 }

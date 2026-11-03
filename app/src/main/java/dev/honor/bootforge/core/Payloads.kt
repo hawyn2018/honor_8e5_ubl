@@ -2,7 +2,6 @@ package dev.honor.bootforge.core
 
 import android.content.Context
 import android.net.Uri
-import android.provider.OpenableColumns
 import dev.honor.bootforge.BuildConfig
 import java.io.File
 import java.nio.file.Files
@@ -15,62 +14,30 @@ import java.util.zip.ZipOutputStream
 object Payloads {
     data class ImageInfo(val name: String, val bytes: Long, val sha256: String, val custom: Boolean)
     val hashes = linkedMapOf(
-        "abl.img" to "509e8f9655184f69c147c494f8cfabe795f2cacb4e5e6b7a1fb0a48ecc08376c",
+        "abl.img" to BUILTIN_ABL_SHA256,
     )
-    private fun selectedFile(context: Context, target: ImageTarget): File {
-        val name = context.getSharedPreferences("custom_images", 0)
-            .getString("${target.id}_file", "${target.id}.bin")!!
-        check(name == "${target.id}.bin" || Regex("${target.id}-[a-f0-9-]{36}\\.bin").matches(name)) { "镜像保存路径无效" }
-        return File(context.filesDir, "selected/$name")
-    }
-
-    fun info(context: Context, target: ImageTarget, useCustomImages: Boolean = true): ImageInfo {
-        val prefs = context.getSharedPreferences("custom_images", 0)
-        if (!useCustomImages || !prefs.getBoolean("${target.id}_selected", false)) {
-            return if (target == ImageTarget.EFISP) ImageInfo("efisp.img · 运行时生成", 0, "", false)
-                else ImageInfo(target.stagedName, 642136L, hashes.getValue(target.stagedName), false)
+    fun info(context: Context, target: ImageTarget, useCustomImages: Boolean = true): ImageInfo =
+        info(context, UploadRole.forTarget(target), useCustomImages)
+    fun info(context: Context, role: UploadRole, useCustomImages: Boolean = true): ImageInfo =
+        if (useCustomImages) CustomImages.info(context, role) else when (role) {
+            UploadRole.ABL_FLASH -> ImageInfo("abl.img", 642136L, BUILTIN_ABL_SHA256, false)
+            UploadRole.EFISP_IMAGE -> ImageInfo("efisp.img · 运行时生成", 0, "", false)
+            UploadRole.EFISP_ABL -> ImageInfo("尚未上传用于修补 EFISP 的 ABL", 0, "", false)
         }
-        val file = selectedFile(context, target)
-        check(file.isFile && file.length() > 0) { "${target.id} 所选文件缺失，请重新选择或恢复默认" }
-        return ImageInfo(prefs.getString("${target.id}_name", target.stagedName)!!,
-            file.length(), prefs.getString("${target.id}_sha256", "").orEmpty(), true)
-    }
+    fun importImage(context: Context, target: ImageTarget, uri: Uri): ImageInfo = CustomImages.importImage(context, UploadRole.forTarget(target), uri)
+    fun importImage(context: Context, role: UploadRole, uri: Uri): ImageInfo = CustomImages.importImage(context, role, uri)
+    fun resetImage(context: Context, target: ImageTarget) = CustomImages.reset(context, UploadRole.forTarget(target))
+    fun resetImage(context: Context, role: UploadRole) = CustomImages.reset(context, role)
 
-    fun importImage(context: Context, target: ImageTarget, uri: Uri): ImageInfo {
-        val previous = selectedFile(context, target)
-        val destination = File(context.filesDir, "selected/${target.id}-${UUID.randomUUID()}.bin")
-        destination.parentFile!!.mkdirs()
-        val temp = File.createTempFile(".${target.id}-", ".import", destination.parentFile)
-        try {
-            val name = runCatching {
-                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                    if (cursor.moveToFirst()) cursor.getString(0) else null
-                }
-            }.getOrNull()?.replace(Regex("[\\r\\n\\t]"), " ")?.take(256)?.ifBlank { null } ?: "${target.id} 自定义文件"
-            context.contentResolver.openInputStream(uri).use { input ->
-                checkNotNull(input) { "文件读取失败" }
-                temp.outputStream().use { output -> input.copyTo(output); output.fd.sync() }
-            }
-            check(temp.length() > 0) { "所选文件为空" }
-            val result = ImageInfo(name, temp.length(), sha256(temp), true)
-            Files.move(temp.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-            check(context.getSharedPreferences("custom_images", 0).edit()
-                .putBoolean("${target.id}_selected", true).putString("${target.id}_name", name)
-                .putString("${target.id}_file", destination.name)
-                .putString("${target.id}_sha256", result.sha256).commit()) { "文件选择保存失败" }
-            previous.delete()
-            return result
-        } finally { temp.delete() }
-    }
-
-    fun resetImage(context: Context, target: ImageTarget) {
-        check(context.getSharedPreferences("custom_images", 0).edit()
-            .putBoolean("${target.id}_selected", false).commit()) { "默认镜像设置保存失败" }
-    }
-
-    fun stage(context: Context, request: UnlockRequest = UnlockRequest(), onLog: (String) -> Unit = {}): File {
+    fun stage(context: Context, request: UnlockRequest = UnlockRequest(), onLog: (String) -> Unit = {},
+        onPatchFailure: ((Exception) -> Boolean)? = null): File {
         val selection = request.resolved()
         val dir = stageRuntime(context)
+        // A failed preparation must not leave an older runnable plan published.
+        listOf("payload-source.txt", "payloads.sha256").forEach { name ->
+            val previous = File(dir, name)
+            check(!previous.exists() || previous.delete()) { "旧镜像准备记录清理失败：$name" }
+        }
         val pending = File(context.cacheDir, "payload-${UUID.randomUUID()}").apply { check(mkdirs()) }
         val sourceLines = mutableListOf("REQUEST_MODE=${selection.mode.name}",
             "EFI_SOURCE=${selection.efispSource.name}", "PATCH_MODE=${selection.patchMode.name}",
@@ -80,36 +47,37 @@ object Payloads {
             details += message.lines()
             runCatching { onLog(message) }
         }
-        fun uploaded(target: ImageTarget): File {
-            val image = info(context, target)
-            check(image.custom) { "请先选择上传的 ${target.id} 文件" }
-            return selectedFile(context, target).also {
-                check(sha256(it) == image.sha256) { "${target.id} 上传文件已变化，请重新选择" }
-            }
+        val uploadedSnapshots = mutableMapOf<UploadRole, File>()
+        fun uploaded(role: UploadRole): File = uploadedSnapshots.getOrPut(role) {
+            CustomImages.snapshot(context, role, File(pending, "uploaded-${role.key}.img"))
         }
         try {
             log("[镜像准备] 解锁方式：${selection.mode.label}；ABL：${selection.ablSource.label}；ABL 槽位：${selection.ablTarget.label}；efisp：${selection.efispSource.label}；修补：${selection.patchMode.label}")
             val efisp: File
             val summary: String
+            var sourceSnapshot: CurrentAblSnapshot.Snapshot? = null
+            var sourceHash: String? = null
+            var effectiveSource = selection.efispSource
+            fun builtinAbl(): File = File(pending, "builtin-abl.img").also { destination ->
+                if (!destination.exists()) context.assets.open("images/abl.img").use { input ->
+                    destination.outputStream().use(input::copyTo)
+                }
+                check(sha256(destination) == hashes.getValue("abl.img")) { "内置 ABL SHA-256 校验失败" }
+            }
             if (selection.efispSource == EfispSource.UPLOADED_EFISP) {
-                efisp = uploaded(ImageTarget.EFISP)
+                efisp = uploaded(UploadRole.EFISP_IMAGE)
                 summary = "使用上传的 efisp，保持原始字节\n"
                 log("[镜像准备] 使用上传的 efisp 原始字节，跳过 ABL 修补")
             } else {
                 val source = when (selection.efispSource) {
-                    EfispSource.UPLOADED_ABL -> uploaded(ImageTarget.ABL)
-                    EfispSource.BUILTIN_ABL -> File(pending, "builtin-abl.img").also { destination ->
-                        context.assets.open("images/abl.img").use { input -> destination.outputStream().use(input::copyTo) }
-                        check(sha256(destination) == hashes.getValue("abl.img")) { "内置 ABL SHA-256 校验失败" }
-                    }
+                    EfispSource.UPLOADED_ABL -> uploaded(UploadRole.EFISP_ABL)
+                    EfispSource.BUILTIN_ABL -> builtinAbl()
                     EfispSource.CURRENT_SLOT_ABL, EfispSource.OTHER_SLOT_ABL -> {
                         val otherSlot = selection.efispSource == EfispSource.OTHER_SLOT_ABL
                         log("[ABL提取] 正在直接读取${if (otherSlot) "对槽" else "当前槽位"} ABL")
                         val snapshot = CurrentAblSnapshot.extract(context, dir,
                             File(pending, if (otherSlot) "other-abl.img" else "current-abl.img"), useOtherSlot = otherSlot)
-                        sourceLines += listOf("SOURCE_SLOT=${snapshot.identity.slot}",
-                            "SOURCE_ABL_DEVICE=${snapshot.identity.device}", "SOURCE_ABL_MM=${snapshot.identity.majorMinor}",
-                            "SOURCE_ABL_CAPACITY=${snapshot.identity.bytes}")
+                        sourceSnapshot = snapshot
                         log("[ABL提取] 已完成 · 槽位=${snapshot.identity.slot} · 设备=${snapshot.identity.device} · 主次设备号=${snapshot.identity.majorMinor} · ${snapshot.identity.bytes} 字节")
                         log("[ABL提取] 源 SHA-256=${snapshot.sha256} · 提取前后身份核对通过")
                         snapshot.file
@@ -117,14 +85,41 @@ object Payloads {
                     EfispSource.UPLOADED_EFISP -> error("上传 EFI 不经过修补")
                 }
                 efisp = File(pending, "efisp.img")
-                val patched = EfispImagePatcher.patch(source, efisp, selection.patchMode == EfispPatchMode.FAKE_LOCK, onLog = ::log)
-                sourceLines += "SOURCE_ABL_SHA256=${patched.sourceSha256}"
-                summary = "模式=${selection.patchMode.label}\n来源=${selection.efispSource.label}\n" +
+                val attempt = ImagePatchRetry.run(PatchRetryTask.UNLOCK,
+                    eligible = selection.efispSource.canRetryPatchWithBuiltin && onPatchFailure != null,
+                    primary = {
+                        EfispImagePatcher.patch(source, efisp, selection.patchMode == EfispPatchMode.FAKE_LOCK, onLog = ::log)
+                    },
+                    builtin = {
+                        log("[镜像准备] 用户选择使用应用内置 ABL 重新修补，保留原修补模式与 ABL 写入选项")
+                        sourceSnapshot = null
+                        effectiveSource = EfispSource.BUILTIN_ABL
+                        EfispImagePatcher.patch(builtinAbl(), efisp, selection.patchMode == EfispPatchMode.FAKE_LOCK, onLog = ::log)
+                    },
+                    confirm = { error ->
+                        log("[镜像准备] 选定镜像修补失败，等待用户选择是否使用应用内置 ABL")
+                        checkNotNull(onPatchFailure).invoke(error)
+                    })
+                val patched = attempt.value
+                if (attempt.usedBuiltin) {
+                    check(patched.sourceSha256 == BUILTIN_ABL_SHA256) { "内置 ABL 重试来源哈希不一致" }
+                    sourceLines += "PATCH_RETRY_SOURCE=${EfispSource.BUILTIN_ABL.name}"
+                }
+                sourceHash = patched.sourceSha256
+                summary = "模式=${selection.patchMode.label}\n所选来源=${selection.efispSource.label}\n实际来源=${effectiveSource.label}\n" +
                     "源 SHA-256=${patched.sourceSha256}\nEFI SHA-256=${patched.sha256}\nEFI 字节=${patched.bytes}\n" +
                     "输入格式=${patched.sourceFormat}\n核心修补项=${patched.patchCount}\n文字定制项=${patched.textChanges}\n"
             }
+            sourceSnapshot?.let { snapshot ->
+                check(sourceHash == snapshot.sha256) { "最终采用的 ABL 来源与固定槽位快照哈希不一致" }
+                sourceLines += listOf("SOURCE_SLOT=${snapshot.identity.slot}",
+                    "SOURCE_ABL_DEVICE=${snapshot.identity.device}", "SOURCE_ABL_MM=${snapshot.identity.majorMinor}",
+                    "SOURCE_ABL_CAPACITY=${snapshot.identity.bytes}")
+            }
+            sourceHash?.let { sourceLines += "SOURCE_ABL_SHA256=$it" }
+            log("[镜像准备] 最终采用来源=${effectiveSource.label} · 成品 SHA-256=${sha256(efisp)}")
             val overrides = mutableMapOf(ImageTarget.EFISP to efisp)
-            if (selection.ablSource == AblWriteSource.UPLOADED) overrides[ImageTarget.ABL] = uploaded(ImageTarget.ABL)
+            if (selection.ablSource == AblWriteSource.UPLOADED) overrides[ImageTarget.ABL] = uploaded(UploadRole.ABL_FLASH)
             val staged = PayloadFiles.stageImages(dir, overrides, true) { name ->
                 check(name == "abl.img") { "应用未内置 efisp，必须选择来源或生成" }
                 context.assets.open("images/$name")
@@ -250,12 +245,15 @@ object Payloads {
     val instructions = """
         honor_ubl ${BuildConfig.VERSION_NAME}
         此包是手动执行包，不是 Recovery install/update.zip。
-        工具不设置机型或镜像格式白名单，使用者自行判断所选文件。
+        工具不设置机型白名单；按所选镜像来源、修补模式和写入槽位执行。
         自定义页的ABL写入文件、写入槽位与efisp生成来源独立，上传来源必须先选择文件。
         efisp可独立选择从当前槽位或对槽的ABL直接读取并修补；来源槽位不随ABL写入目标改变。
-        ABL槽位提供当槽刷写、对槽刷写、双槽刷写，默认当槽刷写；双槽使用同一份所选ABL镜像。
-        假回锁优先；非自定义模式从当前槽位ABL生成efisp，并只向当前槽位ABL分区写入内置abl.img。自定义仅在明确选择上传ABL写入时改用上传文件。上传EFI保持原样，所选模式决定完成提示和重启入口。
-        开始前仅检查所需工具可用性；执行中读取槽位和分区地址、确认容量及写后结果。
+        ABL槽位提供当槽刷写、对槽刷写、双槽刷写，默认双槽刷写；双槽使用同一份所选ABL镜像。
+        假回锁优先；三个页面默认均从当前槽位ABL生成efisp，并向双槽ABL分区写入内置abl.img。自定义仍可明确选择其他来源和刷写目标。
+        仅在当前槽位或对槽ABL作为efisp来源时直接读取对应槽位快照；上传efisp按原始字节采用。非内置来源修补失败时，仅经用户确认后改用内置ABL重新修补，ABL写入文件和目标保持原选项。
+        此操作包使用已固定的efisp成品，不再次执行应用内的修补或确认；来源记录保留原选项和经确认采用的内置来源。
+        保留所选文件完整性、来源槽位身份及快照哈希校验；真实文件或分区读取失败仍停止。
+        记录所选来源及最终SHA-256后，进入原工具准备、备份与分区调整流程；执行中确认容量及写后结果。
         解压到 Recovery 的 /tmp/bootforge（RAM），不要放到待缩容的 userdata 上。
         解压后运行：chmod 700 tools/* fsprobe partition_worker gpttool
         用内置BusyBox准备命令：tools/busybox --install -s tools

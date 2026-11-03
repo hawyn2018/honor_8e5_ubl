@@ -45,7 +45,7 @@ internal object PeExecutableSection {
         val codeSize = source.u32(optional + 4) + rawSize
         if (codeSize > 0xffff_ffffL) throw PatchException("PE 代码长度超出范围。")
         val output = source.copyOf(raw + rawSize)
-        ".bfpol".toByteArray(Charsets.US_ASCII).copyInto(output, header)
+        ".textpol".toByteArray(Charsets.US_ASCII).copyInto(output, header)
         output.putWord(header + 8, rawSize)
         output.putWord(header + 12, rva.toInt())
         output.putWord(header + 16, rawSize)

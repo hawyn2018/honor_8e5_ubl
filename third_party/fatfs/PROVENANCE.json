@@ -1,0 +1,44 @@
+{
+  "repository": "https://github.com/zephyrproject-rtos/fatfs",
+  "commit": "4f60a12c58c3de4246857ad87c40239ecd93349b",
+  "version": "R0.16 plus upstream and Zephyr fixes",
+  "download_proxy": "http://127.0.0.1:7897",
+  "license": "ChaN FatFs license retained in each upstream source",
+  "local_changes": {
+    "ff.h": "KBL_FATFS_PORTABLE_TYPES selects C99 integer types in Windows host builds",
+    "ffconf.h": "MIT KBL configuration, public-symbol prefixes, and explicit FF_KBL_CONTEXT selection; FF_VOLUMES is one local drive per context and FF_FS_LOCK enables dynamic locks rather than budgeting records.",
+    "ff.c": "Optional FF_KBL_CONTEXT: opaque per-volume registration slot, allocator-backed sharing metadata, independent writer flag/native-width reader count; non-KBL branches retain upstream behavior. See PATCHES.KBL.md."
+  },
+  "files": {
+    "ff.c": {
+      "upstream_path": "ff.c",
+      "upstream_sha256": "878a9e66ccbffca1892ea4a436694f614656cde8ecddec88decb25c88fe75b82",
+      "local_sha256": "75202c9fe5c22e4630d23faf539a6b301073a946123cea496b1f5858d2d5936e",
+      "byte_identical": false
+    },
+    "ff.h": {
+      "upstream_path": "include/ff.h",
+      "upstream_sha256": "740f5f0b32638cf61202a8335f301baffe9cac38ccd18b9a06c852edd6afa2a2",
+      "local_sha256": "54a18db611e1a6944f020b70cb521fc90163901dc7ada184abe216c6b5ba6ce8",
+      "byte_identical": false
+    },
+    "diskio.h": {
+      "upstream_path": "include/diskio.h",
+      "upstream_sha256": "1c2b29f53e061c55d43b2e412c3a61320b2621bac7561a05e275514baa44785a",
+      "local_sha256": "1c2b29f53e061c55d43b2e412c3a61320b2621bac7561a05e275514baa44785a",
+      "byte_identical": true
+    },
+    "ffunicode.c": {
+      "upstream_path": "option/ffunicode.c",
+      "upstream_sha256": "3f1632c1f1e64b0b683b0d7e51341b9870728f398604869dd8211f1819509a8e",
+      "local_sha256": "3f1632c1f1e64b0b683b0d7e51341b9870728f398604869dd8211f1819509a8e",
+      "byte_identical": true
+    },
+    "UPSTREAM-README": {
+      "upstream_path": "README",
+      "upstream_sha256": "417b3bfa2b9913b2c02d79062e910f1d609325d4dc9f493e530d4f3800ad279e",
+      "local_sha256": "417b3bfa2b9913b2c02d79062e910f1d609325d4dc9f493e530d4f3800ad279e",
+      "byte_identical": true
+    }
+  }
+}

@@ -1,0 +1,151 @@
+{
+  "bridgeBackport": {
+    "author": "Wes Smith (Wes765)",
+    "baseVersion": "7.0.13",
+    "changes": [
+      "Mask kAccNterpEntryPointFastPathFlag during ArtMethod access-flags discovery",
+      "Flush callback literal pool before relocated ExceptionClear body and enter at performEntry"
+    ],
+    "committer": "Ole Andre Vadla Ravnas (oleavr)",
+    "file": "lib/android.js",
+    "license": "LGPL-2.0 WITH WxWindows-exception-3.1",
+    "licenseSource": "https://raw.githubusercontent.com/frida-packages/frida-java-bridge/67f1b1116e8b827014825a46693929221136b0c8/package.json",
+    "localDiffSha256": "c9a6936687db7410e540dd34b62db55439b4d2406294b01344c3505c26053d95",
+    "noGlobalDeoptimizationAdded": true,
+    "originalSha256": "ee119401893ab7353525fe181c99554cd13776c10a47e24ebf29c2d0de28a11c",
+    "patchedSha256": "f9807d3357fe7743e411fdea5e93313004edf50372f055c2ab86eb513680060f",
+    "runtimeVersionUnchanged": "17.25.0",
+    "schema": 1,
+    "upstreamCommit": "67f1b1116e8b827014825a46693929221136b0c8",
+    "upstreamPatchSha256": "ff67d52d60fe9024dbd2d36f376c29b3ad2e21b7c7e41e989f2a1849899328e7",
+    "upstreamPullRequest": "https://github.com/frida-packages/frida-java-bridge/pull/398",
+    "upstreamRepository": "https://github.com/frida-packages/frida-java-bridge"
+  },
+  "bridgeLocalPolicy": {
+    "baseVersion": "7.0.13",
+    "diffSha256": "a9723d77f1f1a2d9a8bc5b5517469271b493e05b1fb09f01876130be782bc739",
+    "files": [
+      {
+        "afterSha256": "656f42dab10a2a21bef590a26b7cc333edb44601c276591fcf0e0b232451d7db",
+        "beforeSha256": "f9807d3357fe7743e411fdea5e93313004edf50372f055c2ab86eb513680060f",
+        "path": "lib/android.js",
+        "replacements": [
+          {
+            "new": "function tryGetEnvJvmti (vm, runtime) {\n  // hnubl scoped API-37 policy: use JNI reflection without loading the JVMTI plugin.\n  if (getAndroidApiLevel() >= 37) {\n    return null;\n  }\n\n  let env = null;",
+            "old": "function tryGetEnvJvmti (vm, runtime) {\n  let env = null;"
+          }
+        ]
+      },
+      {
+        "afterSha256": "395aa28978b17a10a5b6996365e9e40a172a89bf552bf2eba6601663127dab4a",
+        "beforeSha256": "48f6b9da88ead79b109358fb7866aa5d10be1711c8a4a7693f876397b22b5010",
+        "path": "lib/class-model.js",
+        "replacements": [
+          {
+            "new": "import { withRunnableArtThread, getArtClassSpec, getArtMethodSpec, getArtFieldSpec, getAndroidApiLevel } from './android.js';",
+            "old": "import { withRunnableArtThread, getArtClassSpec, getArtMethodSpec, getArtFieldSpec } from './android.js';"
+          },
+          {
+            "new": "  const artApi = javaApi.add(javaApiSize);\n  // The existing JNI reflection branch does not require raw mirror::Class offsets.\n  artApi.writeUInt(0);\n  const { vm } = env;\n  if (api.flavor === 'art' && getAndroidApiLevel() < 37) {",
+            "old": "  const artApi = javaApi.add(javaApiSize);\n  const { vm } = env;\n  if (api.flavor === 'art') {"
+          },
+          {
+            "new": "  if (api.flavor !== 'art' || getAndroidApiLevel() >= 37) {\n    return nullUnwrap;\n  }",
+            "old": "  if (api.flavor !== 'art') {\n    return nullUnwrap;\n  }"
+          }
+        ]
+      }
+    ],
+    "id": "hnubl-ota-api37-reflection-only-v1",
+    "license": "LGPL-2.0 WITH WxWindows-exception-3.1",
+    "minimumApi": 37,
+    "nativeWorkaroundImported": false,
+    "noGlobalDeoptimizationAdded": true,
+    "origin": "local-scoped-policy",
+    "rationaleSource": "https://github.com/frida-packages/frida-java-bridge/pull/400",
+    "runtimeVersionUnchanged": "17.25.0",
+    "schema": 1,
+    "scope": "OUC process only; Java.use/explicit loader/implementation/method calls, not choose or class enumeration"
+  },
+  "frida": {
+    "bytes": 84601832,
+    "elfSha256": "1d3374cdbb73f3fe4737f7e7a77e6d17e19914f16d1bffbd6c42999800f8dbeb",
+    "sha256": "987d0a900cf1bc3878ba8b34b00ad2889e55e4ba26a8da7140a881f652982a73",
+    "url": "https://github.com/frida/frida/releases/download/17.25.0/frida-inject-17.25.0-android-arm64.xz",
+    "version": "17.25.0"
+  },
+  "js": {
+    "installedFiles": {
+      "@esbuild/win32-x64/README.md": "29cf512fa580b72392176bf694933ae0decaf18116fdeee917511b445411ce16",
+      "@esbuild/win32-x64/esbuild.exe": "c7bee37877d0aa6a046e52783fa0a2cf1a9ce5579d68bb3083bda99d4bff18ef",
+      "@esbuild/win32-x64/package.json": "89382df45735edcd917c492a810ab514920fa07d36c653cdc122bdfd8f526964",
+      "base64-js/LICENSE": "5b37224c080cdcc97c871ada971c224e9926370fe74f11b539aa1cf9f3b1aca1",
+      "base64-js/README.md": "057ef3ae4f4b4c9d3dcd257d3b2f38632de3c3a2ff068e5be14cb56a61d6daba",
+      "base64-js/base64js.min.js": "d2e82495607abf54f16e21de04d90ba9ce1605451667d88425babece988f148b",
+      "base64-js/index.d.ts": "96da6c81cd788939a7cf6546ea1f65ab5ca38952e5bd7d8c284bfe1f3c22dce7",
+      "base64-js/index.js": "829eadd8a1a441d25be0cb93b00e16a0d0c20fd294db95d8f2ed87e6954b7182",
+      "base64-js/package.json": "9758f3ab8c45e07bb9a368e32f9a8b3729623bbf47cbbb205b32d674ab2a91f0",
+      "buffer/AUTHORS.md": "ca3d96437f69ceb38df1972db017fcd6303b02f57ea1f838ab9f9c3db3e789e0",
+      "buffer/LICENSE": "06bafa45fdad2579ba0e43b0c9b2c6290287c99c4203c300254a462b38a307f6",
+      "buffer/README.md": "115dd8925d8f387b2970bd492188a008695f179ed93319a993ce384fa470d3bf",
+      "buffer/index.d.ts": "4967529644e391115ca5592184d4b63980569adf60ee685f968fd59ab1557188",
+      "buffer/index.js": "c25853fd31addfce188b01061fe85bfe667d5fb6c7a7bbb1c83d0ddfd8627acc",
+      "buffer/package.json": "5b105ac0abbf5985cbe62ad28a34032d85c7ef623e0eb01f39441b0feb419004",
+      "esbuild/LICENSE.md": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+      "esbuild/README.md": "6d481cd60ec3c679e5e395f547ab4221147f35642894f6b95a8df38fd25c87bd",
+      "esbuild/bin/esbuild": "183d6ead2dbc3af51aec767d5395f86fe54fbbc2d2aa8e54feb4e31d76a62f7e",
+      "esbuild/install.js": "612294e278914443bdcf81cb17f54afec34dbdd2ebd999a6ee187912320cc315",
+      "esbuild/lib/main.d.ts": "e078310f23f0ccfa28a6ac81b5fad81f27150e921f92ab6e648caab42e2d9a14",
+      "esbuild/lib/main.js": "61ec0ba144ff93f4bf0e96ad6fab6f430ede0aa13e27ace8063ed63ba416b3cd",
+      "esbuild/package.json": "9d0bc453f4e791553c4cc2298ba023b409241fd9801e494741666eb0f6051490",
+      "frida-java-bridge/README.md": "27d9fbd0bad43f9ec68bd6b1ba091ca54335fb28a775efef17a98fdbfcdca59b",
+      "frida-java-bridge/index.d.ts": "d13f96a494192f0bd53f97d34acd744418d9f49ff30946fc6665542decfe6ad8",
+      "frida-java-bridge/index.js": "2dac3a8e2c7424965a6462c970a937d065a094d0e740a51a59373386836baa7c",
+      "frida-java-bridge/lib/alloc.js": "6e075106d5fdcf8f214d19c0853d4189058fe84a8f125a42e12a14702411f842",
+      "frida-java-bridge/lib/android.d.ts": "b9df496d65fbad4374780f94b1fa5e7aef15178736858e5dc68dc4e5a10a5c6f",
+      "frida-java-bridge/lib/android.js": "ee119401893ab7353525fe181c99554cd13776c10a47e24ebf29c2d0de28a11c",
+      "frida-java-bridge/lib/api.js": "e96838e75876ef864edbb64779ec8e21d9809b30fa4b2c90dde6be7d5a8c379a",
+      "frida-java-bridge/lib/class-factory.js": "3905ae235bfd58fa4b1118075df781c090108c399ff19e093f568104dbb0dc3b",
+      "frida-java-bridge/lib/class-model.js": "48f6b9da88ead79b109358fb7866aa5d10be1711c8a4a7693f876397b22b5010",
+      "frida-java-bridge/lib/env.js": "eb30578946d7e0960e36d6304c791f4f80fea7e0087e0d8c7529117bd91cbf22",
+      "frida-java-bridge/lib/jvm.js": "20bd6380e3f7962001f9ddae26bd58b7e993c3c8dbc295a5bbe46c7345e29495",
+      "frida-java-bridge/lib/jvmti.js": "6338cb2a3564ea4b2eaac7282ae754e3a832b47926ae1b62d2dd6cbcdac013bc",
+      "frida-java-bridge/lib/lru.js": "c2eea2d4a971a15802a867de03ac87ddf518ba253e48db44f13f5da7ff650f05",
+      "frida-java-bridge/lib/machine-code.js": "755efcde08d7a8f91febe3f9b7ea67ea7a4d3e0d77a6c9fc5fd1840c769c5232",
+      "frida-java-bridge/lib/memoize.js": "a211f4dd4fffca41614871cd52a29270cfbb7d6089b1ec73c2caec7c2e8a49c6",
+      "frida-java-bridge/lib/mkdex.js": "6cdbf39ffe807879a232ba04e4c7e4ffdd5b30415d1fe1ee452f818a40d0d005",
+      "frida-java-bridge/lib/result.js": "2ea95df312da5b30191fd51f21b8146c7f3bccd499e4f38d2cfd0624592fa57e",
+      "frida-java-bridge/lib/types.js": "f596af52e3bd18594d0918df9355b0cd41ebdb9587223ac40674445f39eabd7f",
+      "frida-java-bridge/lib/vm.js": "62b8ffe5274af8642a85823366a9ea782d409d3ae92ab5b7fd4aa4a4a4417a46",
+      "frida-java-bridge/package.json": "d36213a115c2b0fb234779375deef66bdbfe1676e4f289525dd45492f41d2fc4",
+      "ieee754/LICENSE": "18d45466ba3253deae04667e267a91ea8de8548f18c1125264d1c9db28194cc1",
+      "ieee754/README.md": "27827383727dcc6bb9f6f591e4b9204e35b6389bfba60df7a400371dac23b3ed",
+      "ieee754/index.d.ts": "1eb4db5f83679b3b6f8683611c93938948aa2d5d5e3988755f9e3a289388b75e",
+      "ieee754/index.js": "fe3e2b20c1ebb57c3b390c8f685ad1e04e6f493517fa7e432f4351bb77a1a4d0",
+      "ieee754/package.json": "a8004b9c8dffe2e1b01a058ecf968a5d50beabcabc43cc98c655184ba6afc050"
+    },
+    "machine": "Windows/AMD64",
+    "packageJsonSha256": "0fdbc7f17c3542e9508871c373a47bd90788d37947cdc01adec5c1cd446f50b5",
+    "packageLockSha256": "578057dc6004040441e759b3bffdeaf37ef163ffabba8da9cf88b04b957447b3",
+    "packages": {
+      "buffer": {
+        "integrity": "sha512-FTiCpNxtwiZZHEZbcbTIcZjERVICn9yq/pDFkTl95/AxzD1naBctN7YO68riM/gLSDY7sdrMby8hofADYuuqOA==",
+        "version": "6.0.3"
+      },
+      "esbuild": {
+        "integrity": "sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==",
+        "version": "0.28.2"
+      },
+      "frida-java-bridge": {
+        "integrity": "sha512-YSyKjxbxKnSi3KSUy9vciOvTOuq0RRh9dkxzkQVEdfIIZlw20zE8D3Cq9eL2FDqUVj4YKas6Wf09kCjL5zbffg==",
+        "version": "7.0.13"
+      }
+    }
+  },
+  "jvm": {
+    "classes": 3134,
+    "sha256": "79b9ed26f09012a0195068003e208dd39a280fa8939ca399ccff081ba717f698",
+    "sourceJadxSha256": "fe3e12c45acf75f92369685fd02d1d7a7323385dc725680a9b98a0dac0ea554b"
+  },
+  "schema": 1
+}

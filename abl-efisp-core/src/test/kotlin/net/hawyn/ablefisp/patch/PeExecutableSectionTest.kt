@@ -37,6 +37,7 @@ class PeExecutableSectionTest {
         assertEquals(source.entryRva, added.image.entryRva)
         assertEquals(0x2000L, added.rva)
         val section = added.image.sections.last()
+        assertEquals(".textpol", section.name)
         assertEquals(0x800, section.raw)
         assertEquals(0x200, section.rawSize)
         assertEquals(0x60000020L, section.characteristics)

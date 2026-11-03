@@ -1,0 +1,7 @@
+{
+  "bytes": 84601832,
+  "elfSha256": "1d3374cdbb73f3fe4737f7e7a77e6d17e19914f16d1bffbd6c42999800f8dbeb",
+  "sha256": "987d0a900cf1bc3878ba8b34b00ad2889e55e4ba26a8da7140a881f652982a73",
+  "url": "https://github.com/frida/frida/releases/download/17.25.0/frida-inject-17.25.0-android-arm64.xz",
+  "version": "17.25.0"
+}

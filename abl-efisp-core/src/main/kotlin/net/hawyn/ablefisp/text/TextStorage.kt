@@ -38,7 +38,7 @@ internal class TextAllocator(original: ByteArray, private val references: List<T
         // slot as .bfpol; extend that tail too, after its existing code and data.
         // Existing file offsets and RVAs stay fixed.
         val tail = image.sections.firstOrNull { section ->
-            section.name in setOf(".eftxt", ".bfpol") && section.flags and 0x60000000L == 0x60000000L &&
+            section.name in setOf(".eftxt", ".bfpol", ".su_cmd", ".texttxt", ".textpol", ".textsu") && section.flags and 0x60000000L == 0x60000000L &&
                 section.virtualSize == section.size && section.raw + section.size == data.size &&
                 section.rva + section.size == image.sections.maxOf { it.rva + maxOf(it.size, it.virtualSize) }
         }
@@ -65,7 +65,7 @@ internal class TextAllocator(original: ByteArray, private val references: List<T
         val rva = alignText(image.sections.maxOf { it.rva + maxOf(it.size, it.virtualSize) }, image.sectionAlignment)
         requireText(raw.toLong() + rawSize <= 128L * 1024 * 1024 && rva + rawSize <= 0xffff_ffffL, "新增文字段超出镜像大小限制")
         data = data.copyOf(raw + rawSize)
-        ".eftxt".toByteArray(Charsets.US_ASCII).copyInto(data, header)
+        ".texttxt".toByteArray(Charsets.US_ASCII).copyInto(data, header)
         put32(data, header + 8, rawSize.toLong()); put32(data, header + 12, rva)
         put32(data, header + 16, rawSize.toLong()); put32(data, header + 20, raw.toLong())
         put32(data, header + 36, 0x60000020)

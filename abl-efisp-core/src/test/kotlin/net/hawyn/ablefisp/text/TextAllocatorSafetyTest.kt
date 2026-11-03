@@ -2,6 +2,9 @@ package net.hawyn.ablefisp.text
 
 import net.hawyn.ablefisp.api.AblEfisp
 import net.hawyn.ablefisp.patch.PatchMode
+import net.hawyn.ablefisp.patch.PeImage
+import net.hawyn.ablefisp.patch.BootFailurePolicyPatcher
+import net.hawyn.ablefisp.patch.sha256
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -15,7 +18,7 @@ class TextAllocatorSafetyTest {
         val allocator = TextAllocator(source, TextA64.refs(TextPe(source)))
         val storage = allocator.allocate(ByteArray(108) { 0x5a })
         assertFalse(overlaps(storage, 0x1273, 0x1283))
-        assertEquals(".eftxt", TextPe(allocator.data).sections.single { storage.offset in it.raw until it.raw + it.size }.name)
+        assertEquals(".texttxt", TextPe(allocator.data).sections.single { storage.offset in it.raw until it.raw + it.size }.name)
         assertArrayEquals(source.copyOfRange(0x1213, 0x3000), allocator.data.copyOfRange(0x1213, 0x3000))
     }
 
@@ -104,7 +107,15 @@ class TextAllocatorSafetyTest {
                 assertTrue(refs.none { it.target in startRva until tail.rva + end - tail.raw })
                 val allocator = TextAllocator(pe, refs)
                 val width = allocator.reserve(TextLayoutStubs.WIDTH_BYTES)
-                assertEquals(startRva, width.rva)
+                val fitsOldTail = startRva + width.size <= tail.rva + end - tail.raw
+                if (fitsOldTail) assertEquals(startRva, width.rva)
+                else {
+                    assertTrue("Full old tail gets a new mapping, rather than overwriting code/text", width.rva >= image.sections.maxOf { it.rva + maxOf(it.size, it.virtualSize) })
+                    val grown = TextPe(allocator.data)
+                    assertEquals(width.offset, grown.rvaToOffset(width.rva, width.size))
+                    for (old in image.sections) assertTrue(grown.sections.any { it.rva == old.rva && it.raw == old.raw && it.size == old.size })
+                    assertArrayEquals(pe.copyOfRange(image.sizeOfHeaders, pe.size), allocator.data.copyOfRange(image.sizeOfHeaders, pe.size))
+                }
                 val context = FastbootTextDiscovery.discover(image)
                 TextLayoutStubs.widthPayload(width.rva, checkNotNull(context.fontCharZero), context.lineBudget)
                     .copyInto(allocator.data, width.offset)
@@ -112,23 +123,91 @@ class TextAllocatorSafetyTest {
                 while (afterPayload > tail.raw && allocator.data[afterPayload - 1] == 0.toByte()) afterPayload--
                 val legacyNext = alignText(maxOf(afterPayload.toLong() + 16, (width.offset + width.size).toLong()), 16)
                 val label = allocator.reserve(34)
-                assertEquals(tail.rva + legacyNext - tail.raw, label.rva)
-                assertEquals(pe.size, allocator.data.size)
+                if (fitsOldTail) {
+                    assertEquals(tail.rva + legacyNext - tail.raw, label.rva)
+                    assertEquals(pe.size, allocator.data.size)
+                } else {
+                    assertTrue(label.rva >= width.rva + width.size)
+                    assertEquals(label.offset, TextPe(allocator.data).rvaToOffset(label.rva, label.size))
+                }
             }
         }
     }
 
-    @Test fun oldPatchedImageReimportsTheSameTextWithoutGrowthOrByteChanges() {
+    @Test fun oldPatchedImageRetainsItsTextWhileReceivingTheNewCommandPolicy() {
         val file = File(localRoot(), "analysis/factory-restore-20261027/current_efisp.img")
         assumeTrue("Local old finished efisp", file.isFile)
-        val pe = AblEfisp.extract(file.readBytes()).output
+        val raw = file.readBytes()
+        assertEquals("367240ce5f77720612677224ecfbc397f53577b11354f30b4a3538ffed5e68ab",raw.sha256())
+        val pe = AblEfisp.extract(raw).output
         for (mode in PatchMode.entries) {
-            val core = AblEfisp.patch(pe, mode).output
-            assertArrayEquals(pe, core)
+            val patched = AblEfisp.patch(pe, mode)
+            val core = patched.output
+            val flashingEdits = patched.patches.filter { it.name.startsWith("flashing unlock：") }
+            val independent = patched.patches.filter { it.name.startsWith("oem superunlock：") }
+            assertEquals(5, flashingEdits.size)
+            assertTrue(independent.size >= 2)
+            val dataHash = patched.patches.filter { it.name.startsWith("AVB HashDescriptor") }
+            assertEquals(1, dataHash.size)
+            assertEquals(4, dataHash.single().after.split(' ').size)
+            val pss = patched.patches.filter { it.name == "共用 RSA-PSS 验证入口固定成功" }
+            assertEquals(1, pss.size)
+            assertEquals(12, pss.single().after.split(' ').size)
+            val compatibility = patched.patches.filter { it.name.startsWith("AVB 低索引") ||
+                it.name.startsWith("OEM 版本") || it.name.startsWith("BRINGUPAUTH") || it.name.startsWith("AVB 版本兼容") }
+            assertEquals(10, compatibility.size)
+            assertTrue(compatibility.all { it.after.split(' ').size == 4 })
+            // This particular imported PE owns one historical 20-byte report
+            // adapter. Locate its actual mapping first; derive the native BL
+            // independently from the adapter's final unconditional branch.
+            val importedImage = PeImage.parse(pe)
+            val reportPlan = BootFailurePolicyPatcher.analyze(importedImage).single()
+            val oldStub = requireNotNull(reportPlan.existingStubRva)
+            val oldAt = requireNotNull(importedImage.rvaToOffset(oldStub,20))
+            assertEquals(0x34000080 or reportPlan.allowRegister, importedImage.word(oldStub))
+            assertEquals(0x71000c1f or (reportPlan.errorRegister shl 5), importedImage.word(oldStub+4))
+            assertEquals(0x54000041, importedImage.word(oldStub+8))
+            assertEquals(0xd65f03c0.toInt(), importedImage.word(oldStub+12))
+            val tail = requireNotNull(importedImage.word(oldStub+16))
+            assertEquals(0x14000000, tail and 0xfc000000.toInt())
+            val reporter = oldStub+16+(((tail and 0x03ffffff) shl 6 shr 6).toLong()*4)
+            assertEquals(0xadf9cL, reporter) // immutable fixture's native reporter, not a production table
+            assertEquals(reportPlan.originalTarget, reporter)
+            val oldCall = requireNotNull(importedImage.word(reportPlan.callRva))
+            assertEquals(0x94000000.toInt(),oldCall and 0xfc000000.toInt())
+            assertEquals(oldStub,reportPlan.callRva+(((oldCall and 0x03ffffff) shl 6 shr 6).toLong()*4))
+            val nativeWord = 0x94000000.toInt() or (((reporter-reportPlan.callRva)/4).toInt() and 0x03ffffff)
+            val nativeBytes = ByteArray(4) { n -> (nativeWord ushr (n*8)).toByte() }
+            val nativeRestore = patched.patches.filter { it.name == "恢复原生 AVB hash 故障上报调用" }
+            assertEquals(1,nativeRestore.size)
+            val restoredCall = nativeRestore.single()
+            val callAt = requireNotNull(importedImage.rvaToOffset(reportPlan.callRva,4))
+            assertEquals(reportPlan.callRva,restoredCall.rva)
+            assertEquals(callAt,restoredCall.fileOffset)
+            assertEquals(4,restoredCall.after.split(' ').size)
+            val oldCallBytes = ByteArray(4) { n -> (oldCall ushr (n*8)).toByte() }
+            assertEquals(oldCallBytes.joinToString(" ") { "%02x".format(it.toInt() and 255) },restoredCall.before)
+            assertEquals(nativeBytes.joinToString(" ") { "%02x".format(it.toInt() and 255) },restoredCall.after)
+            val outputImage = PeImage.parse(core)
+            val restoredAt = requireNotNull(outputImage.rvaToOffset(reportPlan.callRva,4))
+            assertArrayEquals(nativeBytes,core.copyOfRange(restoredAt,restoredAt+4))
+            val orphanAt = requireNotNull(outputImage.rvaToOffset(oldStub,20))
+            assertArrayEquals("Historical report adapter bytes stay untouched and unreferenced by their old call",
+                pe.copyOfRange(oldAt,oldAt+20),core.copyOfRange(orphanAt,orphanAt+20))
+            assertEquals(nativeWord,outputImage.word(reportPlan.callRva))
+            val newEdits = flashingEdits + independent + dataHash + compatibility + pss + nativeRestore
+            val allowed = newEdits.flatMap { it.fileOffset until it.fileOffset + it.after.split(' ').size }.toSet()
+            assertTrue(core.size >= pe.size)
+            assertTrue(pe.indices.all { pe[it] == core[it] || it in allowed })
+            assertEquals(AblEfisp.scanText(pe).entries.associate { it.id to it.text },
+                AblEfisp.scanText(core).entries.associate { it.id to it.text })
             val result = TextEngine.apply(core,
                 mapOf("fastboot-unlocked" to "device freedom (github hawyn2018)"), autoWrapFastboot = false)
             assertTrue(result.changes.isEmpty())
-            assertArrayEquals(pe, result.output)
+            assertArrayEquals(core, result.output)
+            val imported = AblEfisp.patch(core, mode)
+            assertTrue(imported.alreadyPatched)
+            assertArrayEquals(core, imported.output)
         }
     }
 

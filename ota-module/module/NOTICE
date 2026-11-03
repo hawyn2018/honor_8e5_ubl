@@ -1,0 +1,18 @@
+hnubl OTA companion 2.8.8
+
+hnubl OTA companion code is licensed under AGPL-3.0-only; see LICENSE.
+Bundled third-party components retain the licenses and notices listed below.
+
+Includes unchanged upstream Frida 17.25.0 Android arm64 inject runtime.
+https://github.com/frida/frida/releases/tag/17.25.0
+Compressed SHA-256: 987d0a900cf1bc3878ba8b34b00ad2889e55e4ba26a8da7140a881f652982a73
+
+The in-process Java agent bundles frida-java-bridge 7.0.13, buffer 6.0.3, base64-js and ieee754.
+DEX discovery uses Android smali dexlib2 and Guava.
+Upstream license texts and provenance are in licenses/.
+Runtime source: https://github.com/frida/frida/tree/17.25.0
+Bridge source: https://github.com/frida/frida-java-bridge
+DEX source: https://github.com/google/smali
+Guava source: https://github.com/google/guava
+
+This module is scoped to com.hihonor.ouc. It does not patch the updater APK or load code in unrelated apps.

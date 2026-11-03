@@ -1,0 +1,29 @@
+{
+  "schema": 2,
+  "license": "GPL-3.0",
+  "english": {
+    "url": "https://www.gnu.org/licenses/gpl-3.0.txt",
+    "asset": "licenses/gpl-3.0-en.txt",
+    "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+    "bytes": 35147,
+    "verbatimProjectLicense": true,
+    "canonicalReferenceSha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "canonicalComparison": "Same GPL terms; existing project LICENSE retains legacy http links and philosophy/why-not-lgpl.html URL."
+  },
+  "chinese": {
+    "asset": "licenses/gpl-3.0-zh-CN.txt",
+    "translator": "AI",
+    "method": "Independent paragraph-by-paragraph translation of the bundled English GPLv3; cross-reviewed against English. Previous third-party Chinese translation was not used.",
+    "status": "Unofficial translation; the original English license alone states the distribution terms",
+    "official": false,
+    "sourceEnglishAsset": "licenses/gpl-3.0-en.txt",
+    "sourceEnglishSha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+    "sourceParagraphCount": 122,
+    "translatedSourceParagraphCount": 122,
+    "coverage": "Title, preamble, sections 0–17, end notice, and complete application appendix",
+    "translationTermsUrl": "https://www.gnu.org/licenses/translations.html",
+    "textSha256": "7bf40ffa2de478ac3c75de5337a226dd831e39d654ed895769bc743e1961ea58",
+    "bytes": 32173,
+    "createdDate": "2026-11-01"
+  }
+}

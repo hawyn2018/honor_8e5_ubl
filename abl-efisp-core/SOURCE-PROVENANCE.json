@@ -1,46 +1,704 @@
 {
-  "sources": [
+  "release": {
+    "freedom": "1.2.7",
+    "fakebl": "1.2.9"
+  },
+  "directBaseline": {
+    "archive": "dist\\ABL-EFISP-Freedom-1.2.6-fakebl-1.2.8-source-clean.zip",
+    "sha256": "ead67799e66266943b1f392f28bfe903de6e01e6d2c28c1f22c5985e4634411d"
+  },
+  "implementation": "Independent MIT native KBL runtime, SDK and transport; old patch engine preserved",
+  "sourceManifestSelfExclusions": [
+    "SOURCE-PROVENANCE.json",
+    "SOURCE-SHA256.json"
+  ],
+  "changes": [
     {
-      "archive": "dist\\ABL-EFISP-fakebl-1.2.5-source-clean.zip",
-      "sha256": "aae3f949fa37236e20bfc92b71593ad43bc2db83de14fa264b0a167029c2af30"
+      "path": "INTEGRATION.md",
+      "change": "modified",
+      "beforeSha256": "82b0cfed91f62fab952db77a1ba125cf7beb73c16b7e75408e1fd1aed5f0a04e",
+      "afterSha256": "b502fe23dc863dddd01ed03f3cc9c84d6923019c188ac8d3a5aaba99b8e111d7"
     },
     {
-      "archive": "dist\\ABL-EFISP-freedom-1.2.3-source-clean.zip",
-      "sha256": "fb4ba3b825882854ee1113535c9afc7eef51a072f4179baa99a40a0f4583876b"
+      "path": "PROVENANCE.md",
+      "change": "modified",
+      "beforeSha256": "3115493db78fa7ba411b3593d1b9e7a3758c140717855d45ac305d6320e1a51f",
+      "afterSha256": "72111f9473a168d5a74f5ad6c39a6ac6c567699863b54fba2df28c677ecee789"
+    },
+    {
+      "path": "README.md",
+      "change": "modified",
+      "beforeSha256": "71adbd55bfbdbebbdc9044631e8f27deaf80e34e380ad031427b114bc3dd3256",
+      "afterSha256": "431ee9ad7ee859850975a9da1fa0e68d46a5748d778cb9cdddc191a9d619928a"
+    },
+    {
+      "path": "abl-efisp-core/build.gradle.kts",
+      "change": "modified",
+      "beforeSha256": "8ce6d97905e1c39c674cc56c16e1c84e93c77db3708d5960818951f4dfbe6290",
+      "afterSha256": "63b061a6176d82e89c5e03ebfba2eebef877da99f7313b2684ee7ad3bcf5933f"
+    },
+    {
+      "path": "abl-efisp-core/src/main/kotlin/net/hawyn/ablefisp/api/AblEfisp.kt",
+      "change": "modified",
+      "beforeSha256": "3ff55a4643a689a33c4834eca47d6dd79b1b38ee3a3f948c619201293ddc502a",
+      "afterSha256": "43dc4da580e13849ed842246afa57f91846daae3ce8f1e5221af2ebdf795453e"
+    },
+    {
+      "path": "abl-efisp-core/src/main/kotlin/net/hawyn/ablefisp/patch/KblDispatcherFacts.kt",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "c8e8fa00b79c7e82f247948e68bc8caca08af803de049b82f0889fafaa048019"
+    },
+    {
+      "path": "abl-efisp-core/src/main/kotlin/net/hawyn/ablefisp/patch/KblEnvironmentFacts.kt",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "c37d30add565dc12046e7a7134ebc912192386dcb5058e12aa40ce7923496468"
+    },
+    {
+      "path": "abl-efisp-core/src/main/kotlin/net/hawyn/ablefisp/patch/KblParentModule.kt",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "04fc5797ed31a8f631269092fc3238d13a707ad0b12591db7450b39b43f1df08"
+    },
+    {
+      "path": "abl-efisp-core/src/main/kotlin/net/hawyn/ablefisp/patch/KblPatchEngine.kt",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "6c0a4daf270a624f015823ced2cc7e44e811ed18c7197ada7b20b722fc220bcc"
+    },
+    {
+      "path": "abl-efisp-core/src/main/kotlin/net/hawyn/ablefisp/patch/KblPatcher.kt",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "ece50059ce51137749bdb4195490ba071817d66abbb47ae9ccd6770d927c1cc5"
+    },
+    {
+      "path": "abl-efisp-core/src/main/kotlin/net/hawyn/ablefisp/patch/KblUsbFacts.kt",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "578b8cf524909d867a6753d878ef745a81b9a75f2e55f4649a082283a5e2297c"
+    },
+    {
+      "path": "abl-efisp-core/src/main/resources/kbl/kbl_driver.efi",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "33f8b5e632cdc31e6da9fce89d6430e69e02ad84499d60448b8bbf87d99e7e68"
+    },
+    {
+      "path": "abl-efisp-core/src/main/resources/kbl/kbl_driver.sha256",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "3479572b07160dad504f6be7c85144023eb72eccb4568758136425be92e94807"
+    },
+    {
+      "path": "abl-efisp-core/src/test/kotlin/net/hawyn/ablefisp/patch/KblDispatcherFactsTest.kt",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "9c66486a576de8e108ead66855215e6d5c393cf518a05e4c628f4d05acfce6d5"
+    },
+    {
+      "path": "abl-efisp-core/src/test/kotlin/net/hawyn/ablefisp/patch/KblEnvironmentFactsTest.kt",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "88c3b47db4c56d34fbfce2fbcebbd21f3ad88f33721a16a2943e82de2651cf91"
+    },
+    {
+      "path": "abl-efisp-core/src/test/kotlin/net/hawyn/ablefisp/patch/KblPatcherTest.kt",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "229348daea00483e5be0746921614e6e5c28c7aef3b31998a5100db84e2d72ab"
+    },
+    {
+      "path": "abl-efisp-core/src/test/kotlin/net/hawyn/ablefisp/patch/KblUsbFactsTest.kt",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "6346ffeb2f0e697463d1111f523cf5f02be119eca5b9d02e7c7f4c1a02e17542"
+    },
+    {
+      "path": "abl-efisp-feature/src/main/java/net/hawyn/ablefisp/PatcherModel.kt",
+      "change": "modified",
+      "beforeSha256": "e4ac58abaf16675ef9169119f92e7d39fa263d8c17db8f598446060b11addab2",
+      "afterSha256": "5a1672de92582b538a231db2065293aa198c30fab1057938e6108b5bdf8c0bc7"
+    },
+    {
+      "path": "ablpatcher/build.gradle.kts",
+      "change": "modified",
+      "beforeSha256": "c47d481e9d3c6c2f794a168ef45ab4f91ea2437b4aa3fa60dbbd1321118ed41e",
+      "afterSha256": "fdf438dfe5fd741498ecabfc0ca3593ef27c84ecaa7f7a3de5b95c4d5210f21b"
+    },
+    {
+      "path": "runtime/examples/hello_yield.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "3fbd9099a07270eb4853b9fec62ca9a4d7fab07e0bf6731b371d0085d638724b"
+    },
+    {
+      "path": "runtime/examples/uefi_environment.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "a3d1c2b483c42592e4efbb706d5afb20b31d2518dcd686e03562ace949845dad"
+    },
+    {
+      "path": "runtime/kbl_api.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "89884b36d1121d410383b6fde0f2a3cae38fdb3d70cb87f1004b971cc87dabb6"
+    },
+    {
+      "path": "runtime/kbl_control.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "ee6ca614b64f5490a80567da7ca10249284d0386ef2cb474d9170745cecf5e29"
+    },
+    {
+      "path": "runtime/kbl_elf.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "01459e942cc1eab30afeabf94c1a60b02466f5dcf4fc8aac565986a18aa1407f"
+    },
+    {
+      "path": "runtime/kbl_elf.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "0158a90876f47d9a82ff7a079acc1c3d5fc383467b347e3a0728913a8c20823e"
+    },
+    {
+      "path": "runtime/kbl_fetch.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "ca3195d063ad1c9a80597e207e8b869fec3ddf876bcad25cca0fab10755a827c"
+    },
+    {
+      "path": "runtime/kbl_fetch.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "97c5a97164f7da0f248503540141c6f0f2fd4f767a8c115d0f0a0722a461515e"
+    },
+    {
+      "path": "runtime/kbl_sha256.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "a6ab6fbc80a84a80a587e6bc566bb5244eb0d9982b8558238b486ebbdec87355"
+    },
+    {
+      "path": "runtime/kbl_sha256.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "d43ea08051ae6742fecb327b76f26a10027c5d081c21eb6de5d0bc184b17e72a"
+    },
+    {
+      "path": "runtime/native/NATIVE-STATUS.md",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "568d526d0a00c5516b0f80fb520191aba802111148ce050c5b597475f83172e7"
+    },
+    {
+      "path": "runtime/native/README.md",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "979ea5b14b86b813b0d85cc6c603bb720817d95441b675002199de8646a93817"
+    },
+    {
+      "path": "runtime/native/kbl_context.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "822d579fffdb08726ad540a70ddb3bcbc472395092b3c2b63398f3cb79142c72"
+    },
+    {
+      "path": "runtime/native/kbl_context_switch.S",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "8ae0b4f5cc29f0593756a10cd29a6ea9f7ceb22772e6f3a9decda9434f0854c2"
+    },
+    {
+      "path": "runtime/native/kbl_native.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "dd835af9cd306b206a6c5400a4eb79d4bc676d99ceb02a4901b0c5c64e37cc39"
+    },
+    {
+      "path": "runtime/native/kbl_native.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "0484b42e5bbee3a1b4f991c169e05fab2db838b9c7b2b7064266b79aab874dbd"
+    },
+    {
+      "path": "runtime/native/review.md",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "a6274041ebdf6ceded42d0295f5303a65e8fd1a52c74420313c5945914bec3c6"
+    },
+    {
+      "path": "runtime/native/test_native_runner.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "26a1ecd8c974e83be220df2634b03159770675ed3b1c69a8335253c6543caf74"
+    },
+    {
+      "path": "runtime/native/tests/native_fixture.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "87f5e5d876ab59394a805070c841c74e9243f59d90611a80ab5df565ea4b1612"
+    },
+    {
+      "path": "runtime/native/tests/provider_stubs.S",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "975be313d7811d7685c14b8e4a612c6cca35621e124c52f487fc9fde9e9cea83"
+    },
+    {
+      "path": "runtime/sdk/README.md",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "5f8f4fe5c3e35697b53dc65fd13a8ded4e0360573b89e2b7388670d309d5ce2e"
+    },
+    {
+      "path": "runtime/sdk/build_demo.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "293648659dbe623bce7f8138a82b2f1eb8a03826ecec45182c39d3305deccd56"
+    },
+    {
+      "path": "runtime/sdk/kbl.ld",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "f2a0777bc6e07e304ca4df80c115f7712343c64f2cadb292f324864f17cc414d"
+    },
+    {
+      "path": "runtime/sdk/kbl_program.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "cc97ecc887e137b680d3df7fde9fae55999184d70c2d73c7ee3e68f9cde71a5b"
+    },
+    {
+      "path": "runtime/test_elf_runner.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "fa49b66f042bd01029a1a60760f0fdda1dd859d366e3d6e921f055698a94516a"
+    },
+    {
+      "path": "runtime/test_runner.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "eeb9d2786bb9efa391c326bab15c816bf87568e15bb9ffc7066a0a3d611d0a04"
+    },
+    {
+      "path": "runtime/tests/PARTITION_PROVIDER.md",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "81642b64148ea65275ec32064c986f65caa1bd29a57a3b4285c4ab36acd7cc4b"
+    },
+    {
+      "path": "runtime/tests/README.md",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "ba6d6c7475375bcce29f0135c8af34c4ade9600bffb4bca68a471b2a03459ada"
+    },
+    {
+      "path": "runtime/tests/elf_unicorn.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "4bc96e10894efec3b56495af77eeaa3db001eff0e5c0f4423cf5a8a1394f44dc"
+    },
+    {
+      "path": "runtime/tests/fastboot_tcp_control.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "99df89501f1c434088becde52d357c41db6b9d33e3f570e655cbf33ae551e5d4"
+    },
+    {
+      "path": "runtime/tests/fastboot_tcp_fetch.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "5c4e45d9dbbfcbf3e8ba19d8a6a30f0f4615d1027725618e3a0e31c508b0f457"
+    },
+    {
+      "path": "runtime/tests/run_partition_sha.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "f79d683c5133492abe50372e331f16543301a10370d2959eceaa5ce9ba669d32"
+    },
+    {
+      "path": "runtime/tests/test_control.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "12e37595edcfceaf107d4a5437bed001f47670c264e8ccc362ab0899dec0785a"
+    },
+    {
+      "path": "runtime/tests/test_elf.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "45fe6a4a72b2f63f3985750e38d94ed395a00cef6eaf60a9f38606ec0a6aabb0"
+    },
+    {
+      "path": "runtime/tests/test_fetch.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "befd822cbafc8e1d8d84477892b2625125a7f43ccf1dfb833bde92dd982f15c6"
+    },
+    {
+      "path": "runtime/tests/test_partition.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "3d75268a8bdfdf9488e155bdf36b2249b4833411e1e8339b04de970597eadd84"
+    },
+    {
+      "path": "runtime/tests/test_sha256.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "3e0a510b3bd93828f81146715b52d5ca5e64730397b7ff2db8d46ed01c2c3bbc"
+    },
+    {
+      "path": "runtime/uefi/DRIVER-STATUS.md",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "d4e6763e662dfc2f26943f40b7a9196ca5b5e31760ce7d1ee0e7d90a772a37bd"
+    },
+    {
+      "path": "runtime/uefi/PARENT-STATUS.md",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "7d837c04d106f06115e9138240a93be16d079ad755bfef97fdb266ad2c518beb"
+    },
+    {
+      "path": "runtime/uefi/USB-NATIVE-STATUS.md",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "8e6e3acf3da1150a7ba2df34dc3cac1c52384c28636dc80dede7c56da6205cef"
+    },
+    {
+      "path": "runtime/uefi/build_driver.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "dc8b4aea0aea213e71cb82e4a5ac42f4e7d2d764c7cbb0a05e26ccde28ef2049"
+    },
+    {
+      "path": "runtime/uefi/build_parent_shim.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "f9923e831633081d460f4513c71d8ae44dbcc45fa7b1fa9cf34ec16a2aaa0e48"
+    },
+    {
+      "path": "runtime/uefi/bundle_driver.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "66518fa6e50e49871b745e9af713307b7e97c85396a7e9c53b7af41921a13c0e"
+    },
+    {
+      "path": "runtime/uefi/kbl_driver.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "57e24b9bb768e735b396fdd4a77715536ee2ac71b1f7cccb39c1c7d17bb7696d"
+    },
+    {
+      "path": "runtime/uefi/kbl_dxe_memory.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "dd963b078d3dacbdca54055cfa0ca3817f307aa142106912ed70d15e2e328ccd"
+    },
+    {
+      "path": "runtime/uefi/kbl_dxe_memory.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "4795e0b4abd8477df19877913a9550aedbfcb2ffee390338ddb5886debf65047"
+    },
+    {
+      "path": "runtime/uefi/kbl_efi_types.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "73dba74437840d25251382074c8ccf1200dcad3fe97e01ad1ddf91070fa25d9b"
+    },
+    {
+      "path": "runtime/uefi/kbl_parent_shim.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "558987a808476d2ea6219bc15f1f140125bf3f4ac77c421a58ef41636707f837"
+    },
+    {
+      "path": "runtime/uefi/kbl_parent_shim.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "7927928de154a5671a243abf255e5461ba5fba5d7b8f840b68e54072231a17c3"
+    },
+    {
+      "path": "runtime/uefi/kbl_parent_shim.ld",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "05245b8f317fd288b36a97521c7e7106bf4503e9b6c3579569a85bf026c6bd7e"
+    },
+    {
+      "path": "runtime/uefi/kbl_partition.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "1f66f6486925b9510a401bc9ae5e63cc35d3682e03f46b7fe2327ecd3304c04e"
+    },
+    {
+      "path": "runtime/uefi/kbl_partition.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "64b1969b9e47745fce06fad6642252a68968e7039046a8dec935c0916e34f048"
+    },
+    {
+      "path": "runtime/uefi/kbl_service.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "e826d904c5b3bad39ab3c1bea13efd1c9853652584ce62f11420282cf0aecc2a"
+    },
+    {
+      "path": "runtime/uefi/kbl_usb.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "bf5576bb62d2f1f12355f32130e4963f42b85a04a1fdb3fd26832797cffef979"
+    },
+    {
+      "path": "runtime/uefi/kbl_usb.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "68557779ac12be5254601b0b972ea6fd0dd43ffba11d7360de023b32fe19e507"
+    },
+    {
+      "path": "runtime/uefi/kbl_usb_native.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "85f0d8745a38558aa45c454e1d92d0d51ba6827ac8b1f4847614721455083d06"
+    },
+    {
+      "path": "runtime/uefi/kbl_usb_native.h",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "e0947ddf9bb96a25a103cbb68e3fa6c069b8a3a1a136ac241f08ab4fe1579082"
+    },
+    {
+      "path": "runtime/uefi/test_parent_shim.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "5ba490f89b7954c88a94887a3ae8e41eaf68f021dfaa2401e18bba9064df52ed"
+    },
+    {
+      "path": "runtime/uefi/tests/fastboot_driver_tcp.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "651d4f7c1026e9ef60c0441d37c7713fa8135e268c5d7372472e4edba0c75c72"
+    },
+    {
+      "path": "runtime/uefi/tests/run_dxe_memory.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "7115862cc0ad498f96412d1711ca8877d0987eb8c2584a1ca17a81ac4dca1c3c"
+    },
+    {
+      "path": "runtime/uefi/tests/test_driver.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "14e969394d8ce0b3f11db6dd0d600c228ca462e114f744d69aded12f0b1abf19"
+    },
+    {
+      "path": "runtime/uefi/tests/test_driver_runner.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "fcb4c0b66fa4f7080e21eb612ec0a184a484ab9c6657849238ae858f90783bd3"
+    },
+    {
+      "path": "runtime/uefi/tests/test_driver_unicorn.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "ce6487cf81bb1b99a61d779ac3378ac4c1af5f59440e562fff606c7d99a9a745"
+    },
+    {
+      "path": "runtime/uefi/tests/test_driver_usb_unicorn.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "16e4b44fdd6d2266803a3f70f54804d1acdcfa57fe72e29712113a37c53a6066"
+    },
+    {
+      "path": "runtime/uefi/tests/test_dxe_memory.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "639325271100c1ae43c6d692aefba312c04e094b1063720038abb660461a7083"
+    },
+    {
+      "path": "runtime/uefi/tests/test_native_usb.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "84f103653fc04d56cd8d4a10879606e117c6fd8bfee650d108d1614b3dfb99f8"
+    },
+    {
+      "path": "runtime/uefi/tests/test_native_usb_dll.c",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "2ea6ef7e59a46fcd967202c57c75aca7ef4678e2a01f4bc891b928eafbba8bc8"
+    },
+    {
+      "path": "runtime/uefi/tests/test_native_usb_runner.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "da430fc8210757c8031df7e22bdd47f3e99c51f8918960ea64671f8e7329364e"
+    },
+    {
+      "path": "runtime/uefi/tests/test_native_usb_tcp.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "24733245e47f74139bd33ee01211f9abb01aecfdd3f9104bec96b34f268fb98d"
+    },
+    {
+      "path": "tools/kbl_console/.gitignore",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "47a29cca8535f737ab51803ede2f851ac32067e27e59d719cc927b74dd8915a6"
+    },
+    {
+      "path": "tools/kbl_console/HOST_VALIDATION.md",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "66ebed7d7e09bf9cebd36e5b56d03106efc838e46122acaa895b38f979ac2fe3"
+    },
+    {
+      "path": "tools/kbl_console/KBL_PROTOCOL.md",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "82155cb2001c81e3325945b2013ec2ddc900335a526b0d6a8bcc6d5b095e3972"
+    },
+    {
+      "path": "tools/kbl_console/README.md",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "2141d1aaa786ec4c6f95957465554f3d5b5ff29607c6bf49765fd5452287b0d1"
+    },
+    {
+      "path": "tools/kbl_console/fastboot.cmd",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "41c0adc9708bd2e5071373283802a2206283687b1ba8533620bfe4720653713f"
+    },
+    {
+      "path": "tools/kbl_console/kbl_console.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "10dc57cecbd1fd5a4c125b786ce369194a898cd672f892c9f1bf02650c3aa9c4"
+    },
+    {
+      "path": "tools/kbl_console/tests/fake_fastboot.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "dd353b400880005167da01c686b5cbfb6232bc82fb04a2d27421f94e0e6440e1"
+    },
+    {
+      "path": "tools/kbl_console/tests/test_console.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "c6f8e73304172b7501dff256194c3156f379b59671dca2a6ccbc3b100b0503e5"
+    },
+    {
+      "path": "tools/kbl_console/tests/test_readback.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "8314509a2534005e2acef35164adb85720a2e19a6407c4ce9d1ee74e133778b8"
+    },
+    {
+      "path": "tools/kbl_console/tests/test_reply_pages.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "71ae85d5236906af5cb47ac7c51a8636a9defedc351c1a5a4a152237ceac2e8b"
+    },
+    {
+      "path": "tools/kbl_console/tests/test_store.py",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "0611a5fefba98db37ad495d707ef2d2926b04f323f5139df5ceb0444d0e2a0cc"
     }
   ],
-  "coreProductionFiles": {
-    "src/main/kotlin/net/hawyn/ablefisp/api/AblEfisp.kt": "8f2592816a7ab9d6bb5a69553ccd9f10bd09b8ba0b61439c867cfde3b8280949",
-    "src/main/kotlin/net/hawyn/ablefisp/io/ImageIo.kt": "dd0ff84ac1c26d04c82053337ebc62981c1b3d8d8be3e240619a8650818e03a8",
-    "src/main/kotlin/net/hawyn/ablefisp/io/RootAblExtractor.kt": "bc09ddbacd96fd088081dfc192a79d2ddec997628e336cae0f8547dd24613b2e",
-    "src/main/kotlin/net/hawyn/ablefisp/io/RootCommandRunner.kt": "49c63d63182a1daa5cd62b0ccb52fb778c38a64f50a607b7586406844477ef18",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/A64ValueOrigins.kt": "baed291869f81c1706dda991422221e1a2b292b5e1a5181338885147942622c7",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/Aarch64.kt": "4a594b1eec9b89749b5ba21529989cc715316d44e150fc5871301fe645b63aab",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/Binary.kt": "843a514b79c97b5e1a20ff78bbe90a6a5a932d46a5a429914792aa2bc4cb61b7",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/BootFailurePolicyPatcher.kt": "1d3859f716df27ca30f47d7ddd363e58e61810da15bc0cab40b5934e528fa707",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/CheckRootPolicyPatcher.kt": "06f592b2022a4f3eac206c57b3f9cd643c252cb916492dace150a731b013ad1d",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/CompletionFlow.kt": "970fd0a9cf2d1d41a34f595738ada72eed73cbe048f3fd310c4481885b64fa8a",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/FakeLockPatcher.kt": "521f86d1f7206030eba9abfad776af21f8a38c7311a5c940b297f92664cc44fe",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/FirmwareExtractor.kt": "8bffe233bbd8a251a4e91d04801a1953741ba488d0ae491e69783bc07cd72f2d",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/LateBootStatePatcher.kt": "c102f07efb4136cea196f8b043c87dad51cc7badb5ed8ef7a1a267faf134f15e",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/MappedRxCodeAllocator.kt": "76d7bb07bbe9d079085e859c516f44712c063f9db11c149e4545531aafb543aa",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/PatchEngine.kt": "1e69c8c932538d9db38ded8a9795db53190590ca2ac67a0804ab455c35840351",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/PeExecutableSection.kt": "88f1e152ef695c049c2ef86c302ad84c8c405402f252c55b91f5db6d98d17c2c",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/PeImage.kt": "9e80c7d3cd073958663157546d385a862a6e9343fb6c88bca1ccb3c414fdce4d",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/RollbackUpdatePatcher.kt": "501b73919e28dcdab303ef5599bdb04b8f983128f3581facd771e6c7fa1651de",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/StateBranchEvaluator.kt": "59275e3f86ff7bdab0ab7aac21efefef063b022cb0e7562cf05ecaf79335968b",
-    "src/main/kotlin/net/hawyn/ablefisp/patch/StraightLineLiveness.kt": "6d7c415b19b201113797ac51a6881ac5d03626e80242528eb56dc102c96f3d6a",
-    "src/main/kotlin/net/hawyn/ablefisp/text/FastbootText.kt": "d7fb3e15e7411cd6066773467375d1d08f399b9b7da3977f5bc4b1da397732fb",
-    "src/main/kotlin/net/hawyn/ablefisp/text/TextArgumentFlow.kt": "6121d75ab175c8f0dcbcc9827af6e187152fbd1a9836d041e7e949ade8a92a79",
-    "src/main/kotlin/net/hawyn/ablefisp/text/TextEngine.kt": "2bbad0408db7078f24a5de68879f2a9c1bbcf5a049f76b583fa430dfb3279437",
-    "src/main/kotlin/net/hawyn/ablefisp/text/TextModels.kt": "52afeeb3e94e01dc99e5067d1b695982f16c6774de9b5df81c6173ad8b840ff6",
-    "src/main/kotlin/net/hawyn/ablefisp/text/TextPe.kt": "99841ae92a5a52e9fa2a9d244c86185935c9fabefced7556e2311a68fd9f5111",
-    "src/main/kotlin/net/hawyn/ablefisp/text/TextStorage.kt": "f58b350f5c8964dfe65e96c4e5eae11aa4e199df566aec2012aff5be63cd1d40"
-  },
-  "codeIdentity": "Both archives have identical core production code; differences are only top-level README and SOURCE-SHA256 manifest.",
-  "tests": "Existing workspace abl-efisp-core/src/test, production sources exactly match the supplied clean archives.",
-  "dependencies": {
-    "org.tukaani:xz:1.12": "0BSD; unmodified; see XZ-COPYING.txt",
-    "junit:junit:4.13.2": "test only"
+  "historicalPreKblProvenance": {
+    "release": {
+      "freedom": "1.2.6",
+      "fakebl": "1.2.8"
+    },
+    "directBaseline": {
+      "archive": "dist\\ABL-EFISP-merged-20261029\\ABL-EFISP-Freedom-1.2.5-fakebl-1.2.7-source-clean.zip",
+      "sha256": "8bb9b2497721a19ca1f5f1965651f580916f2bfe2028e2cbd0e9c3573654148f"
+    },
+    "behaviorReference": {
+      "repository": "https://github.com/SuperTurtleDev/gbl_root_canoe",
+      "commit": "4ef438cfde42943694fde5753bbf5d8c0b4ec02e",
+      "files": "third_party/gbl_root_canoe/SOURCE.json",
+      "license": "BSD-3-Clause notices preserved for BLTools reference files"
+    },
+    "changes": [
+      {
+        "path": "abl-efisp-core/README.md",
+        "change": "modified",
+        "beforeSha256": "c0c1d790d72c768ea4a3e2af1bb296e63d06e28ebe3a13ebadea1b7d0e4cfdff",
+        "afterSha256": "e7a595034f1eaff052441d8c71e8e9d12d23246dbcde8aa34e5534929219cc5c"
+      },
+      {
+        "path": "abl-efisp-core/src/main/kotlin/net/hawyn/ablefisp/patch/FlashingUnlockPatcher.kt",
+        "change": "modified",
+        "beforeSha256": "7754e2561e10d4db0405895f75873537be516b13745f6ff11e1535d62f8234b7",
+        "afterSha256": "62c67d2f600b8ca46ca20d1b07c5fce9897a3c498f3333b444f3483d45d298dd"
+      },
+      {
+        "path": "abl-efisp-core/src/main/kotlin/net/hawyn/ablefisp/patch/PatchEngine.kt",
+        "change": "modified",
+        "beforeSha256": "f6aa74de77c5254bd4eae3cc696a76f578c7a84137990614184f7c1d66a2d7b6",
+        "afterSha256": "307ac0918f31e9d79cf4f6d1258d4c297a1fac103b4728f73336b9eede666003"
+      },
+      {
+        "path": "abl-efisp-core/src/main/kotlin/net/hawyn/ablefisp/patch/PeCodeSectionAppender.kt",
+        "change": "added",
+        "beforeSha256": null,
+        "afterSha256": "af20beb25db548a25a8f1b76f9208481fcac4b0c4e75911c495f570dc16bbe84"
+      },
+      {
+        "path": "abl-efisp-core/src/main/kotlin/net/hawyn/ablefisp/patch/SuperUnlockCode.kt",
+        "change": "added",
+        "beforeSha256": null,
+        "afterSha256": "1fa237216241eeee57f217f871966fac5640dc9ebea8aa4638c329381ccb2add"
+      },
+      {
+        "path": "abl-efisp-core/src/main/kotlin/net/hawyn/ablefisp/patch/SuperUnlockPatcher.kt",
+        "change": "added",
+        "beforeSha256": null,
+        "afterSha256": "154c8aa5764a4e387a4d564bd3a35f16e01e3520bf848798c6aa1eb335c1cdb2"
+      },
+      {
+        "path": "abl-efisp-core/src/main/kotlin/net/hawyn/ablefisp/text/TextStorage.kt",
+        "change": "modified",
+        "beforeSha256": "513c226d0f5c9654c648dc816d2dff8b64fcaa11e14a95373c3d08c8d959c45b",
+        "afterSha256": "735a2b0afc97d4b1a11c6eeb90792b3469d8757fc85707c2507c5aed17975cdf"
+      },
+      {
+        "path": "abl-efisp-core/src/test/kotlin/net/hawyn/ablefisp/patch/FlashingUnlockPatcherTest.kt",
+        "change": "modified",
+        "beforeSha256": "791a504458c5662243706137ac1c83110caa6047eff38c0a16bc33b9f31e1d3f",
+        "afterSha256": "656004a98be50c59756e23b10447cc02e0654c1f263bfccfa06d7cd7a1d82ffa"
+      },
+      {
+        "path": "abl-efisp-core/src/test/kotlin/net/hawyn/ablefisp/patch/LegacyFeatureView.kt",
+        "change": "modified",
+        "beforeSha256": "e3f10a5e200f7f2bd7e7b4fc04a5b5b104bbeb555e5347cdc5a0fd8b95f63697",
+        "afterSha256": "3e9b7c7d246c302548ef700eefd24e375c2674d288cd7b6134471a57adc78391"
+      },
+      {
+        "path": "abl-efisp-core/src/test/kotlin/net/hawyn/ablefisp/patch/PeCodeSectionAppenderTest.kt",
+        "change": "added",
+        "beforeSha256": null,
+        "afterSha256": "0f79e796a826a2e53028b4b0b6da23a15c67a0640340f9ae08223a6b57e1b940"
+      },
+      {
+        "path": "abl-efisp-core/src/test/kotlin/net/hawyn/ablefisp/patch/SuperUnlockPatcherTest.kt",
+        "change": "added",
+        "beforeSha256": null,
+        "afterSha256": "21eee1acb2de949f660adbfb41b8410822e1590eaff4c896eef029cece794341"
+      },
+      {
+        "path": "abl-efisp-core/src/test/kotlin/net/hawyn/ablefisp/text/TextAllocatorSafetyTest.kt",
+        "change": "modified",
+        "beforeSha256": "4a46b3754cd0622c17119e71630e7c51a448b0b0f0f3b4a6f67d19a35374d2cc",
+        "afterSha256": "81ecb6337d408ce8347debb11e88ecf2dfd368c0c3b50994029b93acac00ad87"
+      }
+    ],
+    "preserved": "Existing commands, rdmode/Freedom/fake-lock/AVB/recovery/rollback/text policies retain their existing behavior; old d10 flashing-unlock patch bytes remain identical",
+    "scope": "Offline image transformation, generic code/dataflow discovery; no manufacturer OEMINFO unlock implementation is asserted",
+    "allocationFallback": "Append >=4 KiB mapped RX section only if old RX capacity is insufficient; preserve old raw/RVA layout and update exact PE metadata; output <60 MiB"
   }
 }

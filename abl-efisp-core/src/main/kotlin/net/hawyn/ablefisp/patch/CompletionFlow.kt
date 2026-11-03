@@ -48,6 +48,29 @@ internal class CompletionFlow @JvmOverloads constructor(
         return definitions == expected
     }
 
+    /**
+     * Proves one route on which [expected] is the reaching definition. It does
+     * not claim that other error/initialization routes use that definition.
+     * Stop at every intervening overlapping write, base redefinition or unknown
+     * possible write, exactly as the stricter all-route proof above does.
+     */
+    fun hasDefinitionPath(target: Long, expected: Long, base: Int, offset: Int, count: Int): Boolean {
+        val definition = image.word(expected)?.let(StateBranchEvaluator::access) ?: return false
+        if (definition.load || definition.width < count || target !in reachable || expected !in reachable ||
+            !writes(expected, base, offset, count)) return false
+        val pending = ArrayList(predecessors[target].orEmpty())
+        val visited = HashSet<Long>()
+        var index = 0
+        while (index < pending.size) {
+            val pc = pending[index++]
+            if (!visited.add(pc)) continue
+            if (pc == expected) return true
+            if (writes(pc, base, offset, count)) continue
+            pending += predecessors[pc].orEmpty()
+        }
+        return false
+    }
+
     private fun successors(pc: Long, word: Int): List<Long> {
         A64.bTarget(pc, word)?.let { return listOf(it) }
         if (word and 0xff000010.toInt() == 0x54000000 || word and 0x7e000000 == 0x34000000) {

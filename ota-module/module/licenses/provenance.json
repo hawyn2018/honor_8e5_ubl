@@ -1,0 +1,27 @@
+[
+  {
+    "file": "frida-core-COPYING.txt",
+    "url": "https://raw.githubusercontent.com/frida/frida-core/17.25.0/COPYING",
+    "sha256": "5ea1544b51a28bc823b03159190d4108f9fb4f4ef912389f5137c6d295e175b2"
+  },
+  {
+    "file": "java-bridge-LGPL-2.0.txt",
+    "url": "https://raw.githubusercontent.com/spdx/license-list-data/main/text/LGPL-2.0-only.txt",
+    "sha256": "86dc99d7e5060915ab1dfc1378b7dd351c62088bfa74067e8aa1868c6fdba7d8"
+  },
+  {
+    "file": "java-bridge-WxWindows-exception-3.1.txt",
+    "url": "https://raw.githubusercontent.com/spdx/license-list-data/main/text/WxWindows-exception-3.1.txt",
+    "sha256": "8147956dd2d78744a052bc0d6490bbefe21e18b325a096fb13b3768b74458b55"
+  },
+  {
+    "file": "guava-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/google/guava/master/LICENSE",
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  },
+  {
+    "file": "smali-LICENSE.txt",
+    "url": "https://raw.githubusercontent.com/google/smali/main/LICENSE",
+    "sha256": "2719d59154fd1be9d265f89a63a6f13131a1308642c4c49ea21938eb7932b130"
+  }
+]

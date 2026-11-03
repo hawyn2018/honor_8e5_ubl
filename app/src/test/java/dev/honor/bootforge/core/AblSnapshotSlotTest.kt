@@ -43,13 +43,13 @@ class AblSnapshotSlotTest {
         assertFalse(selected.copy(efispSource = EfispSource.CURRENT_SLOT_ABL).matchesPayloadBinding(binding))
     }
 
-    @Test fun automaticModesRestoreCurrentSlotSourceWithoutMutatingCustomChoices() {
+    @Test fun automaticModesUseCurrentSourceAndBothTargetsWithoutMutatingCustomChoices() {
         val custom = UnlockRequest(mode = UnlockMode.CUSTOM, efispSource = EfispSource.OTHER_SLOT_ABL,
             ablTarget = AblWriteTarget.BOTH)
         listOf(UnlockMode.FAKE_LOCK, UnlockMode.DIRECT).forEach { mode ->
             val automatic = custom.copy(mode = mode).resolved()
             assertEquals(EfispSource.CURRENT_SLOT_ABL, automatic.efispSource)
-            assertEquals(AblWriteTarget.CURRENT, automatic.ablTarget)
+            assertEquals(AblWriteTarget.BOTH, automatic.ablTarget)
         }
         assertEquals(EfispSource.OTHER_SLOT_ABL, custom.efispSource)
         assertEquals(AblWriteTarget.BOTH, custom.ablTarget)

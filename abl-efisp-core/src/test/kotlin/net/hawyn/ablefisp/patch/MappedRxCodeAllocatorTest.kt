@@ -43,6 +43,18 @@ class MappedRxCodeAllocatorTest {
         bytes.putWord(requireNotNull(pe.rvaToOffset(pe.entryRva + relative, 4)), word)
     }
 
+    private fun assertTailAllocation(bytes: ByteArray, expectedRva: Long) {
+        val original = bytes.copyOf()
+        val image = PeImage.parse(bytes)
+        val slot = allocate(bytes)
+        assertEquals(expectedRva, slot.rva)
+        assertEquals(20, slot.size)
+        assertTrue(slot.rva and 15 == 0L && image.isCode(slot.rva, slot.size))
+        assertArrayEquals(ByteArray(slot.size), bytes.copyOfRange(
+            requireNotNull(image.rvaToOffset(slot.rva)), requireNotNull(image.rvaToOffset(slot.rva)) + slot.size))
+        assertArrayEquals(original, bytes)
+    }
+
     @Test fun reservesOnlyExistingZeroTailAndDoesNotMutateHeadersOrInput() {
         for ((rva, shift) in listOf(0x1000 to 0, 0x7000 to 0x600)) {
             val bytes = fixture(rva, shift); val original = bytes.copyOf(); val pe = PeImage.parse(bytes)
@@ -64,7 +76,7 @@ class MappedRxCodeAllocatorTest {
         assertArrayEquals(before, source)
     }
 
-    @Test fun alignedDisjointStubsDoNotClaimLaterReferencedPadding() {
+    @Test fun alignedDisjointReservationsUseTheTailWithoutChangingReferences() {
         val bytes = fixture()
         val delta = 0x1057L - 0x1004
         putCode(bytes, 4, 0x10000012 or (((delta and 3) shl 29).toInt()) or (((delta shr 2) and 0x7ffff).toInt() shl 5))
@@ -73,7 +85,6 @@ class MappedRxCodeAllocatorTest {
             MappedRxCodeAllocator.Request(0x1000, 20), MappedRxCodeAllocator.Request(0x1000, 20),
         ))
         assertEquals(listOf(0x1020L, 0x1040L), allocations.map { it.rva })
-        assertTrue(allocations.last().rva + allocations.last().size <= 0x1057)
         assertArrayEquals(original, bytes)
     }
 
@@ -93,18 +104,18 @@ class MappedRxCodeAllocatorTest {
         assertThrows(PatchException::class.java) { allocate(bytes) }
     }
 
-    @Test fun branchAdrAndLiteralReferencesExcludeTheZeroTail() {
+    @Test fun branchAdrAndLiteralReferencesDoNotBlockTheZeroTail() {
         val branch = A64.branch(0x1004, 0x1030)
         val adrDelta = 0x1030L - 0x1004
         val adr = 0x10000008 or (((adrDelta and 3) shl 29).toInt()) or (((adrDelta shr 2) and 0x7ffff).toInt() shl 5)
         val literal = 0x58000000 or (((0x1030 - 0x1004) / 4) shl 5)
         for (word in listOf(branch, adr, literal)) {
             val bytes = fixture(); putCode(bytes, 4, word)
-            assertThrows(PatchException::class.java) { allocate(bytes) }
+            assertTailAllocation(bytes, 0x1020)
         }
     }
 
-    @Test fun unresolvedAdrpAndResolvedAddressOrAccessIntoTailAreRejected() {
+    @Test fun unresolvedAdrpAndResolvedTailAccessDoNotBlockAllocation() {
         for (kind in 0..3) {
             val bytes = fixture(); putCode(bytes, 4, 0x90000008.toInt()) // ADRP X8, page1000
             when (kind) {
@@ -116,21 +127,21 @@ class MappedRxCodeAllocatorTest {
                     putCode(bytes, 12, 0xf9401900.toInt()) // LDR X0,[X8,#30] reaches zero tail
                 }
             }
-            assertThrows(PatchException::class.java) { allocate(bytes) }
+            assertTailAllocation(bytes, 0x1020)
         }
     }
 
-    @Test fun directoryAndAbsolutePointerTargetsExcludeTheZeroTail() {
+    @Test fun directoryAndAbsolutePointerValuesDoNotBlockTheZeroTail() {
         val directory = fixture().also {
             it.putWord(optional + 112 + 6 * 8, 0x1030); it.putWord(optional + 116 + 6 * 8, 16)
         }
         val pointer = fixture().also { it.putWord(0x1500, 0x1030) }
         for (bytes in listOf(directory, pointer)) {
-            assertThrows(PatchException::class.java) { allocate(bytes) }
+            assertTailAllocation(bytes, 0x1020)
         }
     }
 
-    @Test fun relocationWritesAndTargetsInZeroTailAreExcluded() {
+    @Test fun relocationWritesAndTargetsDoNotChangeTheTailAllocationPolicy() {
         for (target in listOf(false, true)) {
             val bytes = fixture()
             bytes.putWord(optional + 112 + 5 * 8, 0x3000); bytes.putWord(optional + 116 + 5 * 8, 12)
@@ -138,7 +149,7 @@ class MappedRxCodeAllocatorTest {
             val entry = if (target) 0xa100 else 0xa030
             bytes[0x1408] = entry.toByte(); bytes[0x1409] = (entry ushr 8).toByte()
             if (target) bytes.putWord(0x1500, 0x1030)
-            assertThrows(PatchException::class.java) { allocate(bytes) }
+            assertTailAllocation(bytes, 0x1020)
         }
     }
 
@@ -148,7 +159,7 @@ class MappedRxCodeAllocatorTest {
         assertThrows(PatchException::class.java) { allocate(bytes, 0) }
     }
 
-    @Test fun materializedAddressesProtectKnownAndUnknownIndexedAccesses() {
+    @Test fun materializedIndexedAccessesDoNotBlockAllocation() {
         for (known in listOf(false, true)) {
             val bytes = fixture()
             putCode(bytes, 0x100, 0xd65f03c0.toInt()) // Last initialized object ends1104; candidate1120.
@@ -156,38 +167,37 @@ class MappedRxCodeAllocatorTest {
             putCode(bytes, 8, 0x91040108.toInt()) // ADD X8,X8,#100 -> live object1100.
             putCode(bytes, 12, if (known) 0x52800409 else 0xd503201f.toInt()) // index32 or unknown
             putCode(bytes, 16, 0x3869690a) // LDRB W10,[X8,X9] can reach1120.
-            assertThrows(PatchException::class.java) { allocate(bytes) }
+            assertTailAllocation(bytes, 0x1120)
         }
     }
 
-    @Test fun materializedAddressesProtectUnscaledAndPairAccesses() {
+    @Test fun unscaledAndPairAccessesDoNotBlockAllocation() {
         for (memory in listOf(0xf8420100.toInt(), 0xa9420500.toInt())) { // LDUR X0,[X8,#32] / LDP X0,X1,[X8,#32]
             val bytes = fixture(); putCode(bytes, 0x100, 0xd65f03c0.toInt())
             putCode(bytes, 4, 0x90000008.toInt()); putCode(bytes, 8, 0x91040108.toInt())
             putCode(bytes, 12, memory)
-            assertThrows(PatchException::class.java) { allocate(bytes) }
+            assertTailAllocation(bytes, 0x1120)
         }
     }
 
-    @Test fun aReferencedZeroObjectIncludesTheGuardPrefixAndOpaqueLaterUses() {
+    @Test fun referencedZeroObjectsAndOpaqueUsesDoNotBlockAllocation() {
         for (escape in listOf(false, true)) {
             val bytes = fixture()
             putCode(bytes, 0x100, 0xd65f03c0.toInt()) // candidate1120, referenced zero object1110
             putCode(bytes, 4, 0x90000008.toInt()); putCode(bytes, 8, 0x91044108.toInt())
             putCode(bytes, 12, if (escape) A64.branch(0x100c, 0x1080) or 0x80000000.toInt() else 0xd65f03c0.toInt())
-            assertThrows(PatchException::class.java) { allocate(bytes) }
+            assertTailAllocation(bytes, 0x1120)
         }
     }
 
-    @Test fun boundedWIndexIsAcceptedButUnknownXHighBitsAreRejected() {
+    @Test fun wAndXIndexWidthsDoNotAffectTheTailReservation() {
         for (xIndex in listOf(false, true)) {
             val bytes = fixture(); putCode(bytes, 0x100, 0xd65f03c0.toInt())
             putCode(bytes, 4, 0x7100113f) // CMP W9,#4
             putCode(bytes, 8, 0x540000a8) // B.HI1020, outside read at1014
             putCode(bytes, 12, 0x90000008.toInt()); putCode(bytes, 16, 0x91040108.toInt())
             putCode(bytes, 20, if (xIndex) 0xb869790a.toInt() else 0xb869590a.toInt()) // LDR W10,[X8,X9/ W9 UXTW,#2]
-            if (xIndex) assertThrows(PatchException::class.java) { allocate(bytes) }
-            else assertEquals(0x1120L, allocate(bytes).rva)
+            assertTailAllocation(bytes, 0x1120)
         }
     }
 
@@ -197,7 +207,7 @@ class MappedRxCodeAllocatorTest {
         for (bytes in listOf(noRead, shortImage)) assertThrows(PatchException::class.java) { allocate(bytes) }
     }
 
-    @Test fun inductionRequiresZeroInitializationUnitStepAndNoBypassEntry() {
+    @Test fun loopInitializationStepAndEntryPatternsDoNotGateAllocation() {
         for (variant in 0..3) {
             val bytes = fixture(); putCode(bytes, 0x100, 0xd65f03c0.toInt())
             putCode(bytes, 4, if (variant == 1) 0xd2800129.toInt() else 0xaa1f03e9.toInt()) // X9=9 or0
@@ -209,12 +219,11 @@ class MappedRxCodeAllocatorTest {
             putCode(bytes, 32, A64.branch(0x1020, 0x1008))
             putCode(bytes, 52, 0xd65f03c0.toInt())
             if (variant == 3) putCode(bytes, 64, A64.branch(0x1040, 0x1008))
-            if (variant == 0) assertEquals(0x1120L, allocate(bytes).rva)
-            else assertThrows(PatchException::class.java) { allocate(bytes) }
+            assertTailAllocation(bytes, 0x1120)
         }
     }
 
-    @Test fun privateInductionSpillRejectsAnOverlappingAliasStore() {
+    @Test fun loopSpillAliasPatternsDoNotGateAllocation() {
         for (overlap in listOf(false, true)) {
             val bytes = fixture(); putCode(bytes, 0x100, 0xd65f03c0.toInt())
             putCode(bytes, 4, 0xaa1f03e9.toInt())
@@ -230,12 +239,11 @@ class MappedRxCodeAllocatorTest {
             putCode(bytes, 48, 0x91000529.toInt())
             putCode(bytes, 52, A64.branch(0x1034, 0x1008))
             putCode(bytes, 76, 0xd65f03c0.toInt())
-            if (overlap) assertThrows(PatchException::class.java) { allocate(bytes) }
-            else assertEquals(0x1120L, allocate(bytes).rva)
+            assertTailAllocation(bytes, 0x1120)
         }
     }
 
-    @Test fun theLastInitializedObjectCannotEscapeThroughArgumentsOrStoredPointers() {
+    @Test fun argumentAndStoredPointerEscapesDoNotBlockAllocation() {
         for (kind in 0..3) {
             val bytes = fixture(); putCode(bytes, 0x100, 0xd65f03c0.toInt())
             putCode(bytes, 4, 0x90000008.toInt()); putCode(bytes, 8, 0x91040108.toInt())
@@ -248,11 +256,11 @@ class MappedRxCodeAllocatorTest {
                 2 -> putCode(bytes, 12, 0xa9047fe8.toInt()) // STP X8,XZR,[SP,#40]
                 else -> repeat(30) { putCode(bytes, 12 + it * 4, 0xd503201f.toInt()) }
             }
-            assertThrows(PatchException::class.java) { allocate(bytes) }
+            assertTailAllocation(bytes, 0x1120)
         }
     }
 
-    @Test fun opaqueEarlierObjectNeedsASeparateInitializedReferencedObjectBeforeTheTail() {
+    @Test fun actualInitializedBytesDetermineTheTailRatherThanReferenceBoundaries() {
         for (initialized in listOf(false, true)) {
             val bytes = fixture()
             putCode(bytes, 0x100, 0xd65f03c0.toInt())
@@ -262,12 +270,11 @@ class MappedRxCodeAllocatorTest {
             putCode(bytes, 16, A64.branch(0x1010, 0x1080) or 0x80000000.toInt())
             val delta = 0x1140L - 0x1040
             putCode(bytes, 64, 0x1000000a or (((delta and 3) shl 29).toInt()) or (((delta shr 2) and 0x7ffff).toInt() shl 5))
-            if (initialized) assertEquals(0x1160L, allocate(bytes).rva)
-            else assertThrows(PatchException::class.java) { allocate(bytes) }
+            assertTailAllocation(bytes, if (initialized) 0x1160 else 0x1120)
         }
     }
 
-    @Test fun aFarMaterializedBaseWithAConstantIndexStillProtectsTheActualTarget() {
+    @Test fun farMaterializedBasesDoNotBlockTheCurrentImagesTail() {
         val bytes = fixture(0x17000)
         putCode(bytes, 0x100, 0xd65f03c0.toInt()) // Last initialized end17104; reservation17120.
         val delta = (0x1000L - 0x17000) shr 12
@@ -276,10 +283,10 @@ class MappedRxCodeAllocatorTest {
         putCode(bytes, 8, 0x91000108.toInt()) // ADD X8,X8,#0 -> base1000, over64KiB away.
         putCode(bytes, 12, 0x52800009 or (0xb090 shl 5))
         putCode(bytes, 16, 0x7869790a) // LDRH W10,[X8,X9,LSL#1] ->1000+B090*2=17120.
-        assertThrows(PatchException::class.java) { allocate(bytes) }
+        assertTailAllocation(bytes, 0x17120)
     }
 
-    @Test fun xIndexesAbove32BitsAreAuditedAtTheirActualEffectiveAddress() {
+    @Test fun wideAndWrappingIndexValuesDoNotGateAllocation() {
         for (wrapsIntoTail in listOf(false, true)) {
             val bytes = fixture(); putCode(bytes, 0x100, 0xd65f03c0.toInt())
             putCode(bytes, 4, 0x90000008.toInt()); putCode(bytes, 8, 0x91040108.toInt()) // base1100
@@ -288,12 +295,11 @@ class MappedRxCodeAllocatorTest {
             else putCode(bytes, 16, 0xd503201f.toInt())
             putCode(bytes, 20, 0x7869790a) // LDRH [X8,X9,LSL1]: wrap=>1120; other=>200001100
             putCode(bytes, 24, 0xd65f03c0.toInt())
-            if (wrapsIntoTail) assertThrows(PatchException::class.java) { allocate(bytes) }
-            else assertEquals(0x1120L, allocate(bytes).rva)
+            assertTailAllocation(bytes, 0x1120)
         }
     }
 
-    @Test fun aWideIndexIntervalProtectsOnlyAddressesItCanReach() {
+    @Test fun dynamicIndexIntervalsDoNotGateAllocation() {
         for (reachesTail in listOf(false, true)) {
             val bytes = fixture(); putCode(bytes, 0x100, 0xd65f03c0.toInt())
             // LSR X9,X10,#28 has a 36-bit upper bound. The interval from3100
@@ -302,12 +308,11 @@ class MappedRxCodeAllocatorTest {
             putCode(bytes, 8, 0x91040108.toInt())
             putCode(bytes, 12, 0xd35cfd49.toInt())
             putCode(bytes, 16, 0x3869690a); putCode(bytes, 20, 0xd65f03c0.toInt())
-            if (reachesTail) assertThrows(PatchException::class.java) { allocate(bytes) }
-            else assertEquals(0x1120L, allocate(bytes).rva)
+            assertTailAllocation(bytes, 0x1120)
         }
     }
 
-    @Test fun wLoadConstrainsFollowingXShiftOnlyWhenItsDefinitionDominates() {
+    @Test fun indexDefinitionDominanceDoesNotGateAllocation() {
         for (bypass in listOf(false, true)) {
             val bytes = fixture(); putCode(bytes, 0x100, 0xd65f03c0.toInt())
             putCode(bytes, 4, 0xb940004a.toInt()) // LDR W10,[X2] zero-extends X10
@@ -315,12 +320,11 @@ class MappedRxCodeAllocatorTest {
             putCode(bytes, 12, 0x90000008.toInt()); putCode(bytes, 16, 0x91040108.toInt())
             putCode(bytes, 20, 0x3869690a); putCode(bytes, 24, 0xd65f03c0.toInt())
             if (bypass) putCode(bytes, 64, A64.branch(0x1040, 0x1008))
-            if (bypass) assertThrows(PatchException::class.java) { allocate(bytes) }
-            else assertEquals(0x1120L, allocate(bytes).rva)
+            assertTailAllocation(bytes, 0x1120)
         }
     }
 
-    @Test fun aWideDynamicRangeUsesOnlyTheEstablishedIndependentObjectBoundary() {
+    @Test fun initializedContentSelectsTheTailWithOrWithoutDynamicObjectReferences() {
         for (variant in 0..2) {
             val bytes = fixture(); putCode(bytes, 0x100, 0xd65f03c0.toInt())
             if (variant != 1) putCode(bytes, 0x140, 0xd65f03c0.toInt())
@@ -329,12 +333,36 @@ class MappedRxCodeAllocatorTest {
             putCode(bytes, 16, 0x3869690a); putCode(bytes, 20, 0xd65f03c0.toInt())
             val delta = 0x1140L - 0x1040
             putCode(bytes, 64, 0x1000000a or (((delta and 3) shl 29).toInt()) or (((delta shr 2) and 0x7ffff).toInt() shl 5))
-            // A separate initialized object can bound the earlier dynamic table;
-            // an uninitialized reference supplies no boundary. A known target
-            // at1160 still conflicts even across the established object boundary.
-            if (variant == 0) assertEquals(0x1160L, allocate(bytes).rva)
-            else assertThrows(PatchException::class.java) { allocate(bytes) }
+            assertTailAllocation(bytes, if (variant == 1) 0x1120 else 0x1160)
         }
+    }
+
+    @Test fun eachImageFindsItsOwnTailAfterInitializedContentAndRawRelocation() {
+        for ((rva, rawShift) in listOf(0x1000 to 0, 0x9000 to 0x600)) {
+            for ((lastByte, expectedOffset) in listOf(0x20 to 0x40, 0x125 to 0x140, 0x345 to 0x360)) {
+                val bytes = fixture(rva, rawShift)
+                val image = PeImage.parse(bytes)
+                bytes[requireNotNull(image.rvaToOffset(rva + lastByte.toLong()))] = 1
+                assertTailAllocation(bytes, rva + expectedOffset.toLong())
+            }
+        }
+    }
+
+    @Test fun independentRxMappingsReceiveAlignedDisjointReservationsForTheirOwnCallers() {
+        val bytes = fixture()
+        bytes.putWord(table + 76, 0x60000020) // The second mapping is also RX.
+        bytes.putWord(0x1400, 0xd65f03c0.toInt())
+        val original = bytes.copyOf()
+        val image = PeImage.parse(bytes)
+        val slots = MappedRxCodeAllocator.allocate(image, listOf(
+            MappedRxCodeAllocator.Request(0x1000, 20),
+            MappedRxCodeAllocator.Request(0x3000, 20),
+            MappedRxCodeAllocator.Request(0x1000, 20),
+        ))
+        assertEquals(listOf(0x1020L, 0x3020L, 0x1040L), slots.map { it.rva })
+        assertEquals(listOf(0x400L, 0x1400L), image.sections.map { it.raw.toLong() })
+        assertTrue(slots.all { it.rva and 15 == 0L && image.isCode(it.rva, it.size) })
+        assertArrayEquals(original, bytes)
     }
 
     @Test fun realOldNewAndOtaCallSitesStayInTheirOriginalRxMappings() {

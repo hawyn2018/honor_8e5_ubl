@@ -30,7 +30,12 @@ internal object FakeLockPatcher {
     fun analyze(image: PeImage, runtimeState: Long): SemanticPlan {
         val index = Index(image)
         val policies = policies(index, runtimeState)
-        val completions = policies.flatMap { completion(index, it) }.distinct()
+        // Preserve the established global result, including ambiguity. A route-
+        // constrained compatibility proof is considered only when the stronger
+        // all-route discovery has no completion anywhere in this image.
+        val strictCompletions = policies.flatMap { completion(index, it, allowNormalRoute = false) }.distinct()
+        val completions = if (strictCompletions.isNotEmpty()) strictCompletions
+            else policies.flatMap { completion(index, it, allowNormalRoute = true) }.distinct()
         if (completions.size != 1) throw PatchException(
             "假回锁：策略值来源、正常状态与消费字段未唯一匹配（策略 ${policies.size} 组，完成路径 ${completions.size} 组），本次未生成镜像。",
             if (completions.size > 1) PatchFailureKind.AMBIGUOUS_CORE_FEATURE else PatchFailureKind.INCOMPLETE_CORE_FEATURE,
@@ -87,7 +92,7 @@ internal object FakeLockPatcher {
         return result.distinct()
     }
 
-    private fun completion(index: Index, policy: Policy): List<Completion> {
+    private fun completion(index: Index, policy: Policy, allowNormalRoute: Boolean): List<Completion> {
         val image = index.image
         val origins = index.flow(policy.start, policy.end)
         val cfg = CompletionFlow(image, policy.start, policy.end, objectAliases = origins::objectOffset)
@@ -110,7 +115,13 @@ internal object FakeLockPatcher {
             for ((loadPc, raw) in instructions) {
                 val load = StateBranchEvaluator.access(raw) ?: continue
                 if (!load.load || load.width != 4 || load.rn != value.base || load.offset != value.offset) continue
-                if (!cfg.hasOnlyDefinitions(loadPc, stateDefinitions, load.rn, load.offset, 4)) continue
+                // A shared output may also carry genuine initialization/error
+                // states. Keep the stronger whole-function proof when possible;
+                // otherwise require the already-proved normal store to reach this
+                // same object field without an intervening write or base change.
+                // The unique downstream state/byte construction is still checked.
+                if (!cfg.hasOnlyDefinitions(loadPc, stateDefinitions, load.rn, load.offset, 4) &&
+                    (!allowNormalRoute || !cfg.hasDefinitionPath(loadPc, value.store, load.rn, load.offset, 4))) continue
                 val stateCopies = instructions.filter { (at, w) ->
                     val m = StateBranchEvaluator.access(w) ?: return@filter false
                     !m.load && m.width == 4 && origins.stackAddress(at, m.rn) != null &&
@@ -128,7 +139,13 @@ internal object FakeLockPatcher {
                         val byte = StateBranchEvaluator.access(byteWord) ?: continue
                         if (byte.load || byte.width != 1 ||
                             origins.stackAddress(bytePc, byte.rn)?.plus(byte.offset) != inputOffset) continue
-                        if (byte.rt != 31 && !origins.derivesFromOrZero(bytePc, byte.rt, policy.pc, policy.register)) continue
+                        // The strict pass keeps the original policy provenance.
+                        // In the compatibility pass the identified consumer's
+                        // byte-at-0/state-at-4 layout and unique reaching writes
+                        // define the input field, even when a getter or a reused
+                        // spill slot obscures the byte's initial register source.
+                        if (!allowNormalRoute && byte.rt != 31 &&
+                            !origins.derivesFromOrZero(bytePc, byte.rt, policy.pc, policy.register)) continue
                         val construction = minOf(loadPc, statePc, bytePc)
                         val inputFlow = CompletionFlow(image, construction, policy.end, setOf(value.base), origins::objectOffset)
                         if (!inputFlow.hasOnlyDefinition(consumer, statePc, 31, stateOffset, 4) ||

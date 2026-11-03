@@ -1,0 +1,11 @@
+{
+  "url": "https://codeload.github.com/lz4/lz4/tar.gz/refs/tags/v1.10.0",
+  "version": "v1.10.0",
+  "archive_sha256": "537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b",
+  "local_changes": [],
+  "sha256": {
+    "LICENSE": "8b58c446121a109ccf32edc094bba3010a3d85e4ee3702950db55e4d3e87736c",
+    "lz4.c": "9396f7de527bc8435de9c7569fb7998e56545a84b4f3c2d808c0235c01774539",
+    "lz4.h": "26b82efc53d1570f3b54eef02e9c4764c1ad374ff03cac04e2ced5ea4d4c552f"
+  }
+}

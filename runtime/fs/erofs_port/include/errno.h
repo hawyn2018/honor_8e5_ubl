@@ -1,0 +1,24 @@
+#pragma once
+#define EPERM 1
+#define ENOENT 2
+#define EIO 5
+#define ENXIO 6
+#define ENOMEM 12
+#define EACCES 13
+#define EEXIST 17
+#define ENODEV 19
+#define ENOTDIR 20
+#define EISDIR 21
+#define EINVAL 22
+#define EFBIG 27
+#define ENOSPC 28
+#define EROFS 30
+#define ERANGE 34
+#define ENAMETOOLONG 36
+#define ENOSYS 38
+#define ELOOP 40
+#define ENODATA 61
+#define EOVERFLOW 75
+#define EOPNOTSUPP 95
+#define EUCLEAN 117
+#define EFSCORRUPTED EUCLEAN

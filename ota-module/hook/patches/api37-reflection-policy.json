@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "id": "hnubl-ota-api37-reflection-only-v1",
+  "origin": "local-scoped-policy",
+  "minimumApi": 37,
+  "runtimeVersionUnchanged": "17.25.0",
+  "baseVersion": "7.0.13",
+  "license": "LGPL-2.0 WITH WxWindows-exception-3.1",
+  "scope": "OUC process only; Java.use/explicit loader/implementation/method calls, not choose or class enumeration",
+  "rationaleSource": "https://github.com/frida-packages/frida-java-bridge/pull/400",
+  "nativeWorkaroundImported": false,
+  "noGlobalDeoptimizationAdded": true,
+  "files": [
+    {
+      "path": "lib/android.js",
+      "beforeSha256": "f9807d3357fe7743e411fdea5e93313004edf50372f055c2ab86eb513680060f",
+      "afterSha256": "656f42dab10a2a21bef590a26b7cc333edb44601c276591fcf0e0b232451d7db",
+      "replacements": [
+        {
+          "old": "function tryGetEnvJvmti (vm, runtime) {\n  let env = null;",
+          "new": "function tryGetEnvJvmti (vm, runtime) {\n  // hnubl scoped API-37 policy: use JNI reflection without loading the JVMTI plugin.\n  if (getAndroidApiLevel() >= 37) {\n    return null;\n  }\n\n  let env = null;"
+        }
+      ]
+    },
+    {
+      "path": "lib/class-model.js",
+      "beforeSha256": "48f6b9da88ead79b109358fb7866aa5d10be1711c8a4a7693f876397b22b5010",
+      "afterSha256": "395aa28978b17a10a5b6996365e9e40a172a89bf552bf2eba6601663127dab4a",
+      "replacements": [
+        {
+          "old": "import { withRunnableArtThread, getArtClassSpec, getArtMethodSpec, getArtFieldSpec } from './android.js';",
+          "new": "import { withRunnableArtThread, getArtClassSpec, getArtMethodSpec, getArtFieldSpec, getAndroidApiLevel } from './android.js';"
+        },
+        {
+          "old": "  const artApi = javaApi.add(javaApiSize);\n  const { vm } = env;\n  if (api.flavor === 'art') {",
+          "new": "  const artApi = javaApi.add(javaApiSize);\n  // The existing JNI reflection branch does not require raw mirror::Class offsets.\n  artApi.writeUInt(0);\n  const { vm } = env;\n  if (api.flavor === 'art' && getAndroidApiLevel() < 37) {"
+        },
+        {
+          "old": "  if (api.flavor !== 'art') {\n    return nullUnwrap;\n  }",
+          "new": "  if (api.flavor !== 'art' || getAndroidApiLevel() >= 37) {\n    return nullUnwrap;\n  }"
+        }
+      ]
+    }
+  ],
+  "diffSha256": "a9723d77f1f1a2d9a8bc5b5517469271b493e05b1fb09f01876130be782bc739"
+}

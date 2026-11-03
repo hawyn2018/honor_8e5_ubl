@@ -1,5 +1,7 @@
 package dev.honor.bootforge.core
 
+internal const val BUILTIN_ABL_SHA256 = "509e8f9655184f69c147c494f8cfabe795f2cacb4e5e6b7a1fb0a48ecc08376c"
+
 enum class UnlockMode(val label: String) {
     FAKE_LOCK("假回锁解锁"), DIRECT("仅解锁"), CUSTOM("自定义刷写")
 }
@@ -30,7 +32,12 @@ enum class EfispSource(val label: String) {
     UPLOADED_ABL("将上传版本的 ABL 修补为 efisp"),
     CURRENT_SLOT_ABL("将当前槽位的 ABL 修补为 efisp"),
     OTHER_SLOT_ABL("将对槽的 ABL 修补为 efisp"),
-    BUILTIN_ABL("将应用内置的 ABL 修补为 efisp")
+    BUILTIN_ABL("将应用内置的 ABL 修补为 efisp");
+
+    val canRetryPatchWithBuiltin: Boolean get() = when (this) {
+        UPLOADED_ABL, CURRENT_SLOT_ABL, OTHER_SLOT_ABL -> true
+        UPLOADED_EFISP, BUILTIN_ABL -> false
+    }
 }
 
 /** Resolve the extraction source from fresh running-slot evidence, never from the write target. */
@@ -57,13 +64,13 @@ enum class UnlockCompletion(val destination: String, val rebootCommand: String) 
         rebootCommand.takeIf { canReboot && writesAllowed && !busy }
 }
 
-/** Immutable selection. Automatic modes always use built-in ABL and current-slot writes. */
+/** Immutable selection. Automatic modes generate from the running-slot ABL and write both slots. */
 data class UnlockRequest(
     val mode: UnlockMode = UnlockMode.FAKE_LOCK,
     val ablSource: AblWriteSource = AblWriteSource.BUILTIN,
     val efispSource: EfispSource = EfispSource.CURRENT_SLOT_ABL,
     val patchMode: EfispPatchMode = EfispPatchMode.FAKE_LOCK,
-    val ablTarget: AblWriteTarget = AblWriteTarget.CURRENT,
+    val ablTarget: AblWriteTarget = AblWriteTarget.BOTH,
 ) {
     val completion: UnlockCompletion get() =
         if (resolved().patchMode == EfispPatchMode.FAKE_LOCK) UnlockCompletion.BOOTLOADER else UnlockCompletion.RECOVERY
@@ -72,17 +79,33 @@ data class UnlockRequest(
         UnlockMode.CUSTOM -> this
         UnlockMode.FAKE_LOCK -> copy(ablSource = AblWriteSource.BUILTIN,
             efispSource = EfispSource.CURRENT_SLOT_ABL, patchMode = EfispPatchMode.FAKE_LOCK,
-            ablTarget = AblWriteTarget.CURRENT)
+            ablTarget = AblWriteTarget.BOTH)
         UnlockMode.DIRECT -> copy(ablSource = AblWriteSource.BUILTIN,
             efispSource = EfispSource.CURRENT_SLOT_ABL, patchMode = EfispPatchMode.FREEDOM,
-            ablTarget = AblWriteTarget.CURRENT)
+            ablTarget = AblWriteTarget.BOTH)
     }
+
+    val requiredUploads: Set<UploadRole> get() = resolved().let { selection -> buildSet {
+        if (selection.ablSource == AblWriteSource.UPLOADED) add(UploadRole.ABL_FLASH)
+        when (selection.efispSource) {
+            EfispSource.UPLOADED_ABL -> add(UploadRole.EFISP_ABL)
+            EfispSource.UPLOADED_EFISP -> add(UploadRole.EFISP_IMAGE)
+            else -> Unit
+        }
+    } }
 
     fun encode(): String = listOf(mode.name, ablSource.name, efispSource.name, patchMode.name, ablTarget.name).joinToString(":")
 
     /** Old execution bundles without a target field retain their original current-slot behavior. */
     fun matchesPayloadBinding(binding: Map<String, String>): Boolean {
         val selected = resolved()
+        // Preserve the user's frozen selection while validating the separately
+        // recorded, explicitly accepted replacement used to generate efisp.
+        val retry = binding["PATCH_RETRY_SOURCE"]
+        if (retry != null && (retry != EfispSource.BUILTIN_ABL.name ||
+                !selected.efispSource.canRetryPatchWithBuiltin ||
+                binding["SOURCE_ABL_SHA256"] != BUILTIN_ABL_SHA256 ||
+                listOf("SOURCE_SLOT", "SOURCE_ABL_DEVICE", "SOURCE_ABL_MM", "SOURCE_ABL_CAPACITY").any { it in binding })) return false
         return binding["REQUEST_MODE"] == selected.mode.name && binding["EFI_SOURCE"] == selected.efispSource.name &&
             binding["PATCH_MODE"] == selected.patchMode.name &&
             (binding["ABL_WRITE_TARGET"] ?: AblWriteTarget.CURRENT.name) == selected.ablTarget.name

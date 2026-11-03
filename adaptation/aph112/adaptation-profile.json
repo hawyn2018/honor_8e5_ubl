@@ -1,0 +1,60 @@
+{
+  "profile_id": "aph112",
+  "firmware_version": "112",
+  "kernel_release": "6.12.58-android16-6-g459a4285ccf8-abogki532718632-4k",
+  "image_sha256": "411d87a6841685733804207d13000683f85b10c9bda1ec0feed0a63480e1f20a",
+  "reuse_existing_61258": false,
+  "links": {
+    "LINK_SELINUX_STATE": "0xffffffc0827e7a20",
+    "LINK_INIT_USER_NS": "0xffffffc082572128",
+    "LINK_ROOT_USER": "0xffffffc0825723a0",
+    "LINK_INIT_GROUPS": "0xffffffc082573868",
+    "LINK_INIT_UCOUNTS": "0xffffffc082573d38",
+    "LINK_ALLOC_TIMER": "0xffffffc0805199e8",
+    "LINK_ALLOC_CRED": "0xffffffc08019b950",
+    "LINK_ALLOC_TASK": "0xffffffc0801d11d0",
+    "GEOM_MEMSTART_ADDR": "0xffffffc08193a738",
+    "BNE_LINK": "0xffffffc0806c7ac0"
+  },
+  "function_offsets": {
+    "do_timer_create": "0xac",
+    "prepare_creds": "0x2c",
+    "copy_process": "0x190",
+    "begin_new_exec.release_task": "0x410",
+    "begin_new_exec.down_read_killable": "0x50c",
+    "begin_new_exec.posix_cpu_timers_exit": "0x87c",
+    "begin_new_exec.exit_itimers": "0x88c"
+  },
+  "btf_geometry": {
+    "task_struct.cred": "0x900",
+    "task_struct.real_cred": "0x8f8",
+    "task_struct.comm": "0x910",
+    "cred.size": "0xb8",
+    "cred.cap_effective": "0x40",
+    "cred.cap_bset": "0x48",
+    "cred.cap_ambient": "0x50",
+    "k_itimer.size": "0x100",
+    "k_itimer.it.cpu.node": "0x78",
+    "selinux_state.size": "0x80",
+    "selinux_state.enforcing": "0x0",
+    "selinux_state.initialized": "0x1",
+    "selinux_write_target": "-0x7"
+  },
+  "runtime": {
+    "GEO_TASK_OBJSIZE": "/proc/slabinfo overrides header fallback 5696",
+    "GEOM_MEMSTART_PFN": "0x80000 (inferred; confirm on device)",
+    "KASLR_SLIDE": "derived per boot, not hardcoded"
+  },
+  "differences_from_61258": {
+    "LINK_SELINUX_STATE": "-0x40",
+    "LINK_INIT_USER_NS": "-0x10",
+    "LINK_ROOT_USER": "-0x10",
+    "LINK_INIT_GROUPS": "-0x10",
+    "LINK_INIT_UCOUNTS": "-0x10",
+    "LINK_ALLOC_TIMER": "-0x728",
+    "LINK_ALLOC_CRED": "-0xb24",
+    "LINK_ALLOC_TASK": "-0x1fb94",
+    "GEOM_MEMSTART_ADDR": "-0x840",
+    "BNE_LINK": "-0x7fc"
+  }
+}

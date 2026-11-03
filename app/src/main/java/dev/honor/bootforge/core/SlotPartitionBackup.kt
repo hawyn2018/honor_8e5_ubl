@@ -145,12 +145,12 @@ class SlotPartitionBackup(
             val activeSlotFile = DualSlotBackupFiles.writeActiveSlotFile(session, slot)
             originalRecords += BackupFileInfo(activeSlotFile.name, activeSlotFile.length(), hash(activeSlotFile.inputStream()))
             originals = originalRecords.toList()
-            progress("将双槽原始镜像与当前槽位标记复制到 Download 并回读校验", 0.59f)
+            progress("将双槽原始镜像与当前槽位标记复制到 Download/hnubl 并回读校验", 0.59f)
             val originalFiles = originals.map { File(session, it.name) }
             if (Build.VERSION.SDK_INT >= 29) originalUris += publishMediaStore(folder, originalFiles, newDirectory = true)
             else legacyDirectoryIdentity = publishLegacyOriginals(folder, originalFiles)
             records += originals
-            directory = "内部存储/Download/$folder"
+            directory = BackupNaming.displayDirectory(folder)
             // Original images are durable and visible before partition-table export begins.
             progress("双槽原始镜像与槽位标记已保存，正在原样导出主备 GPT", 0.63f)
             val disks = try { readGptDisks(slot) } catch (error: Exception) {
@@ -247,7 +247,7 @@ class SlotPartitionBackup(
                 if (directory.isEmpty()) {
                     if (Build.VERSION.SDK_INT >= 29) publishMediaStore(folder, evidence, newDirectory = true)
                     else legacyDirectoryIdentity = publishLegacyOriginals(folder, evidence)
-                    directory = "内部存储/Download/$folder"
+                    directory = BackupNaming.displayDirectory(folder)
                     records += evidence.map { BackupFileInfo(it.name, it.length(), hash(it.inputStream())) }
                 } else publishAdditions(evidence)
             } catch (exportError: Exception) {
@@ -506,7 +506,7 @@ class SlotPartitionBackup(
         val resolver = context.contentResolver
         val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         if (newDirectory) resolver.query(collection, arrayOf(MediaStore.MediaColumns._ID),
-            "${MediaStore.MediaColumns.RELATIVE_PATH} = ?", arrayOf("${Environment.DIRECTORY_DOWNLOADS}/$folder/"), null).use { cursor ->
+            "${MediaStore.MediaColumns.RELATIVE_PATH} = ?", arrayOf(BackupNaming.relativePath(folder)), null).use { cursor ->
             check(cursor != null && !cursor.moveToFirst()) { "本次备份目录已经存在，请重新开始以使用新的时间目录" }
         }
         val uris = mutableListOf<Uri>()
@@ -515,14 +515,14 @@ class SlotPartitionBackup(
                 val values = ContentValues().apply {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, file.name)
                     put(MediaStore.MediaColumns.MIME_TYPE, if (file.extension == "json") "application/json" else "application/octet-stream")
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$folder/")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, BackupNaming.relativePath(folder))
                     put(MediaStore.MediaColumns.IS_PENDING, 1)
                 }
                 val uri = checkNotNull(resolver.insert(collection, values)) { "下载目录创建文件失败" }
                 uris += uri
                 resolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.RELATIVE_PATH), null, null, null).use { cursor ->
                     check(cursor != null && cursor.moveToFirst() && cursor.getString(0) == file.name &&
-                        cursor.getString(1) == "${Environment.DIRECTORY_DOWNLOADS}/$folder/") { "下载目录文件名称发生变化" }
+                        cursor.getString(1) == BackupNaming.relativePath(folder)) { "下载目录文件名称发生变化" }
                 }
                 val descriptor = checkNotNull(resolver.openFileDescriptor(uri, "w"))
                 ParcelFileDescriptor.AutoCloseOutputStream(descriptor).use { out ->
@@ -558,7 +558,7 @@ class SlotPartitionBackup(
             context.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.RELATIVE_PATH,
                 MediaStore.MediaColumns.IS_PENDING), null, null, null).use { cursor ->
                 check(cursor != null && cursor.moveToFirst() && cursor.getString(0) == original.name &&
-                    cursor.getString(1) == "${Environment.DIRECTORY_DOWNLOADS}/$folder/" && cursor.getInt(2) == 0) {
+                    cursor.getString(1) == BackupNaming.relativePath(folder) && cursor.getInt(2) == 0) {
                     "已保存的原始镜像被移动或删除，后续保存已停止"
                 }
             }
@@ -602,8 +602,8 @@ class SlotPartitionBackup(
     private fun legacyDirectory(folder: String): File {
         val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absoluteFile
         check(downloads.name == Environment.DIRECTORY_DOWNLOADS && downloads.absolutePath.startsWith("/storage/")) { "下载目录路径无效" }
-        check(Regex("ublbackup_[0-9]{8}_[0-9]{6}").matches(folder))
-        return File(downloads, folder)
+        val relative = BackupNaming.relativePath(folder).removePrefix("${Environment.DIRECTORY_DOWNLOADS}/").removeSuffix("/")
+        return File(downloads, relative)
     }
 
     private fun legacyIdentity(directory: File): String =
