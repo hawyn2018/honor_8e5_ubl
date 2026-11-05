@@ -1,3 +1,5 @@
+import {startCooperativeScan} from './cooperative-scan.js';
+
 // Optional presentation only. Authorization belongs to the final reboot gate.
 export const rebootLabels = Object.freeze({continue: '继续流程', reboot: '立即重启'});
 
@@ -12,16 +14,52 @@ export function isManualRestartText(text, resourceTexts = []) {
   return /^(立即重启|立即重新启动|立即重新啟動|立即重新開機|restart\s+now|reboot\s+now)$/iu.test(value);
 }
 
+// A long unrelated CharSequence need not cross the Java/JS bridge in full.
+// This is a rejection-only optimization: uncertain/unsupported inputs take
+// the original exact text path, including arbitrary whitespace and aliases.
+export function readRestartCandidateText(sequence, resourceTexts = [], tracked = false) {
+  if (!tracked && sequence != null && typeof sequence.length === 'function' && typeof sequence.charAt === 'function') try {
+    const size = Number(sequence.length());
+    if (size > 256) {
+      const literalPrefix = (value, candidate) => candidate.startsWith(value) ||
+        (value.startsWith(candidate) && value.slice(candidate.length).trim() === '');
+      const englishPrefix = (value, word) => {
+        if (value.length <= word.length) return new RegExp('^' + word.slice(0, value.length) + '$', 'iu').test(value);
+        return new RegExp('^' + word + '\\s*$', 'iu').test(value);
+      };
+      const possible = raw => {
+        const value = raw.trimStart(); if (!value) return true;
+        if (resourceTexts.some(candidate => literalPrefix(value, String(candidate).trim()))) return true;
+        if (['立即重启', '立即重新启动', '立即重新啟動', '立即重新開機'].some(candidate => literalPrefix(value, candidate))) return true;
+        if (['restart', 'reboot'].some(word => englishPrefix(value, word))) return true;
+        const fullVerb = /^(?:restart|reboot)\s+([\s\S]*)$/iu.exec(value);
+        return fullVerb != null && englishPrefix(fullVerb[1], 'now');
+      };
+      let prefix = '';
+      for (let i = 0; i < Math.min(size, 16); i++) {
+        const cell = sequence.charAt(i);
+        if (typeof cell === 'number' && Number.isInteger(cell) && cell >= 0 && cell <= 0xffff) prefix += String.fromCharCode(cell);
+        else if (typeof cell === 'string' && cell.length === 1) prefix += cell;
+        else return String(sequence); // Preserve unknown bridge representations.
+        if (!possible(prefix)) return null;
+      }
+    }
+  } catch (_) { /* CharSequence capabilities are optional. */ }
+  return String(sequence == null ? '' : sequence);
+}
+
 /** Small state machine shared by the Android adapter and the host tests.
  * p keeps referents weak; scan/read/write/main are UI-thread operations.
  * state is invoked from p.background, never from a label setter or click.
  */
 export function createRebootLabelController(p) {
   let activity = null, pendingActivity = null, records = [], generation = 0, stopped = false;
-  let timer = null, requestTimer = null, requesting = null, suspended = 0;
+  let timer = null, requestTimer = null, requesting = null, suspended = 0, discovery = null;
   let stateRevision = 0, observedState = null, readFailed = false;
   let cached = rebootLabels.continue, cachedAt = -Infinity, renderPending = false;
-  const counts = {discoveryCount: 0, candidateReadCount: 0, renderCount: 0, writeCount: 0, stateReadCount: 0};
+  let resumeValidationPending = false;
+  const counts = {discoveryCount: 0, candidateReadCount: 0, renderCount: 0, writeCount: 0, stateReadCount: 0, discoverySlices: 0,
+    resumeCount: 0, sameRootResumeCount: 0, pendingResumeCount: 0};
   const interval = p.intervalMs || 2500, cache = p.cacheMs || 750;
   const warning = (message, error) => { try { p.warn(message, error); } catch (_) {} };
   const deref = ref => { try { return ref && ref.get(); } catch (_) { return null; } };
@@ -78,8 +116,9 @@ export function createRebootLabelController(p) {
     return record;
   }
   function render() {
-    if (suspended) return;
+    if (suspended) return null;
     counts.renderCount++;
+    let eligibleCount = 0;
     for (const record of records) {
       const view = deref(record.view); if (!view) continue;
       try {
@@ -90,12 +129,14 @@ export function createRebootLabelController(p) {
           // e.g. the same native button has become Install / Download.
           record.retired = true; record.applied = null; continue;
         }
+        eligibleCount++;
         if (text !== cached) write(view, cached);
         record.applied = cached;
       } catch (error) { warning('Refreshing the restart label failed', error); }
     }
     records = records.filter(record => !record.retired && deref(record.view) != null);
     renderPending = false;
+    return eligibleCount;
   }
   function poll(epoch) {
     clearTimer();
@@ -176,10 +217,20 @@ export function createRebootLabelController(p) {
     p.main(() => {
       if (!current(epoch) || revision !== stateRevision) return;
       if (deferUi(deref(activity), false, false)) return;
-      render();
+      const eligibleCount = render();
+      if (resumeValidationPending && eligibleCount !== null) {
+        resumeValidationPending = false;
+        // Reuse this local read's eligibility proof. A hidden, disabled or
+        // detached old control can remain alive while a new sibling replaces it.
+        if (eligibleCount === 0) refresh(true);
+      }
     });
   }
   function refreshState(force = true) { request(generation, force); }
+  function cancelDiscovery() {
+    const previous = discovery; discovery = null;
+    if (previous && previous.pump) previous.pump.cancel();
+  }
   function refresh(force = true) {
     const epoch = generation;
     if (!current(epoch)) return;
@@ -187,17 +238,42 @@ export function createRebootLabelController(p) {
     p.main(() => {
       const owner = deref(activity); if (!current(epoch) || !owner) return;
       if (deferUi(owner, force)) { poll(epoch); return; }
+      if (discovery) { discovery.again = true; discovery.force ||= force; return; }
+      const job = {seen: new Set(), force, again: false, pump: null};
+      discovery = job;
       try {
-        const seen = [];
         counts.discoveryCount++;
-        for (const value of p.scan(owner)) {
-          const record = collect(value);
-          if (record) seen.push(record);
-        }
-        for (const record of records) if (!seen.includes(record)) { restore(record); record.retired = true; }
-        records = records.filter(record => !record.retired && deref(record.view) != null);
-        render(); request(epoch, force);
-      } catch (error) { warning('Scanning the active updater screen failed', error); }
+        const iterator = p.scan(owner)[Symbol.iterator]();
+        job.pump = startCooperativeScan({iterator, now: p.now,
+          maxSteps: p.scanMaxSteps || 2048, budgetMs: p.scanBudgetMs || 4,
+          current: () => current(epoch) && discovery === job,
+          beforeSlice: () => !deferUi(deref(activity), job.force),
+          deferred: () => { if (discovery === job) { discovery = null; poll(epoch); } },
+          schedule: (fn, delay) => p.later(() => p.main(fn), delay), cancel: p.cancel,
+          chunk: values => {
+            counts.discoverySlices++;
+            for (const value of values) { const record = collect(value); if (record) job.seen.add(record); }
+            // Publish native candidates as soon as their slice completes. A
+            // long changelog elsewhere in the window must not delay a match.
+            if (values.length) { render(); request(epoch, job.force); job.force = false; }
+          },
+          done: () => {
+            if (discovery !== job) return;
+            discovery = null;
+            for (const record of records) if (!job.seen.has(record)) { restore(record); record.retired = true; }
+            records = records.filter(record => !record.retired && deref(record.view) != null);
+            render(); request(epoch, job.force); poll(epoch);
+            if (job.again) refresh(job.force);
+          },
+          error: error => {
+            if (discovery === job) discovery = null;
+            warning('Scanning the active updater screen failed', error); poll(epoch);
+          }});
+        job.pump.run();
+      } catch (error) {
+        if (discovery === job) discovery = null;
+        warning('Scanning the active updater screen failed', error);
+      }
       poll(epoch);
     });
   }
@@ -228,14 +304,27 @@ export function createRebootLabelController(p) {
   }
   function resume(owner) {
     if (stopped) return;
-    if (same(deref(pendingActivity), owner)) return;
-    if (deref(pendingActivity) == null && same(deref(activity), owner)) { refresh(true); return; }
-    clearTimer(); clearRequest(); requesting = null; const epoch = ++generation;
+    counts.resumeCount++;
+    if (same(deref(pendingActivity), owner)) { counts.pendingResumeCount++; return; }
+    if (deref(pendingActivity) == null && same(deref(activity), owner)) {
+      // onActivityResumed, onActivityPostResumed and foreground root discovery
+      // can all report the same window. Its initial/layout discovery already
+      // owns the tree; only the presentation's marker state needs refreshing.
+      counts.sameRootResumeCount++;
+      if (!records.some(record => !record.retired && deref(record.view) != null)) { refresh(true); return; }
+      // Native code may rebind an already tracked label during PostResumed.
+      // Reconcile those few remembered controls after STATE, never the body.
+      renderPending = true;
+      resumeValidationPending = true;
+      request(generation, true);
+      return;
+    }
+    cancelDiscovery(); clearTimer(); clearRequest(); requesting = null; const epoch = ++generation;
     // The queued work holds only WeakReference objects, never an Activity.
     const next = p.weak(owner);
     pendingActivity = next;
     try {
-      p.main(() => { if (stopped || epoch !== generation) return; restoreAll(); records = []; activity = next; pendingActivity = null; cachedAt = -Infinity; cached = rebootLabels.continue; renderPending = false; refresh(true); });
+      p.main(() => { if (stopped || epoch !== generation) return; restoreAll(); records = []; activity = next; pendingActivity = null; cachedAt = -Infinity; cached = rebootLabels.continue; renderPending = false; resumeValidationPending = false; refresh(true); });
     } catch (error) {
       if (epoch === generation) pendingActivity = null;
       warning('Scheduling the resumed restart label root failed', error);
@@ -244,7 +333,7 @@ export function createRebootLabelController(p) {
   function pause(owner) {
     const requested = deref(pendingActivity) || deref(activity);
     if (owner && !(p.sameOwner ? p.sameOwner(requested, owner) : same(requested, owner))) return;
-    const epoch = ++generation; clearTimer(); clearRequest(); requesting = null; activity = null; pendingActivity = null;
+    const epoch = ++generation; cancelDiscovery(); clearTimer(); clearRequest(); requesting = null; activity = null; pendingActivity = null; resumeValidationPending = false;
     p.main(() => { if (epoch !== generation) return; restoreAll(); records = []; });
   }
   function aroundOriginal(fn) {
@@ -483,36 +572,56 @@ export function installRebootLabels({Java, app, state, warn, manualAction, onSta
     return texts;
   }
   function scan(owner) {
-    const primary = normalizeRoot(owner); if (primary == null) return [];
+    const primary = normalizeRoot(owner);
     const roots = [];
-    for (const root of [primary, ...windowRoots()]) if (updaterRoot(root) && !roots.some(other => other.equals(root))) roots.push(root);
+    if (primary != null) for (const root of [primary, ...windowRoots()])
+      if (updaterRoot(root) && !roots.some(other => other.equals(root))) roots.push(root);
     for (const root of roots) watchRoot(root);
-    if (!roots.some(root => root.hasWindowFocus())) return [];
     const labels = [];
-    for (const root of roots) labels.push(...resourceTexts(root));
-    const pending = [...roots], found = [], visited = new Map();
-    while (pending.length) {
-      const view = pending.pop(); if (!view) continue;
-      // Identity buckets keep a full window scan linear in ordinary layouts,
-      // while retaining equality checks for an identity-hash collision.
-      let identity = 'fallback';
-      try { identity = String(JavaSystem.identityHashCode(view)); } catch (_) {}
-      const bucket = visited.get(identity) || [];
-      if (bucket.some(prior => prior.equals(view))) continue;
-      bucket.push(view); visited.set(identity, bucket);
-      if (TextView.class.isInstance(view)) {
-        const text = String(Java.cast(view, TextView).getText()), manual = isManualRestartText(text, labels);
-        // Long changelogs remain text-only checks. Parent/listener walks are
-        // reserved for semantic restart labels and retained applied labels.
-        if (manual || controller.tracks(view)) found.push({...read(view, text), view, manual});
-      }
-      // ViewGroup is identified by its actual framework type, not an OEM name.
-      if (ViewGroup.class.isInstance(view)) {
-        const group = Java.cast(view, ViewGroup);
-        for (let i = group.getChildCount() - 1; i >= 0; i--) pending.push(group.getChildAt(i));
-      }
-    }
-    return found;
+    if (roots.some(root => root.hasWindowFocus())) for (const root of roots) labels.push(...resourceTexts(root));
+    else roots.length = 0;
+    // The cursor and identity buckets retain only weak views between frames.
+    // Child enumeration itself is incremental, including wide ViewGroups.
+    const pending = roots.map(root => ({view: WeakReference.$new(root), child: -1})), visited = new Map();
+    roots.length = 0;
+    return {
+      [Symbol.iterator]() { return this; },
+      return() { pending.length = 0; visited.clear(); return {done: true}; },
+      next() {
+        while (pending.length) {
+          const frame = pending[pending.length - 1], view = frame.view.get();
+          if (view == null) { pending.pop(); continue; }
+          if (frame.child >= 0) {
+            const group = Java.cast(view, ViewGroup);
+            if (frame.child >= frame.count) { pending.pop(); continue; }
+            const child = group.getChildAt(frame.child++);
+            if (child != null) pending.push({view: WeakReference.$new(child), child: -1});
+            return {done: false, value: null};
+          }
+          let identity = 'fallback';
+          try { identity = String(JavaSystem.identityHashCode(view)); } catch (_) {}
+          const bucket = visited.get(identity) || [];
+          if (bucket.some(prior => { const value = prior.get(); return value != null && value.equals(view); })) { pending.pop(); continue; }
+          // Reuse the cursor reference: each view needs one Java weak object,
+          // including identity-hash collisions and multi-frame traversal.
+          bucket.push(frame.view); visited.set(identity, bucket);
+          if (ViewGroup.class.isInstance(view)) { frame.child = 0; frame.count = Java.cast(view, ViewGroup).getChildCount(); }
+          else pending.pop();
+          let value = null;
+          if (TextView.class.isInstance(view)) {
+            const tracked = controller.tracks(view);
+            const text = readRestartCandidateText(Java.cast(view, TextView).getText(), labels, tracked);
+            if (text != null) {
+              const manual = isManualRestartText(text, labels);
+              // Parent/listener walks remain exclusive to semantic candidates.
+              if (manual || tracked) value = {...read(view, text), view, manual};
+            }
+          }
+          return {done: false, value};
+        }
+        visited.clear(); return {done: true};
+      },
+    };
   }
   const controller = createRebootLabelController({state, warn: warning, read, scan, intervalMs, cacheMs, manualAction, onState, onStateError,
     weak: value => WeakReference.$new(value), same: (a, b) => Boolean(a.equals(b)),
@@ -596,17 +705,37 @@ export function installRebootLabels({Java, app, state, warn, manualAction, onSta
   function removeWatch(entry) {
     const observer = weakCast(entry.observer, ViewTreeObserver), layout = weakCast(entry.layout, layoutClass), focus = weakCast(entry.focus, focusClass), scroll = weakCast(entry.scroll, scrollClass);
     for (const listener of [layout, focus, scroll]) if (listener != null) try { listener.hnublActive.value = false; } catch (_) {}
-    if (observer == null) return;
+    const targets = [];
+    const retainLive = candidate => {
+      if (candidate == null || !candidate.isAlive()) return;
+      if (!targets.some(prior => prior.equals(candidate))) targets.push(candidate);
+    };
+    try { retainLive(observer); } catch (error) { warning('Checking the previous restart tree observer failed', error); }
+    // Android may merge a detached observer's listener lists into the window's
+    // live observer and then kill the old object. Remove our exact listeners
+    // from both live identities; never call removal on a known dead observer.
     try {
-      if (layout != null) {
-        if (typeof observer.removeOnGlobalLayoutListener === 'function') observer.removeOnGlobalLayoutListener(layout);
-        else observer.removeGlobalOnLayoutListener(layout);
-      }
-    } catch (error) { warning('Removing the restart layout observer failed', error); }
-    try { if (focus != null) observer.removeOnWindowFocusChangeListener(focus); }
-    catch (error) { warning('Removing the restart focus observer failed', error); }
-    try { if (scroll != null) observer.removeOnScrollChangedListener(scroll); }
-    catch (error) { warning('Removing the restart scroll observer failed', error); }
+      const root = weakCast(entry.root, View);
+      if (root != null) retainLive(root.getViewTreeObserver());
+    } catch (error) { warning('Resolving the current restart tree observer failed', error); }
+    for (const target of targets) {
+      try {
+        if (layout != null) {
+          if (typeof target.removeOnGlobalLayoutListener === 'function') target.removeOnGlobalLayoutListener(layout);
+          else target.removeGlobalOnLayoutListener(layout);
+        }
+      } catch (error) { warning('Removing the restart layout observer failed', error); }
+      try { if (focus != null) target.removeOnWindowFocusChangeListener(focus); }
+      catch (error) { warning('Removing the restart focus observer failed', error); }
+      try { if (scroll != null) target.removeOnScrollChangedListener(scroll); }
+      catch (error) { warning('Removing the restart scroll observer failed', error); }
+    }
+    // A collected/detached root may have no recoverable observer. Its own
+    // callbacks are already inactive; release our remaining weak bookkeeping.
+    for (const listener of [layout, focus, scroll]) if (listener != null) try {
+      listener.hnublRoot.value = null;
+    } catch (_) {}
+    for (const key of ['root', 'observer', 'layout', 'focus', 'scroll']) entry[key] = null;
   }
   function unwatchAll() {
     for (const entry of watches.splice(0)) try { removeWatch(entry); } catch (error) { warning('Cleaning the optional tree observer failed', error); }
@@ -718,7 +847,13 @@ export function installRebootLabels({Java, app, state, warn, manualAction, onSta
     } catch (error) { refreshQueued = false; warning('Scheduling optional restart label refresh failed', error); }
   }
   function hook(method, implementation) {
-    const prior = method.implementation; method.implementation = implementation; hooks.push([method, implementation, prior]);
+    const prior = method.implementation;
+    try { method.implementation = implementation; }
+    finally {
+      // The real bridge getter returns its NativeCallback, not the JS handler
+      // supplied above. Retain that exact owned replacement for disposal.
+      hooks.push([method, method.implementation, prior]);
+    }
   }
   function dispose() {
     if (disposed) return; disposed = true;

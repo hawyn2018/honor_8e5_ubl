@@ -11,7 +11,7 @@ RUNTIME=HERE.parent
 SOURCES=[RUNTIME/'kbl_control.c',RUNTIME/'kbl_fetch.c',RUNTIME/'kbl_elf.c',
          RUNTIME/'kbl_sha256.c',HERE/'kbl_partition.c',HERE/'kbl_usb.c',HERE/'kbl_usb_native.c',
          HERE/'kbl_adb_usb.c',RUNTIME/'adb/kbl_adb.c',HERE/'kbl_dxe_memory.c',HERE/'kbl_arch_memory.c',HERE/'kbl_display.c',RUNTIME/'native/kbl_native.c',
-         RUNTIME/'native/kbl_context_switch.S',RUNTIME/'native/kbl_efi_bootloader.c',HERE/'kbl_efi_run.c',HERE/'kbl_driver.c']
+         RUNTIME/'native/kbl_context_switch.S',RUNTIME/'native/kbl_efi_bootloader.c',HERE/'kbl_efi_run.c',HERE/'kbl_errorcount.c',HERE/'kbl_driver.c']
 THIRD=RUNTIME.parent/'third_party'
 FAT_SOURCES=[RUNTIME/'fs/fat.c',THIRD/'fatfs/ff.c',THIRD/'fatfs/ffunicode.c']
 EXT_SOURCES=[RUNTIME/'fs/kbl_ext4.c',*[s for s in sorted((THIRD/'lwext4/src').glob('*.c'))
@@ -40,14 +40,40 @@ def compile_flags(source):
                   '-DLZ4_memcpy=kbl_erofs_memcpy','-DLZ4_memmove=kbl_erofs_memmove','-DLZ4_memset=kbl_erofs_memset']
     return cmd
 
+def build_handoff(llvm_bin,output):
+    """Build an independent EFI app, then embed its reproducible PE bytes."""
+    output=output.resolve();output.mkdir(parents=True,exist_ok=True)
+    tool=lambda n:llvm_bin/(n+'.exe' if (llvm_bin/(n+'.exe')).exists() else n)
+    objects=[];commands=[]
+    for source in [HERE/'kbl_efi_run.c',HERE/'kbl_handoff.c']:
+        obj=output/('handoff-'+source.stem+'.obj');objects.append(obj)
+        commands.append([tool('clang'),*compile_flags(source),'-c',source,'-o',obj])
+    target=output/'kbl_handoff.efi'
+    commands.append([tool('ld.lld'),'-flavor','link','/subsystem:efi_application',
+        '/entry:KblHandoffMain','/nodefaultlib','/machine:arm64','/dynamicbase','/nxcompat',
+        '/opt:ref','/opt:icf','/timestamp:0',f'/out:{target}',*objects])
+    for cmd in commands:subprocess.run(list(map(str,cmd)),check=True)
+    import pefile
+    pe=pefile.PE(str(target))
+    assert pe.FILE_HEADER.Machine==0xaa64 and pe.OPTIONAL_HEADER.Subsystem==10
+    assert not getattr(pe,'DIRECTORY_ENTRY_IMPORT',[])
+    assert all(not(s.Characteristics&0x20000000 and s.Characteristics&0x80000000) for s in pe.sections)
+    data=target.read_bytes();blob=output/'kbl_handoff_blob.c'
+    blob.write_text('#include <stddef.h>\nconst unsigned char kbl_handoff_image[] = {'+
+        ','.join(map(str,data))+'};\nconst size_t kbl_handoff_image_bytes=sizeof(kbl_handoff_image);\n',encoding='ascii')
+    return blob,{'target':str(target),'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),
+        'source_sha256':{str(s.name):hashlib.sha256(s.read_bytes()).hexdigest() for s in [HERE/'kbl_handoff.c',HERE/'kbl_handoff.h',HERE/'kbl_efi_run.c']},
+        'commands':[list(map(str,cmd))for cmd in commands]}
+
 def build(llvm_bin,output):
     output=output.resolve();output.mkdir(parents=True,exist_ok=True)
     tool=lambda n:llvm_bin/(n+'.exe' if (llvm_bin/(n+'.exe')).exists() else n)
+    blob,handoff=build_handoff(llvm_bin,output)
     commands=[];objects=[]
-    for source in SOURCES:
+    for source in [*SOURCES,blob]:
         # Vendored libraries contain common stems (data.c, etc.). Keep object
         # names unique without changing their C symbol namespace.
-        obj=output/(str(source.relative_to(RUNTIME.parent)).replace('\\','_').replace('/','_')+'.obj');objects.append(obj)
+        obj=output/((str(source.relative_to(RUNTIME.parent)) if source in SOURCES else source.name).replace('\\','_').replace('/','_')+'.obj');objects.append(obj)
         cmd=[tool('clang'),*compile_flags(source)]
         cmd+=['-c',source,'-o',obj];commands.append(cmd)
     target=output/'kbl_driver.efi'
@@ -70,7 +96,7 @@ def build(llvm_bin,output):
     assert any(s['execute']and s['rva']<=pe.OPTIONAL_HEADER.AddressOfEntryPoint<s['rva']+s['virtual_bytes']for s in sections)
     data=target.read_bytes()
     result={'scope':'Actual ARM64 PE/COFF EFI_BOOT_SERVICE_DRIVER; parent source/USB binding and hardware validation remain separate',
-            'target':str(target),'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),
+            'target':str(target),'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'handoff':handoff,
             'machine':hex(pe.FILE_HEADER.Machine),'subsystem':pe.OPTIONAL_HEADER.Subsystem,
             'image_base':pe.OPTIONAL_HEADER.ImageBase,'entry_rva':pe.OPTIONAL_HEADER.AddressOfEntryPoint,
             'size_of_image':pe.OPTIONAL_HEADER.SizeOfImage,'imports':0,'relocations':relocations,'sections':sections,
@@ -80,7 +106,7 @@ def build(llvm_bin,output):
                  *sorted((RUNTIME/'native').glob('*.inc')),*sorted((RUNTIME/'adb').glob('*.h')),
                  *sorted((THIRD).rglob('*.inc')),
                  *sorted((RUNTIME/'fs').rglob('*.h')),*sorted((THIRD).rglob('*.h')),
-                 HERE/'kbl_adb_driver.inc',RUNTIME/'sdk/kbl_program.h',RUNTIME/'sdk/kbl_file.h']if s.exists()},
+                 HERE/'kbl_adb_driver.inc',HERE/'kbl_clearstart_driver.inc',RUNTIME/'sdk/kbl_program.h',RUNTIME/'sdk/kbl_file.h']if s.exists()},
             'commands':[[str(x)for x in cmd]for cmd in commands]}
     (output/'manifest.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     return result

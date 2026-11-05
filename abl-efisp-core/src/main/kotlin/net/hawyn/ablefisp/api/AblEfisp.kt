@@ -12,6 +12,7 @@ import net.hawyn.ablefisp.patch.KblPatcher
 import net.hawyn.ablefisp.patch.BundledKblDriver
 import net.hawyn.ablefisp.patch.ExecutableSectionCompatibility
 import net.hawyn.ablefisp.patch.FastbootRecoveryPatcher
+import net.hawyn.ablefisp.patch.VmDtboCompatPatcher
 import net.hawyn.ablefisp.text.TextEngine
 import net.hawyn.ablefisp.text.TextEntry
 import net.hawyn.ablefisp.text.TextPatchResult
@@ -125,15 +126,23 @@ object AblEfisp {
         val withoutRecovery=FastbootRecoveryPatcher.remove(snapshot)
         val hadRecovery=!withoutRecovery.contentEquals(snapshot)
         val removed = KblPatcher.removeAdapterDetails(withoutRecovery)
-        val compatible=ExecutableSectionCompatibility.normalize(removed.bytes)
+        val withoutVm=VmDtboCompatPatcher.remove(removed.bytes)
+        val hadVm=!withoutVm.contentEquals(removed.bytes)
+        val compatible=ExecutableSectionCompatibility.normalize(withoutVm)
         return TextEngine.apply(compatible.bytes, requested, autoWrapFastboot).let {
             val compatibilityNotes=if(compatible.changes.isEmpty())emptyList()else listOf("已兼容本工具旧版追加的可执行节名称。")
-            val withKbl=if(removed.hadAdapter)KblPatcher.patch(it.output,BundledKblDriver.load()).bytes else it.output
+            val withVm=if(hadVm)VmDtboCompatPatcher.patch(it.output).also { rebuilt ->
+                if(rebuilt.facts==null||rebuilt.bytes.contentEquals(it.output)||
+                    !VmDtboCompatPatcher.remove(rebuilt.bytes).contentEquals(it.output))
+                    throw PatchException("文字定制后VM启动前选择接口未完整重建，已停止生成：${rebuilt.notes.joinToString("；")}")
+            }else null
+            val vmOutput=withVm?.bytes?:it.output
+            val withKbl=if(removed.hadAdapter)KblPatcher.patch(vmOutput,BundledKblDriver.load()).bytes else vmOutput
             val recovered=if(hadRecovery || removed.hadAdapter)FastbootRecoveryPatcher.patch(withKbl) else null
             val rebuiltNotes=if(removed.hadAdapter)listOf("文字定制后已按 KBL → Fastboot 恢复的顺序重建自有映射，文字分配未使用其代码零尾。")
                 else if(hadRecovery)listOf("文字定制后已重新追加原有 Fastboot 恢复映射。")else emptyList()
             it.copy(output=recovered?.bytes ?: withKbl, changes=immutable(it.changes),
-                notes=immutable(it.notes+compatibilityNotes+rebuiltNotes+recovered?.notes.orEmpty()))
+                notes=immutable(it.notes+compatibilityNotes+rebuiltNotes+withVm?.notes.orEmpty()+recovered?.notes.orEmpty()))
         }
     }
 
@@ -143,7 +152,7 @@ object AblEfisp {
         }
 
     private fun scanSnapshot(pe: ByteArray): TextScanResult =
-        TextEngine.scan(ExecutableSectionCompatibility.normalize(KblPatcher.removeAdapter(FastbootRecoveryPatcher.remove(pe))).bytes)
+        TextEngine.scan(ExecutableSectionCompatibility.normalize(VmDtboCompatPatcher.remove(KblPatcher.removeAdapter(FastbootRecoveryPatcher.remove(pe)))).bytes)
             .let { it.copy(entries = immutable(it.entries), notes = immutable(it.notes)) }
 
     private fun <T> immutable(values: List<T>): List<T> = Collections.unmodifiableList(ArrayList(values))

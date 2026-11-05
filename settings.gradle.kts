@@ -16,3 +16,6 @@ rootProject.name = "HonorBootForge"
 include(":app")
 include(":rootbridge")
 include(":abl-efisp-core")
+
+include(":ablpatcher")
+include(":abl-efisp-feature")

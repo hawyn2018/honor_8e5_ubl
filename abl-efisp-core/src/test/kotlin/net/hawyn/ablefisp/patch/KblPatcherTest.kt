@@ -350,10 +350,11 @@ class KblPatcherTest {
             val boot=BootCompatibilityPatcher.analyze(pe).edits
             val avb=AvbVersionCompatibilityPatcher.analyze(pe).edits
             val pss=PssVerificationPatcher.analyze(pe,SemanticPatcher.analyze(pe).stateVerifierRva).edits
+            val key=FastbootKeyPolicyPatcher.analyze(pe).edits
             assertEquals(8,boot.size);assertEquals(2,avb.size)
             assertEquals(listOf("共用 RSA-PSS 验证入口固定成功"),pss.map{it.name})
             assertTrue((boot+avb).all{it.replacement.size==4})
-            for(edit in boot+avb+pss)edit.replacement.copyInto(bytes,
+            for(edit in boot+avb+pss+key)edit.replacement.copyInto(bytes,
                 requireNotNull(pe.rvaToOffset(edit.rva,edit.replacement.size)))
         }
         // Independent native oracle for this exact historical bc5 fixture.
@@ -397,7 +398,7 @@ class KblPatcherTest {
         applyCompatibilityPolicies(expectedBase)
         applySpecialSdamNativeOracle(expectedBase)
         applyNativeReporterOracle(expectedBase)
-        val expectedFacade=FastbootRecoveryPatcher.patch(KblPatcher.patch(expectedBase,driver).bytes).bytes
+        val expectedFacade=FastbootRecoveryPatcher.patch(KblPatcher.patch(VmDtboCompatPatcher.patch(expectedBase).bytes,driver).bytes).bytes
         assertFalse(facade.alreadyPatched);assertArrayEquals(expectedFacade,facade.output)
         val entry=net.hawyn.ablefisp.api.AblEfisp.scanText(old).entries.single{it.id=="fastboot-unlocked"}
         val noOp=net.hawyn.ablefisp.api.AblEfisp.editText(old,mapOf(entry.id to entry.text),false)
@@ -413,7 +414,7 @@ class KblPatcherTest {
         val reimport=net.hawyn.ablefisp.api.AblEfisp.patchWithKbl(edited.output,PatchMode.FREEDOM_FAKE_LOCK)
         // Text editing preserves the core instruction stream; its first default
         // patch import adds hash plus ten policy edits before becoming stable.
-        val expectedEditedBase=KblPatcher.removeAdapter(FastbootRecoveryPatcher.remove(edited.output));val expectedEditedPe=PeImage.parse(expectedEditedBase)
+        val expectedEditedBase=VmDtboCompatPatcher.remove(KblPatcher.removeAdapter(FastbootRecoveryPatcher.remove(edited.output)));val expectedEditedPe=PeImage.parse(expectedEditedBase)
         val editedHashPlans=AvbHashDescriptorPatcher.analyze(expectedEditedPe);assertEquals(1,editedHashPlans.size)
         assertFalse(editedHashPlans.single().alreadyApplied)
         for(plan in editedHashPlans)for(edit in AvbHashDescriptorPatcher.edits(plan))
@@ -422,7 +423,7 @@ class KblPatcherTest {
         applySpecialSdamNativeOracle(expectedEditedBase)
         applyNativeReporterOracle(expectedEditedBase)
         assertFalse(reimport.alreadyPatched)
-        assertArrayEquals(FastbootRecoveryPatcher.patch(KblPatcher.patch(expectedEditedBase,driver).bytes).bytes,reimport.output)
+        assertArrayEquals(FastbootRecoveryPatcher.patch(KblPatcher.patch(VmDtboCompatPatcher.patch(expectedEditedBase).bytes,driver).bytes).bytes,reimport.output)
         val stable=net.hawyn.ablefisp.api.AblEfisp.patchWithKbl(reimport.output,PatchMode.FREEDOM_FAKE_LOCK)
         assertTrue(stable.alreadyPatched);assertArrayEquals(reimport.output,stable.output)
         assertArrayEquals(saved,old)

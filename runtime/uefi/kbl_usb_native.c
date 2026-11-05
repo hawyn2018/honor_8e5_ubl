@@ -199,6 +199,15 @@ int kbl_native_usb_stop_observing(struct kbl_native_usb_binding*b){
     if(!b||!b->initialized||!b->attached)return KBL_USB_STATE;
     b->detach_requested=1;retry_free(b);detach_if_done(b);return b->attached?KBL_USB_RETAINED:0;
 }
+int kbl_native_usb_clearstart_quiesce(struct kbl_native_usb_binding*b){
+    if(!b||!b->initialized||!b->attached||b->fault||b->ambiguous)return KBL_USB_STATE;
+    if(resources(b))return KBL_USB_RETAINED;
+    if(b->native_rx_pending){
+        if(!b->native_rx_abort&&b->original->abort){b->native_rx_abort=1;(void)b->original->abort(1);}
+        return KBL_USB_RETAINED;
+    }
+    return KBL_USB_OK;
+}
 const struct kbl_firmware_link *kbl_native_usb_link(struct kbl_native_usb_binding*b){return b&&b->initialized&&b->attached&&b->private_active?&b->link:0;}
 int kbl_native_usb_can_release(const struct kbl_native_usb_binding*b){return b&&b->initialized&&!b->attached&&!resources(b)&&active!=b;}
 int kbl_native_usb_extensions(struct kbl_native_usb_binding*b,const struct kbl_native_usb_extensions*e){

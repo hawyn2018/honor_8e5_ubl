@@ -1,11 +1,17 @@
-hnubl OTA companion 2.8.8
+hnubl OTA companion 3.0.1
 
 hnubl OTA companion code is licensed under AGPL-3.0-only; see LICENSE.
 Bundled third-party components retain the licenses and notices listed below.
 
-Includes unchanged upstream Frida 17.25.0 Android arm64 inject runtime.
+Includes a locally modified Frida 17.25.0 Android arm64 inject runtime.
 https://github.com/frida/frida/releases/tag/17.25.0
-Compressed SHA-256: 987d0a900cf1bc3878ba8b34b00ad2889e55e4ba26a8da7140a881f652982a73
+Original compressed input SHA-256: 987d0a900cf1bc3878ba8b34b00ad2889e55e4ba26a8da7140a881f652982a73
+Derived runtime SHA-256: 3db476d1cfb390f4feab17ca4463c047c2007b71d1f62873f539a5e6523a802b
+hnubl changes: omit inject initialization's automatic global SELinux policy
+reload, and label the agent memfd using the existing KSU provider's ksu_file
+context. No new SELinux type or allow rule is added by this runtime recipe.
+Reproducible recipe, equivalent source patch, exact byte provenance and change
+notice are included in licenses/frida-runtime-*; upstream licenses are retained.
 
 The in-process Java agent bundles frida-java-bridge 7.0.13, buffer 6.0.3, base64-js and ieee754.
 DEX discovery uses Android smali dexlib2 and Guava.
@@ -15,4 +21,6 @@ Bridge source: https://github.com/frida/frida-java-bridge
 DEX source: https://github.com/google/smali
 Guava source: https://github.com/google/guava
 
-This module is scoped to com.hihonor.ouc. It does not patch the updater APK or load code in unrelated apps.
+Injection targets are com.hihonor.ouc and the native update_engine OTA
+finalization service. The module does not patch the updater APK or load code
+in unrelated apps.

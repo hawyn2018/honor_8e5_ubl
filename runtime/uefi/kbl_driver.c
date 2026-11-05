@@ -7,6 +7,16 @@
 #include "kbl_arch_memory.h"
 #include "kbl_dxe_memory.h"
 #include "kbl_efi_run.h"
+#include "kbl_handoff.h"
+#include "kbl_errorcount.h"
+#if defined(KBL_DRIVER_FREESTANDING)
+extern const unsigned char kbl_handoff_image[];
+extern const size_t kbl_handoff_image_bytes;
+#else
+/* Host fixtures supply fake LoadImage; shipping builds embed the real PE. */
+static const unsigned char kbl_handoff_image[]={0};
+static const size_t kbl_handoff_image_bytes=sizeof(kbl_handoff_image);
+#endif
 #include "kbl_display.h"
 #include "../kbl_api.h"
 #include "../kbl_fetch.h"
@@ -28,6 +38,11 @@ static int native_block_open(void*,const char*,unsigned,struct kbl_block*);
 static int native_block_list(void*,struct kbl_block_info*,size_t,size_t*);
 static int native_efi_run(void*,const void*,size_t,const uint16_t*,size_t,struct kbl_efi_run_result*);
 static int native_efi_run_full(void*,const void*,size_t,const uint16_t*,size_t,struct kbl_efi_run_full_result*);
+static int native_efi_clearstart(void*,const void*,size_t,const uint16_t*,size_t,struct kbl_efi_run_result*);
+static int native_clear_errorcount(void*);
+static void clearstart_step(int);
+static void clearstart_diagnostics(void);
+static int clearstart_dispose(void);
 static int native_display(void*,unsigned,char*,size_t);
 static int native_poweroff(void*);
 static struct kbl_efi_launcher efi_launcher;
@@ -40,6 +55,7 @@ static int adb_transport_released(void);
 static void adb_diagnostics(void);
 static struct kbl_service_protocol protocol={KBL_SERVICE_MAGIC,KBL_SERVICE_ABI,sizeof(protocol),service_request,can_unload,bind_usb};
 static const struct kefi_guid service_guid=KBL_SERVICE_GUID_VALUES,loaded_guid=KEFI_LOADED_GUID,attributes_guid=KEFI_ATTRIBUTES_GUID;
+enum {CS_IDLE,CS_QUEUED,CS_NATIVE,CS_ADB,CS_USB,CS_START,CS_RETURN,CS_FAILED};
 static struct {
     kefi_handle image;struct kefi_system_table *st;struct kefi_boot_services *bs;struct kefi_loaded_image *loaded;
     kefi_status (*previous_unload)(kefi_handle);
@@ -47,6 +63,10 @@ static struct {
     struct pool *pools;struct pages *pages;struct kefi_memory_attributes *attributes;struct kbl_dxe_memory dxe_memory;struct kbl_partition_provider partitions;
     struct kernel kernel;struct kbl_session session;struct kbl_native_platform platform;struct kbl_backend native_backend;
     struct kbl_display display;
+    struct {struct kbl_handoff *context;kefi_handle helper;void *exit_data;
+        unsigned phase,steps,active,rx_stopped,from_adb,reply_drained;uint64_t begun,done_reply_generation;
+        kefi_status status,cleanup,rx_resume;struct kbl_efi_run_result result;const char *error;} cs;
+    struct kbl_errorcount_result errorcount; kefi_status errorcount_status;unsigned errorcount_called;
     struct exported *exports;uint64_t next_export,reply_generation;
     char reply_inline[REPLY_INLINE_LINES][57];char (*reply_lines)[57];
     size_t reply_count,reply_capacity;unsigned reply_valid,reply_overflow;
@@ -212,7 +232,8 @@ static int close_exports(void){
 }
 static int wrapper_start(void*opaque,void**context){
     (void)opaque;*context=0;
-    if(!kbl_efi_can_unload(&efi_launcher))return KBL_ERROR;
+    if(!g.cs.active&&(g.cs.context||g.cs.helper||g.cs.exit_data)&&clearstart_dispose())return KBL_ERROR;
+    if(g.cs.active||g.cs.context||g.cs.helper||g.cs.exit_data||!kbl_efi_can_unload(&efi_launcher))return KBL_ERROR;
     kbl_efi_launcher_init(&efi_launcher,g.image,g.st,&g,current_el,current_el(&g));
     zero(&g.platform,sizeof(g.platform));
     g.platform.opaque=&g;g.platform.allocate=pool_allocate;g.platform.release=pool_release;g.platform.current_el=current_el;
@@ -221,6 +242,7 @@ static int wrapper_start(void*opaque,void**context){
     g.platform.block_open=native_block_open;g.platform.block_list=native_block_list;
     g.platform.efi_run=native_efi_run;
     g.platform.efi_run_full=native_efi_run_full;
+    g.platform.efi_clearstart=native_efi_clearstart;g.platform.clear_errorcount=native_clear_errorcount;
     g.platform.display=native_display;g.platform.poweroff=native_poweroff;
     g.platform.elf=(struct kbl_elf_host){0,KEFI_PAGE,0,elf_allocate,elf_release,elf_protect,elf_icache};
     /* Raw ST capability is deliberately absent: arbitrary external callbacks
@@ -231,7 +253,7 @@ static int wrapper_start(void*opaque,void**context){
     return rc;
 }
 static int wrapper_submit(void*context,const unsigned char*line,size_t n,uint64_t*job){
-    if(context!=&g.kernel||!g.kernel.native)return KBL_ERROR;return g.native_backend.submit(g.kernel.native,line,n,job);
+    if(context!=&g.kernel||!g.kernel.native||g.cs.active)return KBL_ERROR;return g.native_backend.submit(g.kernel.native,line,n,job);
 }
 static int wrapper_poll(void*context,uint64_t job,unsigned budget,unsigned char*out,size_t cap,size_t*written,int*done,int*rc){
     if(context!=&g.kernel||!g.kernel.native)return KBL_ERROR;return g.native_backend.poll(g.kernel.native,job,budget,out,cap,written,done,rc);
@@ -240,7 +262,7 @@ static int wrapper_stop(void*context){
     if(context!=&g.kernel)return KBL_ERROR;
     if(kbl_efi_cleanup(&efi_launcher))return KBL_AGAIN;
     if(adb_stop_gate()!=KBL_OK)return KBL_AGAIN;
-    if(adb_transport_released()&&g.usb.initialized&&g.usb.attached)(void)kbl_native_usb_stop_observing(&g.usb);
+    if(!g.cs.active&&adb_transport_released()&&g.usb.initialized&&g.usb.attached)(void)kbl_native_usb_stop_observing(&g.usb);
     if(close_exports()!=KBL_OK)return KBL_AGAIN;
     if(g.kernel.native){int rc=g.native_backend.stop(g.kernel.native);if(rc!=KBL_OK)return rc;g.kernel.native=0;}
     if(g.partitions.initialized)(void)kbl_partition_cleanup(&g.partitions);
@@ -290,7 +312,7 @@ static void output_final(void*unused,int okay,const char*s){
         char line[57],*p=put(line,"KBL1 adb=");p=put(p,g.adb_phase?g.adb_phase:"disabled");*p=0;output_info(0,line);
         if(g.adb_usb.composite_started)output_info(0,"KBL1 usb_transport=resident");
     }
-    if(g.current_operation==KBL_S_STATUS)adb_diagnostics();
+    if(g.current_operation==KBL_S_STATUS){adb_diagnostics();clearstart_diagnostics();}
     if(g.elf_error_phase){
         char line[57],*p=put(line,"KBL1 elf_phase=");p=put(p,g.elf_error_phase);*p++='.';p=put(p,g.elf_error_step);*p=0;output_info(0,line);
         p=put(line,"KBL1 elf_flags=");p=hex64(p,g.elf_error_flags);*p=0;output_info(0,line);
@@ -336,14 +358,14 @@ static int native_efi_run(void*opaque,const void*image,size_t bytes,
                           const uint16_t*options,size_t option_bytes,
                           struct kbl_efi_run_result*result){
     if(opaque!=&g||!live()||!((g.in_request&&g.current_operation==KBL_S_POLL)||g.adb_call))return-KBL_EACCES;
-    if(g.transport_hold||g.pending_work||efi_launcher.active)return-KBL_EBUSY;
+    if(g.cs.active||g.transport_hold||g.pending_work||efi_launcher.active)return-KBL_EBUSY;
     return kbl_efi_run(&efi_launcher,image,bytes,options,option_bytes,result);
 }
 static int native_efi_run_full(void*opaque,const void*image,size_t bytes,
                           const uint16_t*options,size_t option_bytes,
                           struct kbl_efi_run_full_result*result){
     if(opaque!=&g||!live()||!((g.in_request&&g.current_operation==KBL_S_POLL)||g.adb_call))return-KBL_EACCES;
-    if(g.transport_hold||g.pending_work||efi_launcher.active)return-KBL_EBUSY;
+    if(g.cs.active||g.transport_hold||g.pending_work||efi_launcher.active)return-KBL_EBUSY;
     return kbl_efi_run_full(&efi_launcher,image,bytes,options,option_bytes,result);
 }
 static int storage_ready(void){return g.partitions.initialized||kbl_partition_init(&g.partitions,g.bs,0,pool_allocate,pool_release)==KBL_OK;}
@@ -440,7 +462,7 @@ static int fetch_open(void*unused,const char*name,struct kbl_reader*out){
 static int fetch_data(void*unused,uint32_t n){(void)unused;if(!g.link->data||g.link->data(g.link->opaque,n)){io_failure();return KBL_ERROR;}return KBL_OK;}
 static int fetch_write(void*unused,const void*p,size_t n,size_t*written){(void)unused;if(!g.link->write||g.link->write(g.link->opaque,p,n,written)){io_failure();return KBL_ERROR;}return KBL_OK;}
 static void fetch_abort(void*unused){(void)unused;io_failure();if(g.link->abort)g.link->abort(g.link->opaque);}
-static int stopped(void){return kbl_efi_can_unload(&efi_launcher)&&g.session.phase==KBL_STOPPED&&!g.kernel.native&&!g.pools&&!g.pages&&!g.pending_work&&!g.transport_hold&&!g.ownership_error&&
+static int stopped(void){return !g.cs.active&&!g.cs.context&&!g.cs.helper&&!g.cs.exit_data&&kbl_efi_can_unload(&efi_launcher)&&g.session.phase==KBL_STOPPED&&!g.kernel.native&&!g.pools&&!g.pages&&!g.pending_work&&!g.transport_hold&&!g.ownership_error&&
     !g.adb&&!g.adb_pools&&adb_transport_released()&&
     (!g.usb.initialized||kbl_native_usb_can_release(&g.usb))&&
     (!g.partitions.initialized||kbl_partition_can_unload(&g.partitions));}
@@ -456,7 +478,8 @@ static int service_request(struct kbl_service_protocol*p,unsigned op,const unsig
         if(op==KBL_S_REPLY_HEADER&&!n&&g.reply_valid){t=put(t,"KBLC1 g=");t=hex64(t,g.reply_generation);t=put(t," n=");t=decimal(t,g.reply_count);*t=0;ok=1;}
         else if(op==KBL_S_REPLY_PAGE&&a&&n>=18&&a[16]==':'&&g.reply_valid){uint64_t gen;size_t index=0;ok=parse_id(a,16,&gen)&&gen==g.reply_generation;
             for(size_t i=17;i<n&&ok;++i){unsigned digit=a[i]-'0';if(digit>9||index>(SIZE_MAX-digit)/10)ok=0;else index=index*10+digit;}
-            if(index>=g.reply_count)ok=0;if(ok)copy(out,g.reply_lines?g.reply_lines[index]:g.reply_inline[index],57);
+            if(index>=g.reply_count)ok=0;if(ok){copy(out,g.reply_lines?g.reply_lines[index]:g.reply_inline[index],57);
+                if(g.cs.active&&!g.cs.from_adb&&gen==g.cs.done_reply_generation&&index+1==g.reply_count)g.cs.reply_drained=1;}
         }
         if(!ok)copy(out,"KBL reply unavailable",22);
         r->response_sent=1;if(l->final(l->opaque,ok,out)){io_failure();}
@@ -485,6 +508,7 @@ static int service_request(struct kbl_service_protocol*p,unsigned op,const unsig
             static const char*names[]={"oem kblstart","oem kblin","oem kbloff","oem kblstatus","oem kblcmd","oem kblput","oem kblpoll"};
             const char *name=op==KBL_S_ADB?"oem kbladb":names[op-1];
             char request[KBL_WIRE_BYTES+1];size_t z=length(name);
+            if(op==KBL_S_OFF&&!g.cs.active)(void)clearstart_dispose();
             if(op==KBL_S_OFF&&g.session.phase==KBL_STOPPED){
                 (void)close_exports();if(g.partitions.initialized)(void)kbl_partition_cleanup(&g.partitions);retry_pages();retry_pools();
             }
@@ -531,7 +555,8 @@ static int service_request(struct kbl_service_protocol*p,unsigned op,const unsig
             }
         }else output_final(0,0,"Unsupported KBL service operation");
     }
-    r->stopped=stopped();int result=r->transport_error?KBL_S_IO:KBL_S_OK;g.link=0;g.reply=0;g.current_operation=0;g.in_request=0;return result;
+    if(g.cs.active&&!g.cs.from_adb&&g.cs.phase==CS_QUEUED&&op==KBL_S_POLL&&g.session.phase==KBL_RUNNING&&!g.session.has_job)g.cs.done_reply_generation=g.reply_generation;
+    r->stopped=stopped();int result=r->transport_error?KBL_S_IO:KBL_S_OK;int handoff_quiet=g.cs.active?quiet(l):0;g.link=0;g.reply=0;g.current_operation=0;g.in_request=0;clearstart_step(handoff_quiet);return result;
 }
 static int usb_enter(void*p){return p==&g&&g.in_request&&g.current_operation==KBL_S_FETCH;}
 static void usb_leave(void*p){(void)p;}
@@ -551,6 +576,7 @@ static uint64_t usb_now(void*p){
     return(tick/g.counter_frequency)*UINT64_C(1000000)+(tick%g.counter_frequency)*UINT64_C(1000000)/g.counter_frequency;
 }
 #include "kbl_adb_driver.inc"
+#include "kbl_clearstart_driver.inc"
 static int same_bytes(const void*a,const void*b,size_t n){const unsigned char*x=a,*y=b;while(n--)if(*x++!=*y++)return 0;return 1;}
 static int bind_usb(struct kbl_service_protocol*p,const struct kbl_usb_parent_facts*f){
     if(p!=&protocol||!g.installed||g.in_request||!f||f->abi!=1||f->bytes!=sizeof(*f)||!f->parent_base||f->command_state_value>255||
@@ -598,3 +624,4 @@ void *memcpy(void*d,const void*s,size_t n){copy(d,s,n);return d;}
 void *memset(void*d,int c,size_t n){unsigned char*p=d;while(n--)*p++=(unsigned char)c;return d;}
 void *memmove(void*d,const void*s,size_t n){unsigned char*p=d;const unsigned char*q=s;if(p<q)copy(d,s,n);else while(n){--n;p[n]=q[n];}return d;}
 #endif
+

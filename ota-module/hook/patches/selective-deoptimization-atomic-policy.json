@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "hnubl-selective-deoptimization-exclusive-v1",
+  "origin": "local-scoped-policy",
+  "baseVersion": "7.0.13",
+  "runtimeVersionUnchanged": "17.25.0",
+  "path": "lib/android.js",
+  "beforeSha256": "1ab32411d6ea7108d2e2d3b37a21bdf09fbaf9265951bd6f44b3173fdf352dfb",
+  "afterSha256": "c07e48215e756ce62a0cf2907e4dd5657caaf5bafc99e990941e4c74a9393af4",
+  "operations": [
+    {
+      "old": "  withRunnableArtThread(vm, env, thread => {\n    if (getAndroidApiLevel() < 30) {",
+      "new": "  if (kind === kSelectiveDeoptimization && getAndroidApiLevel() >= 30) {\n    const instrumentation = api.artInstrumentation;\n    if (instrumentation === null) {\n      throw new Error('ART Instrumentation unavailable for selective deoptimization');\n    }\n    if (api['art::ThreadList::SuspendAll'] === undefined || api['art::ThreadList::ResumeAll'] === undefined) {\n      throw new Error('ART exclusive suspension API unavailable');\n    }\n    const enableDeopt = api['art::Instrumentation::EnableDeoptimization'];\n    const enabledAddress = enableDeopt === undefined ? null :\n      instrumentation.add(getArtInstrumentationSpec().offset.deoptimizationEnabled);\n    // Public Java bridge calls arrive in Native state. Do not enter Runnable\n    // (and acquire the shared mutator lock) before requesting exclusive STW.\n    // All API/spec/handle resolution is complete before the suspension.\n    withAllArtThreadsSuspended(() => {\n      if (enableDeopt !== undefined && enabledAddress.readU8() === 0) {\n        enableDeopt(instrumentation);\n      }\n      api['art::Instrumentation::Deoptimize'](instrumentation, method);\n    });\n    return;\n  }\n\n  withRunnableArtThread(vm, env, thread => {\n    if (getAndroidApiLevel() < 30) {"
+    },
+    {
+      "old": "        case kSelectiveDeoptimization:\n          api['art::Instrumentation::Deoptimize'](instrumentation, method);\n          break;",
+      "new": "        case kSelectiveDeoptimization:\n          throw new Error('Selective deoptimization requires the Native-state exclusive route');"
+    }
+  ],
+  "purpose": "Modern selective ArtMethod mutation must run from Native state with all ART mutators stopped. Resolve API/spec/opaque method IDs before suspension; resume in finally. Existing global and legacy Dbg routes retain their prior behavior.",
+  "noGlobalDeoptimizationAdded": true
+}

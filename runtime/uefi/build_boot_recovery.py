@@ -66,6 +66,10 @@ def main(output):
               f'    const val SHA256 = "{digest}"\n'
               "    const val CONFIG_BYTES = 256\n"
               "    const val STATE_BYTES = 4096\n" +
+              "    const val STATE_LAYOUT_BYTES = 360\n" +
+              "    const val STATE_MANUAL_BOOTLINUX_STATUS_OFFSET = 336L\n" +
+              "    const val STATE_MANUAL_BOOTLINUX_COUNT_OFFSET = 344L\n" +
+              "    const val STATE_MANUAL_BOOTLINUX_SITE_OFFSET = 352L\n" +
               "    const val STATE_BOOT_SCOPE_OFFSET = " + re.search(r"^#define BR_STATE_BOOT_SCOPE (\d+)$", (HERE / "boot_recovery.h").read_text(), re.M).group(1) + "L\n" +
               declarations + "\n"
               "    val bytes: ByteArray get() = java.util.Base64.getDecoder().decode(\n" +
@@ -74,7 +78,13 @@ def main(output):
     destination.write_text(source, encoding="utf-8")
     manifest = {"bytes": len(data), "sha256": digest, "offsets": offsets,
                 "undefined": unresolved, "relocations": relocations, "mutableSections": mutable,
-                "deviceOperations": False, "sourcesSha256": {
+                "deviceOperations": False,
+                "stateLayout": {"version": 2, "bytes": 360, "allocatedBytes": 4096,
+                                "preservedPrefixBytes": 336,
+                                "manualBootLinuxStatusOffset": 336,
+                                "manualBootLinuxCountOffset": 344,
+                                "manualBootLinuxSiteOffset": 352},
+                "sourcesSha256": {
                     str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
                     for path in (HERE / "boot_recovery.h", HERE / "boot_recovery.c",
                                  HERE / "boot_recovery.S", HERE / "boot_recovery.ld")}}

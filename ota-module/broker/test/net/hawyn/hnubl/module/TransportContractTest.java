@@ -38,7 +38,7 @@ public final class TransportContractTest {
         real.token=1;org.json.JSONObject executed=new org.json.JSONObject(noRegistry.request("CONSUME",real));
         check(executed.getBoolean("authorized")&&executed.getString("decision").equals("ALLOW")&&actions[0]==1&&real.token==0,"fallback consumes once and executes the official action exactly once");
         for(String command:new String[]{"STATUS","PREPARE"})rejects(()->RootBroker.readOtaCommand(new java.io.ByteArrayInputStream((command+"\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII))));
-        for(String stage:new String[]{"status","open_start","open_ok","open_failed","prepare_ready","prepare_wait","consume_allow","consume_deny","original_started","original_failed","lease_released","frontier_pass","terminal_enter","terminal_blocked","label_state_zero","label_state_one","label_read_error"}){
+        for(String stage:new String[]{"status","open_start","open_ok","open_failed","prepare_ready","prepare_wait","consume_allow","consume_deny","original_started","original_returned","original_failed","lease_released","frontier_pass","terminal_enter","terminal_blocked","label_state_zero","label_state_one","label_read_error"}){
             String frame="TRACE "+stage+" abc_123-XYZ";
             check(RootBroker.readOtaCommand(new java.io.ByteArrayInputStream((frame+"\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII))).equals(frame),"fixed trace stage accepted "+stage);
             check(OtaClientTrace.parse(frame).attempt.equals("abc_123-XYZ"),"trace attempt correlation retained");

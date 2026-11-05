@@ -10,9 +10,12 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
+import java.util.zip.GZIPOutputStream;
 
 /** DEX semantics, descriptors and invoke edges; no vendor class/version/address table. */
 public final class OucDiscovery {
+    /** Persist only location-independent DEX descriptors; runtime handles are resolved in each new process. */
+    public static final String CACHE_POLICY = "ouc-semantic-dex-identities-v3";
     private static final String STRING = "Ljava/lang/String;";
     private static final class MethodInfo {
         final Method method;
@@ -211,6 +214,7 @@ public final class OucDiscovery {
         result.put("critical_missing",missing);result.put("optional_missing",optionalMissing);
         result.put("critical_roles",Arrays.asList("manual_reboot_gate","automatic_reboot_gate","reboot_terminal","reboot_continuation","countdown/countdown_timer","payload_start"));
         result.put("reboot_continuations",rebootContinuations);
+        result.put("deoptimization_plan",criticalDispatchPlan(methods,classes,hooks,rebootContinuations));
         result.put("engine_lifecycle",engineLifecycle);
         result.put("unproved_asynchronous_frontiers",asynchronousFrontiers);
         result.put("method_count",methods.size());
@@ -843,6 +847,96 @@ public final class OucDiscovery {
         Set<String> found=new HashSet<>(roots);Deque<String> q=new ArrayDeque<>(roots);
         while(!q.isEmpty()) for(String caller:reverse.getOrDefault(q.removeFirst(),Collections.<String>emptySet())) if(found.add(caller)) q.addLast(caller);
         return found;
+    }
+
+    /** Normal dispatch preservation. The native Binder barrier, not this small
+     * exact-reference closure, is the final defense against old inlined callers. */
+    private static Map<String,Object> criticalDispatchPlan(Map<String,MethodInfo> methods,Map<String,ClassDef> classes,
+            List<Map<String,Object>> hooks,List<Map<String,Object>> continuations) {
+        Set<String> roles=new HashSet<>(Arrays.asList("reboot_gate","reboot_terminal","reboot_context","countdown","countdown_timer","payload_start",
+            "full_package","version_response","version_cache_query","payload_complete"));
+        Set<String> protectedRoots=new TreeSet<>(), versionCacheRoots=new TreeSet<>();
+        Map<String,Map<String,Object>> external=new TreeMap<>();
+        for(Map<String,Object> hook:hooks)if(roles.contains(hook.get("role"))) {
+            String name=shapeKey((String)hook.get("class_name"),hook);
+            ("version_cache_query".equals(hook.get("role")) ? versionCacheRoots : protectedRoots).add(name);
+            if(!methods.containsKey(name))external.put(name,new LinkedHashMap<>(hook));
+            for(String field:Arrays.asList("actual_callers","payload_callers")) {
+                Object callers=hook.get(field);if(callers instanceof Collection)for(Object caller:(Collection<?>)callers)
+                    if(caller instanceof String && methods.containsKey(caller))protectedRoots.add((String)caller);
+            }
+            if("countdown_timer".equals(hook.get("role")))addFramework(external,protectedRoots,"android.os.CountDownTimer","start","android.os.CountDownTimer",false);
+        }
+        for(Map<String,Object> item:continuations) {
+            String owner="L"+((String)item.get("class_name")).replace('.','/')+";";
+            for(MethodInfo m:methods.values())if(owner.equals(m.method.getDefiningClass()) &&
+                    (m.method.getName().equals("<init>")||(m.method.getName().equals("run")&&m.signature("V"))))protectedRoots.add(m.key);
+        }
+        Set<String> roots=new TreeSet<>(protectedRoots);
+        roots.addAll(versionCacheRoots);
+        // payload_callers already proves the interface/Proxy protocol aliases.
+        // Generic Runnable/Listener CHA expansion is intentionally not claimed
+        // here: native IPC independently protects those old inline paths.
+        Set<String> selected=new TreeSet<>(reverseClosure(methods,roots));
+        if(!continuations.isEmpty())addFramework(external,selected,"java.lang.Thread","run","void",false);
+        for(String name:new ArrayList<>(selected)) {
+            MethodInfo m=methods.get(name);if(m==null)continue;
+            if(m.method.getName().equals("handleMessage")&&m.signature("V","Landroid/os/Message;")&&
+                    isSubclass(m.method.getDefiningClass(),"Landroid/os/Handler;",classes,new HashSet<String>()))
+                addFramework(external,selected,"android.os.Handler","dispatchMessage","void",false,"android.os.Message");
+            if(m.method.getName().equals("onClick")&&m.signature("V","Landroid/view/View;")&&
+                    isSubclass(m.method.getDefiningClass(),"Landroid/view/View$OnClickListener;",classes,new HashSet<String>())) {
+                addFramework(external,selected,"android.view.View","performClick","boolean",false);
+                addFramework(external,selected,"android.view.View","callOnClick","boolean",false);
+            }
+        }
+        List<Map<String,Object>> entries=new ArrayList<>();
+        List<String> versionCacheInitializers=new ArrayList<>();
+        Set<String> protectedCallers=null;
+        for(String name:selected) {
+            MethodInfo m=methods.get(name);Map<String,Object> entry;
+            // Reflection cannot bind a class initializer. Keep the full graph
+            // and every root. Only omit its own ART mutation if its exact
+            // caller closure reaches the read-only version cache alone.
+            if(m!=null && !versionCacheRoots.isEmpty() && !roots.contains(name) &&
+                    "<clinit>".equals(m.method.getName()) && m.signature("V") &&
+                    (m.method.getAccessFlags()&0x8)!=0) {
+                if(protectedCallers==null)protectedCallers=reverseClosure(methods,protectedRoots);
+                if(!protectedCallers.contains(name)) {
+                    versionCacheInitializers.add(name);
+                    continue;
+                }
+            }
+            if(m!=null) {entry=methodShape(m);entry.put("class_name",javaType(m.method.getDefiningClass()));}
+            else {Map<String,Object> shape=external.get(name);if(shape==null)continue;entry=new LinkedHashMap<>(shape);}
+            entry.put("dex_method",name);entries.add(entry);
+        }
+        Map<String,Object> result=new LinkedHashMap<>();result.put("policy","critical-dispatch-native-barrier-v1");
+        result.put("requires_native_barrier",true);result.put("full_inline_caller_proof",false);
+        result.put("roots",new ArrayList<>(roots));result.put("method_count",entries.size());
+        if(!versionCacheInitializers.isEmpty())result.put("version_cache_initializer_callers",versionCacheInitializers);
+        try {
+            ByteArrayOutputStream buffer=new ByteArrayOutputStream();
+            try(GZIPOutputStream gzip=new GZIPOutputStream(buffer)){gzip.write(json(entries).getBytes(StandardCharsets.UTF_8));}
+            result.put("encoding","gzip-base64-json-v1");result.put("methods_gzip_base64",Base64.getEncoder().encodeToString(buffer.toByteArray()));
+        } catch(IOException impossible){throw new IllegalStateException("In-memory dispatch-plan encoding failed",impossible);}
+        result.put("evidence","critical roots + actual typed payload/terminal callers + exact app reverse references + real callback dispatch boundaries; native barrier independently blocks any ungranted inlined reboot");
+        return result;
+    }
+
+    private static String shapeKey(String owner,Map<String,Object> shape) {
+        StringBuilder s=new StringBuilder(dexType(owner)).append("->").append(shape.get("method_name")).append('(');
+        for(Object t:(Collection<?>)shape.get("parameter_types"))s.append(dexType((String)t));
+        return s.append(')').append(dexType((String)shape.get("return_type"))).toString();
+    }
+    private static String dexType(String type) {
+        switch(type){case "void":return "V";case "boolean":return "Z";case "byte":return "B";case "char":return "C";case "short":return "S";case "int":return "I";case "long":return "J";case "float":return "F";case "double":return "D";default:break;}
+        return type.startsWith("[")?type.replace('.','/'):"L"+type.replace('.','/')+";";
+    }
+    private static void addFramework(Map<String,Map<String,Object>> entries,Set<String> names,String owner,String method,String result,boolean isStatic,String...args) {
+        Map<String,Object> shape=new LinkedHashMap<>();shape.put("class_name",owner);shape.put("method_name",method);
+        shape.put("parameter_types",Arrays.asList(args));shape.put("return_type",result);shape.put("is_static",isStatic);
+        String name=shapeKey(owner,shape);entries.put(name,shape);names.add(name);
     }
     private static boolean reachesAny(String from,Collection<String> targets,Map<String,MethodInfo> methods) {
         for(String to:targets) if(reachable(from,to,methods)) return true;return false;

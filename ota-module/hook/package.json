@@ -1,10 +1,10 @@
 {
   "name": "hnubl-ota-agent",
-  "version": "3.0.0",
+  "version": "3.0.5",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node test/agent-lifecycle.test.mjs && node test/cache-query.test.mjs && node test/cache-version-policy.test.mjs && node test/native-slot-agent.test.mjs && node test/native-slot-locator.test.mjs && node test/native-slot-policy.test.mjs && node test/policy.test.mjs && node test/reboot-context.test.mjs && node test/reboot-labels-manual-action.test.mjs && node test/reboot-labels-state-refresh.test.mjs && node test/reboot-labels.test.mjs && node test/version-policy.test.mjs"
+    "test": "node test/agent-lifecycle.test.mjs && node test/cache-query.test.mjs && node test/cache-version-policy.test.mjs && node test/cooperative-scan.test.mjs && node test/native-slot-agent.test.mjs && node test/native-slot-locator.test.mjs && node test/native-slot-policy.test.mjs && node test/original-replay.test.mjs && node test/policy.test.mjs && node test/reboot-context.test.mjs && node test/reboot-labels-manual-action.test.mjs && node test/reboot-labels-state-refresh.test.mjs && node test/reboot-labels.test.mjs && node test/version-policy.test.mjs && node test/deoptimization-policy.test.mjs && node test/native-reboot-guard.test.mjs && node test/method-resolution-cache.test.mjs"
   },
   "dependencies": {
     "frida-java-bridge": "7.0.13"

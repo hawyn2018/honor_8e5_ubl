@@ -25,8 +25,19 @@ object KblPatchEngine {
                 base.output.copyOfRange(before,before+4).hex(),kbl.bytes.copyOfRange(after,after+4).hex(),
                 unchanged))
         }
-        val matches=(compatible.changes+base.patches+kblMatches+recovery.patches).map {
-            if(unchanged)it.copy(alreadyApplied=true)else it
+        val finalHeaderBytes=PeImage.parse(recovery.bytes).headersSize
+        val matches=(compatible.changes+base.patches+kblMatches+recovery.patches).map { patch ->
+            // VM installs below KBL/recovery. Those owned layers can update
+            // NumberOfSections and PE size fields in the same relocated NT
+            // header. Report the final header topology, while native hooks and
+            // all executable edits keep their independently generated targets.
+            val current=if(patch.name=="VM DTBO：PE映射元数据") {
+                val size=patch.after.replace(" ","").length/2
+                check(patch.rva==patch.fileOffset.toLong()&&patch.fileOffset>=0&&
+                    patch.fileOffset.toLong()+size<=finalHeaderBytes) { "VM metadata report escaped the PE header" }
+                patch.copy(after=recovery.bytes.copyOfRange(patch.fileOffset,patch.fileOffset+size).hex())
+            }else patch
+            if(unchanged)current.copy(alreadyApplied=true)else current
         }
         return base.copy(output=recovery.bytes,sourceFormat=extracted.sourceFormat,
             sourceSha256=snapshot.sha256(),outputSha256=recovery.bytes.sha256(),imageSize=recovery.bytes.size,

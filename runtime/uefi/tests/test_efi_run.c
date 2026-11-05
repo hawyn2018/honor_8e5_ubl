@@ -315,6 +315,26 @@ int main(int argc, char **argv) {
   fclose(f);
   CHECK(!kbl_efi_pe_validate(pe, pe_bytes));
   struct kbl_efi_run_result r;
+  /* Preparation executes LoadImage/options only and owns all pools until an
+   * explicit later start/abort. It is safe to move the owner after native exit. */
+  fresh();
+  CHECK(!kbl_efi_prepare(&launcher,pe,pe_bytes,options,sizeof(options),&r));
+  CHECK(launcher.prepared&&!launcher.active&&launcher.child&&load_calls==1&&!start_calls&&!frees);
+  CHECK(!kbl_efi_can_unload(&launcher));
+  CHECK(!kbl_efi_start_prepared(&launcher,&r)&&start_calls==1);
+  ended();
+  CHECK(kbl_efi_start_prepared(&launcher,&r)==-KBL_EINVAL);
+  fresh();
+  CHECK(!kbl_efi_prepare(&launcher,pe,pe_bytes,options,sizeof(options),&r));
+  CHECK(!kbl_efi_cleanup(&launcher)&&!start_calls);ended();
+  fresh();
+  CHECK(!kbl_efi_prepare(&launcher,pe,pe_bytes,options,sizeof(options),&r));
+  el=2;CHECK(kbl_efi_start_prepared(&launcher,&r)==-KBL_EPERM&&!start_calls&&launcher.prepared);
+  el=1;CHECK(!kbl_efi_cleanup(&launcher));ended();
+  fresh();
+  CHECK(!kbl_efi_prepare(&launcher,pe,pe_bytes,options,sizeof(options),&r));
+  fail_unload=1;CHECK(kbl_efi_cleanup(&launcher)==-KBL_EIO&&launcher.child&&launcher.options&&!start_calls);
+  fail_unload=0;CHECK(!kbl_efi_cleanup(&launcher));ended();
   fresh();
   CHECK(!kbl_efi_run(&launcher, pe, pe_bytes, options, sizeof(options), &r));
   CHECK(r.stage == KBL_EFI_RETURN && r.el_before == 1 && r.el_after == 1 &&

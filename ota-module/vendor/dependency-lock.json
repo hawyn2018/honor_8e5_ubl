@@ -67,6 +67,253 @@
     "schema": 1,
     "scope": "OUC process only; Java.use/explicit loader/implementation/method calls, not choose or class enumeration"
   },
+  "bridgeNativeTransactionFilterPolicy": {
+    "baseVersion": "7.0.13",
+    "files": [
+      {
+        "afterSha256": "e971012635ae8a051eef84e09330de4bdb561cc2164d7a838e7b42ddc50b90f7",
+        "beforeSha256": "e576b6904da6febc76f5d5407719949b9076998263a51d89a76de79481081c1f",
+        "operations": [
+          {
+            "new": "// Successful native gates/callbacks intentionally live until this script ends.\n// Reverting Java hooks cannot prove every ordinary JNI call has returned yet.\nconst retainedNativeTransactionGates = [];\n\nexport function installNativeTransactionCodeFilter (mangler, implementation, code, vm) {\n  if (!Number.isInteger(code) || code < 0 || code > 0x7fffffff) {\n    throw new Error('Native transaction code is outside the positive jint ABI');\n  }\n  if (getApi().flavor !== 'art' || mangler.originalMethod === null || mangler.replacementMethodId === null) {\n    throw new Error('A live ART method replacement is required');\n  }\n  const prior = mangler._nativeTransactionGate;\n  if (prior !== undefined) {\n    if (!prior.active || prior.code !== code) throw new Error('Native transaction gate identity changed');\n    return prior.gate;\n  }\n  if (mangler.replacementMethodId.equals(mangler.methodId) || mangler.replacementMethodId.equals(mangler.hookedMethodId)) {\n    throw new Error('Native transaction filter requires this bridge private ArtMethod clone');\n  }\n  const flags = mangler.originalMethod.accessFlags;\n  // The public shape proof already requires an instance method with Parcel\n  // references. Actual CriticalNative requires static/primitive-only shape.\n  // Do not reinterpret OEM/ART Nterp bits through a historical Critical mask.\n  if ((flags & kAccNative) === 0 || (flags & (kAccStatic | kAccFastNative)) !== 0 ||\n      !mangler.hookedMethodId.equals(mangler.methodId)) {\n    throw new Error('Ordinary instance JNI registration is not proved');\n  }\n  const original = mangler.originalMethod.jniCode;\n  const owner = Process.findModuleByAddress(original);\n  const range = Process.findRangeByAddress(original);\n  if (owner === null || range === null || !range.protection.includes('x') || owner.name === 'libart.so' ||\n      !/^\\/(?:apex|system|system_ext|vendor|product)\\//.test(owner.path)) {\n    throw new Error('Registered JNI entry has no executable system module identity');\n  }\n  const slot = mangler.replacementMethodId.add(getArtMethodSpec(vm).offset.jniCode);\n  if (!slot.and(pointerSize - 1).isNull() || !slot.readPointer().equals(implementation)) {\n    throw new Error('Replacement JNI slot does not belong to this implementation');\n  }\n  const selected = Memory.alloc(4); selected.writeS32(code);\n  const counters = Memory.alloc(8); counters.writeU32(0); counters.add(4).writeU32(0);\n  const cm = new CModule(`\n#include <glib.h>\nextern gint selected_code;\nextern guint8 original_transact(gpointer,gpointer,gint,gpointer,gpointer,gint);\nextern guint8 guarded_transact(gpointer,gpointer,gint,gpointer,gpointer,gint);\nextern volatile gint ordinary_count;\nextern volatile gint matched_count;\nguint8 transact_filter(gpointer env,gpointer self,gint code,gpointer data,gpointer reply,gint flags) {\n  if (code != selected_code) {\n    g_atomic_int_add(&ordinary_count,1);\n    return original_transact(env,self,code,data,reply,flags);\n  }\n  g_atomic_int_add(&matched_count,1);\n  return guarded_transact(env,self,code,data,reply,flags);\n}\nguint read_ordinary(void) { return (guint)g_atomic_int_add(&ordinary_count,0); }\nguint read_matched(void) { return (guint)g_atomic_int_add(&matched_count,0); }\n/* Only this script manages this private ArtMethod clone. With ART threads\n * stopped there is no legitimate concurrent writer between these seqcst RMWs. */\ngint publish_filter(gpointer slot,gpointer expected,gpointer replacement) {\n  gssize observed = g_atomic_pointer_add(slot,0);\n  if ((gpointer)observed != expected) return 0;\n  gssize previous = g_atomic_pointer_add(slot,(gssize)((guintptr)replacement-(guintptr)expected));\n  return (gpointer)previous == expected ? 1 : -1;\n}\n`, { selected_code: selected, ordinary_count: counters, matched_count: counters.add(4),\n  original_transact: original, guarded_transact: implementation });\n  const entry = cm.transact_filter;\n  const ordinary = new NativeFunction(cm.read_ordinary, 'uint', []);\n  const matched = new NativeFunction(cm.read_matched, 'uint', []);\n  const publish = new NativeFunction(cm.publish_filter, 'int', ['pointer', 'pointer', 'pointer']);\n  // Resolve the helper's API and cause string outside the suspended body.\n  const threadApi = getApi();\n  if (threadApi['art::ThreadList::SuspendAll'] === undefined || threadApi['art::ThreadList::ResumeAll'] === undefined) {\n    cm.dispose(); throw new Error('ART exclusive suspension API unavailable for JNI publication');\n  }\n  // Process range enumeration can omit this runtime's own CModule allocation.\n  // Prove the exact compiled counter/publisher routines with no Binder calls,\n  // only an external private scratch pointer. Do all probes before ART STW.\n  if (ordinary() !== 0 || matched() !== 0) {\n    cm.dispose(); throw new Error('Compiled native transaction counter self-test failed');\n  }\n  const scratch = Memory.alloc(pointerSize); scratch.writePointer(implementation);\n  if (publish(scratch, NULL, entry) !== 0 || !scratch.readPointer().equals(implementation) ||\n      publish(scratch, implementation, entry) !== 1 || !scratch.readPointer().equals(entry)) {\n    cm.dispose(); throw new Error('Compiled native transaction publisher self-test failed');\n  }\n  const state = { active: false, code, cm, implementation, selected, counters, gate: null };\n  const gate = { mode: 'native_code_filter', inspect() {\n    return { ready: state.active, mode: 'native_code_filter', code,\n      native_fastpass: ordinary(), native_matched: matched(), counter_bits: 32,\n      original_jni_module: owner.name, original_jni_path: owner.path,\n      original_jni_rva: original.sub(owner.base).toString(), retained_until_script_end: true };\n  }};\n  state.gate = gate;\n  // Root code/callbacks before the one aligned pointer publication. Ordinary\n  // callers bypass JS/pendingCalls, so no successful gate is explicitly freed.\n  retainedNativeTransactionGates.push(state);\n  let published = 0;\n  withAllArtThreadsSuspended(() => { published = publish(slot, implementation, entry); });\n  if (published !== 1) throw new Error('Private JNI clone ownership changed during atomic publication');\n  state.active = true;\n  mangler._nativeTransactionGate = state;\n  return gate;\n}\n\nclass ArtMethodMangler {",
+            "old": "class ArtMethodMangler {"
+          },
+          {
+            "new": "    artController.replacedMethods.delete(hookedMethodId);\n    if (this._nativeTransactionGate !== undefined) this._nativeTransactionGate.active = false;",
+            "old": "    artController.replacedMethods.delete(hookedMethodId);"
+          }
+        ],
+        "path": "lib/android.js"
+      },
+      {
+        "afterSha256": "e59d95a472e4d539bf23b910159b6407ed6f92b287ec06c02f082eb02e96c849",
+        "beforeSha256": "3905ae235bfd58fa4b1118075df781c090108c399ff19e093f568104dbb0dc3b",
+        "operations": [
+          {
+            "new": "function verifyNativeTransactionFilterMethod (method) {\n  const [name, holder, type, _id, ret, args] = method._p;\n  if (name !== 'transactNative' || holder.$n !== 'android.os.BinderProxy' || type !== INSTANCE_METHOD ||\n      ret.className !== 'boolean' || args.map(t => t.className).join(',') !== 'int,android.os.Parcel,android.os.Parcel,int' ||\n      String(holder.class.getName()) !== 'android.os.BinderProxy') {\n    throw new Error('Native code filter accepts only the BinderProxy transaction ABI');\n  }\n  const loader = holder.class.getClassLoader();\n  if (loader !== null && String(loader.getClass().getName()) !== 'java.lang.BootClassLoader') {\n    throw new Error('Native BinderProxy is not a boot class');\n  }\n}\n\nfunction makeMethodCallable () {",
+            "old": "function makeMethodCallable () {"
+          },
+          {
+            "new": "methodPrototype = Object.create(Function.prototype, {\n  installNativeTransactionCodeFilter: {\n    value (code) {\n      verifyNativeTransactionFilterMethod(this);\n      const replacement = this._r;\n      if (replacement === undefined || replacement._m === undefined) throw new Error('Install the Java transaction implementation first');\n      return android.installNativeTransactionCodeFilter(replacement._m, replacement, code, vm);\n    }\n  },\n  setNativeCodeFilter: {\n    value (handler, code) {\n      verifyNativeTransactionFilterMethod(this);\n      if (typeof handler !== 'function') throw new TypeError('Native code filter handler must be a function');\n      this.implementation = handler;\n      try { return this.installNativeTransactionCodeFilter(code); }\n      catch (failure) {\n        // Reset through the original setter even after a failed publication.\n        // This retires its private clone and leaves one complete Java guard.\n        this.implementation = handler;\n        // The original Java setter/exception marshaler remains fully active.\n        const error = String(failure), method = this, installedReplacement = this.implementation;\n        return { mode: 'java_replacement', error, inspect() {\n          return { ready: method.implementation === installedReplacement, mode: 'java_replacement', error };\n        }};\n      }\n    }\n  },\n",
+            "old": "methodPrototype = Object.create(Function.prototype, {"
+          }
+        ],
+        "path": "lib/class-factory.js"
+      },
+      {
+        "afterSha256": "ce6509fe9b90ea8a2423d8f664ed20c0dc562331932e5d34cb188a6ed50ab305",
+        "beforeSha256": "3c695f5d1b77becad529c6c58b313412f0618288887e92155bb4b5258c61fb41",
+        "operations": [
+          {
+            "new": "            implementation: MethodImplementation<Holder, Params, Return> | null;\n\n            /** hnubl scoped: only the ordinary boot-class BinderProxy JNI ABI. */\n            installNativeTransactionCodeFilter(code: number): NativeTransactionGate;\n            setNativeCodeFilter(handler: MethodImplementation<Holder, Params, Return>, code: number): NativeTransactionGate;",
+            "old": "            implementation: MethodImplementation<Holder, Params, Return> | null;"
+          },
+          {
+            "new": "        interface NativeTransactionGate {\n            mode: 'native_code_filter' | 'java_replacement';\n            error?: string;\n            inspect(): { ready: boolean; mode: string; code?: number; native_fastpass?: number;\n                native_matched?: number; counter_bits?: number; error?: string;\n                original_jni_module?: string; original_jni_path?: string; original_jni_rva?: string;\n                retained_until_script_end?: boolean };\n        }\n\n        interface Method<Holder extends Members<Holder> = {}, Params extends any[] = any[], Return = any> {",
+            "old": "        interface Method<Holder extends Members<Holder> = {}, Params extends any[] = any[], Return = any> {"
+          }
+        ],
+        "path": "index.d.ts"
+      }
+    ],
+    "id": "hnubl-native-transaction-code-filter-v1",
+    "noGlobalDeoptimizationAdded": true,
+    "origin": "local-scoped-policy",
+    "persistentPointers": false,
+    "purpose": "Only ordinary boot-class BinderProxy JNI: unmatched code directly calls registered original JNI in C; matched code retains original Java bridge callback, exception marshaling and policy. Runtime method IDs/spec offsets/module identity, no fixed addresses. Successfully published C gates and callbacks retained until script end; setter revert restores original behavior without freeing in-flight code. Private-clone JNI pointer is published through prebuilt native seqcst RMW under exclusive ART suspension, with full Java-setter restoration if publication fails. Writable CModule counters are extern Memory.alloc symbols retained with the gate, never module read-only data. CriticalNative is excluded by proved instance/reference JNI shape, not a version-dependent access flag alias. Original Frida implementation getter returns the installed NativeCallback; fallback ownership uses that captured replacement. Own CModule capability uses harmless counter/native scratch-publisher execution, not cloak-filtered Process range enumeration; original registered system JNI module/RX validation remains mandatory.",
+    "runtimeVersionUnchanged": "17.25.0",
+    "schema": 1
+  },
+  "bridgeQuickCodePublicationPolicy": {
+    "baseVersion": "7.0.13",
+    "files": [
+      {
+        "afterSha256": "1a4554cf82f05a68e625fd3070009ecbbb8130722ece5e6cb5caa1483cc6d6b0",
+        "beforeSha256": "e971012635ae8a051eef84e09330de4bdb561cc2164d7a838e7b42ddc50b90f7",
+        "operations": [
+          {
+            "new": "const artQuickInterceptors = [];\nconst retiredArtQuickCodeInterceptors = [];",
+            "old": "const artQuickInterceptors = [];"
+          },
+          {
+            "new": "function retireArtQuickCodeInterceptor (owner) {\n  if (owner._retired === true) return;\n  owner._retired = true;\n  retiredArtQuickCodeInterceptors.push(owner);\n}\n\nfunction publishArtQuickCodePatch (target, bytes, relocatedLength) {\n  const api = getApi();\n  if (api['art::ThreadList::SuspendAll'] === undefined || api['art::ThreadList::ResumeAll'] === undefined) {\n    throw new Error('ART exclusive suspension API unavailable for quick-code publication');\n  }\n  const size = bytes.byteLength;\n  if (size === 0 || (relocatedLength !== undefined && size > relocatedLength)) {\n    throw new Error('ART quick-code patch exceeds its completed relocation');\n  }\n  // Prepare every byte/callback before STW. No writer/literal generation or\n  // Java/JNI work runs in the apply callbacks, including failure rollback.\n  const previous = target.readByteArray(size);\n  const copy = code => code.writeByteArray(bytes);\n  const restore = code => code.writeByteArray(previous);\n  let failure = null, rollbackFailure = null;\n  withAllArtThreadsSuspended(() => {\n    try { Memory.patchCode(target, size, copy); }\n    catch (error) {\n      failure = error;\n      try { Memory.patchCode(target, size, restore); }\n      catch (error) { rollbackFailure = error; }\n    }\n  });\n  if (failure !== null) {\n    if (rollbackFailure !== null) failure.quickCodeRollbackFailure = String(rollbackFailure);\n    throw failure;\n  }\n  return bytes;\n}\n\nconst artQuickCodePrologueWriters = {",
+            "old": "const artQuickCodePrologueWriters = {"
+          },
+          {
+            "new": "function writeArtQuickCodePrologueX86 (target, trampoline, redirectSize, prologueLength) {\n  const code = Memory.alloc(64);\n  const writer = new X86Writer(code, { pc: target });\n  writer.putJmpAddress(trampoline);\n  writer.flush();\n  return publishArtQuickCodePatch(target, code.readByteArray(writer.offset), prologueLength);\n}",
+            "old": "function writeArtQuickCodePrologueX86 (target, trampoline, redirectSize) {\n  Memory.patchCode(target, 16, code => {\n    const writer = new X86Writer(code, { pc: target });\n\n    writer.putJmpAddress(trampoline);\n    writer.flush();\n  });\n}"
+          },
+          {
+            "new": "function writeArtQuickCodePrologueArm (target, trampoline, redirectSize, prologueLength) {\n  const targetAddress = target.and(THUMB_BIT_REMOVAL_MASK);\n  const code = Memory.alloc(64);\n  const writer = new ThumbWriter(code, { pc: targetAddress });\n  writer.putLdrRegAddress('pc', trampoline.or(1));\n  writer.flush();\n  return publishArtQuickCodePatch(targetAddress, code.readByteArray(writer.offset), prologueLength);\n}",
+            "old": "function writeArtQuickCodePrologueArm (target, trampoline, redirectSize) {\n  const targetAddress = target.and(THUMB_BIT_REMOVAL_MASK);\n\n  Memory.patchCode(targetAddress, 16, code => {\n    const writer = new ThumbWriter(code, { pc: targetAddress });\n\n    writer.putLdrRegAddress('pc', trampoline.or(1));\n    writer.flush();\n  });\n}"
+          },
+          {
+            "new": "function writeArtQuickCodePrologueArm64 (target, trampoline, redirectSize, prologueLength) {\n  const code = Memory.alloc(64);\n  const writer = new Arm64Writer(code, { pc: target });\n  if (redirectSize === 16) {\n    writer.putLdrRegAddress('x16', trampoline);\n  } else {\n    writer.putAdrpRegAddress('x16', trampoline);\n  }\n  writer.putBrReg('x16');\n  writer.flush();\n  return publishArtQuickCodePatch(target, code.readByteArray(writer.offset), prologueLength);\n}",
+            "old": "function writeArtQuickCodePrologueArm64 (target, trampoline, redirectSize) {\n  Memory.patchCode(target, 16, code => {\n    const writer = new Arm64Writer(code, { pc: target });\n\n    if (redirectSize === 16) {\n      writer.putLdrRegAddress('x16', trampoline);\n    } else {\n      writer.putAdrpRegAddress('x16', trampoline);\n    }\n\n    writer.putBrReg('x16');\n\n    writer.flush();\n  });\n}"
+          },
+          {
+            "new": "    const published = this.publishedPrologue;\n    if (published !== null) {\n      const observed = new Uint8Array(quickCodeAddress.readByteArray(published.byteLength));\n      const expected = new Uint8Array(published);\n      let owned = observed.length === expected.length;\n      for (let i = 0; owned && i < expected.length; i++) owned = observed[i] === expected[i];\n      if (!owned) {\n        // Do not restore over an identifiable later owner. This preflight is\n        // not a claim to synchronize arbitrary third-party native writers.\n        this.restoreSkipped = true;\n        retireArtQuickCodeInterceptor(this);\n        return;\n      }\n    }\n    const bytes = this.overwrittenPrologue.readByteArray(prologueLength);\n    try { publishArtQuickCodePatch(quickCodeAddress, bytes); }\n    finally {\n      // Native/in-flight calls may still return through the retired trampoline.\n      retireArtQuickCodeInterceptor(this);\n    }",
+            "old": "    const Writer = thunkWriters[Process.arch];\n    Memory.patchCode(quickCodeAddress, prologueLength, code => {\n      const writer = new Writer(code, { pc: quickCodeAddress });\n\n      const { overwrittenPrologue } = this;\n\n      writer.putBytes(overwrittenPrologue.readByteArray(prologueLength));\n      writer.flush();\n    });\n\n    this._destroyTrampoline();"
+          },
+          {
+            "new": "    try {\n      this.publishedPrologue = writePrologue(quickCode, trampoline, redirectSize, prologueLength);\n    } catch (error) {\n      retireArtQuickCodeInterceptor(this);\n      throw error;\n    }",
+            "old": "    writePrologue(quickCode, trampoline, redirectSize);"
+          },
+          {
+            "new": "    this.overwrittenPrologueLength = 0;\n    this.publishedPrologue = null;",
+            "old": "    this.overwrittenPrologueLength = 0;"
+          },
+          {
+            "new": "let taughtArtAboutMethodInstrumentation = false;\nlet artMethodInstrumentationFailure = null;",
+            "old": "let taughtArtAboutMethodInstrumentation = false;"
+          },
+          {
+            "new": "function ensureArtKnowsHowToHandleMethodInstrumentation (vm) {\n  if (artMethodInstrumentationFailure !== null) throw artMethodInstrumentationFailure;\n  if (taughtArtAboutMethodInstrumentation) {\n    return;\n  }\n  taughtArtAboutMethodInstrumentation = true;\n  try {\n    instrumentArtQuickEntrypoints(vm);\n    instrumentArtMethodInvocationFromInterpreter();\n    instrumentArtGarbageCollection();\n    instrumentArtFixupStaticTrampolines();\n  } catch (error) {\n    // Valid already-published entries stay rooted; never claim half-bootstrap\n    // is ready or stack a second initialization onto its remaining patches.\n    artMethodInstrumentationFailure = error;\n    taughtArtAboutMethodInstrumentation = false;\n    throw error;\n  }\n}",
+            "old": "function ensureArtKnowsHowToHandleMethodInstrumentation (vm) {\n  if (taughtArtAboutMethodInstrumentation) {\n    return;\n  }\n  taughtArtAboutMethodInstrumentation = true;\n\n  instrumentArtQuickEntrypoints(vm);\n  instrumentArtMethodInvocationFromInterpreter();\n  instrumentArtGarbageCollection();\n  instrumentArtFixupStaticTrampolines();\n}"
+          },
+          {
+            "new": "const inlineHooks = [];\nconst retiredInlineHooks = [];",
+            "old": "const inlineHooks = [];"
+          },
+          {
+            "new": "class InlineHook {\n  constructor (address, size, trampoline) {\n    this.address = address;\n    this.size = size;\n    this.originalCode = address.readByteArray(size);\n    this.trampoline = trampoline;\n    this.publishedCode = null;\n  }\n\n  revert () {\n    try {\n      if (this.publishedCode !== null) {\n        const observed = new Uint8Array(this.address.readByteArray(this.publishedCode.byteLength));\n        const expected = new Uint8Array(this.publishedCode);\n        let owned = observed.length === expected.length;\n        for (let i = 0; owned && i < expected.length; i++) owned = observed[i] === expected[i];\n        if (!owned) { this.restoreSkipped = true; return; }\n      }\n      publishArtQuickCodePatch(this.address, this.originalCode);\n    } finally {\n      // Existing/paused native stack visitors may still return through this page.\n      if (this._retired !== true) { this._retired = true; retiredInlineHooks.push(this); }\n    }\n  }\n}",
+            "old": "class InlineHook {\n  constructor (address, size, trampoline) {\n    this.address = address;\n    this.size = size;\n    this.originalCode = address.readByteArray(size);\n    this.trampoline = trampoline;\n  }\n\n  revert () {\n    Memory.patchCode(this.address, this.size, code => {\n      code.writeByteArray(this.originalCode);\n    });\n  }\n}"
+          },
+          {
+            "new": "  const hook = new InlineHook(address, redirectCapacity, trampoline);\n  inlineHooks.push(hook);\n  const code = Memory.alloc(64);\n  const writer = new ThumbWriter(code, { pc: address });\n  writer.putLdrRegAddress('pc', trampoline.or(1));\n  writer.flush();\n  hook.publishedCode = publishArtQuickCodePatch(address, code.readByteArray(writer.offset), redirectCapacity);",
+            "old": "  inlineHooks.push(new InlineHook(address, redirectCapacity, trampoline));\n\n  Memory.patchCode(address, redirectCapacity, code => {\n    const writer = new ThumbWriter(code, { pc: address });\n    writer.putLdrRegAddress('pc', trampoline.or(1));\n    writer.flush();\n  });"
+          },
+          {
+            "new": "  const hook = new InlineHook(address, size, trampoline);\n  inlineHooks.push(hook);\n  const code = Memory.alloc(64);\n  const writer = new Arm64Writer(code, { pc: address });\n  writer.putLdrRegAddress(scratchReg, trampoline);\n  writer.putBrReg(scratchReg);\n  writer.flush();\n  hook.publishedCode = publishArtQuickCodePatch(address, code.readByteArray(writer.offset), size);",
+            "old": "  inlineHooks.push(new InlineHook(address, size, trampoline));\n\n  Memory.patchCode(address, size, code => {\n    const writer = new Arm64Writer(code, { pc: address });\n    writer.putLdrRegAddress(scratchReg, trampoline);\n    writer.putBrReg(scratchReg);\n    writer.flush();\n  });"
+          },
+          {
+            "new": "let taughtArtAboutReplacementMethods = false;\nlet artReplacementMethodInstrumentationFailure = null;",
+            "old": "let taughtArtAboutReplacementMethods = false;"
+          },
+          {
+            "new": "function ensureArtKnowsHowToHandleReplacementMethods (vm) {\n  if (artReplacementMethodInstrumentationFailure !== null) throw artReplacementMethodInstrumentationFailure;\n  if (taughtArtAboutReplacementMethods) {\n    return;\n  }\n  taughtArtAboutReplacementMethods = true;\n\n  try {\n    if (!maybeInstrumentGetOatQuickMethodHeaderInlineCopies()) {\n      const { getOatQuickMethodHeaderImpl } = artController;\n      if (getOatQuickMethodHeaderImpl === null) {\n        return;\n      }\n\n      try {\n        Interceptor.replace(getOatQuickMethodHeaderImpl, artController.hooks.ArtMethod.getOatQuickMethodHeader);\n      } catch (e) {\n        /*\n         * Already replaced by another script. For now we don't support replacing methods from multiple scripts,\n         * but we'll allow users to try it if they're feeling adventurous.\n         */\n      }\n    }\n\n    const apiLevel = getAndroidApiLevel();\n\n    let copyingPhase = null;\n    const api = getApi();\n    if (apiLevel > 28) {\n      copyingPhase = api.find('_ZN3art2gc9collector17ConcurrentCopying12CopyingPhaseEv');\n    } else if (apiLevel > 22) {\n      copyingPhase = api.find('_ZN3art2gc9collector17ConcurrentCopying12MarkingPhaseEv');\n    }\n    if (copyingPhase !== null) {\n      Interceptor.attach(copyingPhase, artController.hooks.Gc.copyingPhase);\n    }\n\n    let runFlip = null;\n    runFlip = api.find('_ZN3art6Thread15RunFlipFunctionEPS0_');\n    if (runFlip === null) {\n      runFlip = api.find('_ZN3art6Thread15RunFlipFunctionEPS0_b');\n    }\n    if (runFlip !== null) {\n      Interceptor.attach(runFlip, artController.hooks.Gc.runFlip);\n    }\n  } catch (error) {\n    artReplacementMethodInstrumentationFailure = error;\n    taughtArtAboutReplacementMethods = false;\n    throw error;\n  }\n}\n",
+            "old": "function ensureArtKnowsHowToHandleReplacementMethods (vm) {\n  if (taughtArtAboutReplacementMethods) {\n    return;\n  }\n  taughtArtAboutReplacementMethods = true;\n\n  if (!maybeInstrumentGetOatQuickMethodHeaderInlineCopies()) {\n    const { getOatQuickMethodHeaderImpl } = artController;\n    if (getOatQuickMethodHeaderImpl === null) {\n      return;\n    }\n\n    try {\n      Interceptor.replace(getOatQuickMethodHeaderImpl, artController.hooks.ArtMethod.getOatQuickMethodHeader);\n    } catch (e) {\n      /*\n       * Already replaced by another script. For now we don't support replacing methods from multiple scripts,\n       * but we'll allow users to try it if they're feeling adventurous.\n       */\n    }\n  }\n\n  const apiLevel = getAndroidApiLevel();\n\n  let copyingPhase = null;\n  const api = getApi();\n  if (apiLevel > 28) {\n    copyingPhase = api.find('_ZN3art2gc9collector17ConcurrentCopying12CopyingPhaseEv');\n  } else if (apiLevel > 22) {\n    copyingPhase = api.find('_ZN3art2gc9collector17ConcurrentCopying12MarkingPhaseEv');\n  }\n  if (copyingPhase !== null) {\n    Interceptor.attach(copyingPhase, artController.hooks.Gc.copyingPhase);\n  }\n\n  let runFlip = null;\n  runFlip = api.find('_ZN3art6Thread15RunFlipFunctionEPS0_');\n  if (runFlip === null) {\n    runFlip = api.find('_ZN3art6Thread15RunFlipFunctionEPS0_b');\n  }\n  if (runFlip !== null) {\n    Interceptor.attach(runFlip, artController.hooks.Gc.runFlip);\n  }\n}\n"
+          }
+        ],
+        "path": "lib/android.js"
+      }
+    ],
+    "id": "hnubl-art-quick-code-publication-v1",
+    "noGlobalDeoptimizationAdded": true,
+    "origin": "local-scoped-policy",
+    "persistentPointers": false,
+    "purpose": "Prepare and flush complete quick-entry prologue bytes off-target before exclusive ART suspension; the paused patchCode callback only copies prepared bytes and finalizes I-cache synchronization. Restore uses the same publication protocol and retains retired trampoline owners/slices until script end. No live literal placeholder, JNI or writer generation during suspension; existing architecture/relocation choices remain. Before restoring, skip an identifiable later owner and retain trampolines. Commit errors attempt prepared rollback inside the same suspension. A failed shared bootstrap is sticky until target-process recreation, so partial success cannot be reported as complete. Also covers original ARM/ARM64 inlined OatQuickMethodHeader redirects and InlineHook restoration. Trampoline construction remains private/unpublished; semantic scan/relocation/register selection is unchanged.",
+    "runtimeVersionUnchanged": "17.25.0",
+    "schema": 1
+  },
+  "bridgeSelectiveAtomicPolicy": {
+    "afterSha256": "c07e48215e756ce62a0cf2907e4dd5657caaf5bafc99e990941e4c74a9393af4",
+    "baseVersion": "7.0.13",
+    "beforeSha256": "1ab32411d6ea7108d2e2d3b37a21bdf09fbaf9265951bd6f44b3173fdf352dfb",
+    "id": "hnubl-selective-deoptimization-exclusive-v1",
+    "noGlobalDeoptimizationAdded": true,
+    "operations": [
+      {
+        "new": "  if (kind === kSelectiveDeoptimization && getAndroidApiLevel() >= 30) {\n    const instrumentation = api.artInstrumentation;\n    if (instrumentation === null) {\n      throw new Error('ART Instrumentation unavailable for selective deoptimization');\n    }\n    if (api['art::ThreadList::SuspendAll'] === undefined || api['art::ThreadList::ResumeAll'] === undefined) {\n      throw new Error('ART exclusive suspension API unavailable');\n    }\n    const enableDeopt = api['art::Instrumentation::EnableDeoptimization'];\n    const enabledAddress = enableDeopt === undefined ? null :\n      instrumentation.add(getArtInstrumentationSpec().offset.deoptimizationEnabled);\n    // Public Java bridge calls arrive in Native state. Do not enter Runnable\n    // (and acquire the shared mutator lock) before requesting exclusive STW.\n    // All API/spec/handle resolution is complete before the suspension.\n    withAllArtThreadsSuspended(() => {\n      if (enableDeopt !== undefined && enabledAddress.readU8() === 0) {\n        enableDeopt(instrumentation);\n      }\n      api['art::Instrumentation::Deoptimize'](instrumentation, method);\n    });\n    return;\n  }\n\n  withRunnableArtThread(vm, env, thread => {\n    if (getAndroidApiLevel() < 30) {",
+        "old": "  withRunnableArtThread(vm, env, thread => {\n    if (getAndroidApiLevel() < 30) {"
+      },
+      {
+        "new": "        case kSelectiveDeoptimization:\n          throw new Error('Selective deoptimization requires the Native-state exclusive route');",
+        "old": "        case kSelectiveDeoptimization:\n          api['art::Instrumentation::Deoptimize'](instrumentation, method);\n          break;"
+      }
+    ],
+    "origin": "local-scoped-policy",
+    "path": "lib/android.js",
+    "purpose": "Modern selective ArtMethod mutation must run from Native state with all ART mutators stopped. Resolve API/spec/opaque method IDs before suspension; resume in finally. Existing global and legacy Dbg routes retain their prior behavior.",
+    "runtimeVersionUnchanged": "17.25.0",
+    "schema": 1
+  },
+  "bridgeSelectiveBatchPolicy": {
+    "baseVersion": "7.0.13",
+    "defaultBatchSize": 32,
+    "files": [
+      {
+        "afterSha256": "e576b6904da6febc76f5d5407719949b9076998263a51d89a76de79481081c1f",
+        "beforeSha256": "c07e48215e756ce62a0cf2907e4dd5657caaf5bafc99e990941e4c74a9393af4",
+        "operations": [
+          {
+            "new": "// Runtime-local only: native ART addresses must never survive this bridge VM.\nconst selectiveDeoptimizedMethods = new Set();\nlet globalDeoptimizationApplied = false;\n\nexport function deoptimizeMethod (vm, env, method) {\n  deoptimizeMethods(vm, env, [method]);\n}\n\n/** Decode opaque JNI IDs before short Native-state exclusive ART batches.\n * Successful methods share one process-local registry across single/batch calls.\n */\nexport function deoptimizeMethods (vm, env, methods, options = {}) {\n  if (!Array.isArray(methods)) {\n    throw new TypeError('Selective methods must be an array');\n  }\n  const batchSize = options.batchSize === undefined ? 32 : options.batchSize;\n  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64) {\n    throw new RangeError('Selective batchSize must be an integer from 1 to 64');\n  }\n  const level = getAndroidApiLevel();\n  if (level < 24) {\n    throw new Error('This API is only available on Android >= 7.0');\n  }\n  const decoded = [];\n  const identities = [];\n  const seen = new Set();\n  for (const handle of methods) {\n    if (handle === null || handle === undefined || typeof handle.isNull !== 'function' || handle.isNull()) {\n      throw new TypeError('Selective method handle must be a non-null NativePointer');\n    }\n    const method = unwrapMethodId(handle);\n    if (method === null || method === undefined || typeof method.isNull !== 'function' || method.isNull()) {\n      throw new Error('Decoded selective ArtMethod must be non-null');\n    }\n    const identity = method.toString();\n    if (!seen.has(identity)) {\n      seen.add(identity);\n      decoded.push(method);\n      identities.push(identity);\n    }\n  }\n  const strategy = level < 30 ? 'selective_legacy' : 'selective_batch';\n  const requested = decoded.length;\n  if (globalDeoptimizationApplied || requested === 0) {\n    return { count: 0, batches: 0, batch_size: batchSize, strategy,\n      skipped: requested, requested_count: requested, already_global: globalDeoptimizationApplied };\n  }\n  let count = 0, skipped = 0, batches = 0;\n  if (level < 30) {\n    for (let i = 0; i < decoded.length; i++) {\n      if (selectiveDeoptimizedMethods.has(identities[i])) { skipped++; continue; }\n      requestDeoptimization(vm, env, kSelectiveDeoptimization, decoded[i]);\n      selectiveDeoptimizedMethods.add(identities[i]);\n      count++; batches++;\n    }\n    return { count, batches, batch_size: 1, strategy, skipped, requested_count: requested, already_global: false };\n  }\n  // Resolve every capability, address and batch before STW. No JNI, reflection,\n  // lazy lookup, allocation, registry mutation or user callback runs inside it.\n  const api = getApi();\n  const instrumentation = api.artInstrumentation;\n  if (instrumentation === null || instrumentation === undefined) {\n    throw new Error('ART Instrumentation unavailable for selective batch deoptimization');\n  }\n  if (api['art::ThreadList::SuspendAll'] === undefined || api['art::ThreadList::ResumeAll'] === undefined) {\n    throw new Error('ART exclusive suspension API unavailable');\n  }\n  const deoptimize = api['art::Instrumentation::Deoptimize'];\n  if (deoptimize === undefined) {\n    throw new Error('ART selective deoptimization API unavailable');\n  }\n  // Official exported query, when present, also detects other hook engines.\n  // Read under the same exclusive lock as mutation to avoid a query/mutate race.\n  const isDeoptimized = api['art::Instrumentation::IsDeoptimized'];\n  const enableDeopt = api['art::Instrumentation::EnableDeoptimization'];\n  const enabledAddress = enableDeopt === undefined ? null :\n    instrumentation.add(getArtInstrumentationSpec().offset.deoptimizationEnabled);\n  const pending = [];\n  for (let i = 0; i < decoded.length; i++) {\n    // When ART offers its own query it is authoritative: a different engine may\n    // have since undeoptimized a method or reclaimed/reused an old address.\n    if (isDeoptimized === undefined && selectiveDeoptimizedMethods.has(identities[i])) { skipped++; continue; }\n    pending.push(i);\n  }\n  for (let offset = 0; offset < pending.length; offset += batchSize) {\n    const batchIndices = pending.slice(offset, offset + batchSize);\n    const batch = batchIndices.map(i => decoded[i]);\n    // Preallocate outside STW; record only integer counters in the native loop.\n    const applied = new Uint8Array(batch.length);\n    let completed = 0;\n    try {\n      withAllArtThreadsSuspended(() => {\n        if (enableDeopt !== undefined && enabledAddress.readU8() === 0) {\n          enableDeopt(instrumentation);\n        }\n        for (let i = 0; i < batch.length; i++) {\n          if (isDeoptimized !== undefined && isDeoptimized(instrumentation, batch[i])) {\n            completed++;\n            continue;\n          }\n          deoptimize(instrumentation, batch[i]);\n          applied[i] = 1;\n          completed++;\n        }\n      });\n      batches++;\n    } finally {\n      // The helper has already resumed every ART thread, including on failure.\n      // Persist successes from a partially completed batch before propagating.\n      for (let i = 0; i < completed; i++) {\n        selectiveDeoptimizedMethods.add(identities[batchIndices[i]]);\n        if (applied[i] === 1) count++; else skipped++;\n      }\n    }\n  }\n  return { count, batches, batch_size: batchSize, strategy, skipped,\n    requested_count: requested, already_global: false };\n}\n",
+            "old": "export function deoptimizeMethod (vm, env, method) {\n  requestDeoptimization(vm, env, kSelectiveDeoptimization, unwrapMethodId(method));\n}\n"
+          },
+          {
+            "new": "export function deoptimizeEverything (vm, env) {\n  if (globalDeoptimizationApplied) {\n    return;\n  }\n  requestDeoptimization(vm, env, kFullDeoptimization);\n  // Only a successful original global operation authorizes selective skipping.\n  globalDeoptimizationApplied = true;\n}",
+            "old": "export function deoptimizeEverything (vm, env) {\n  requestDeoptimization(vm, env, kFullDeoptimization);\n}"
+          },
+          {
+            "new": "          _ZN3art15instrumentation15Instrumentation10DeoptimizeEPNS_9ArtMethodE: ['art::Instrumentation::Deoptimize', 'void', ['pointer', 'pointer']],\n          _ZN3art15instrumentation15Instrumentation13IsDeoptimizedEPNS_9ArtMethodE: ['art::Instrumentation::IsDeoptimized', 'bool', ['pointer', 'pointer']],",
+            "old": "          _ZN3art15instrumentation15Instrumentation10DeoptimizeEPNS_9ArtMethodE: ['art::Instrumentation::Deoptimize', 'void', ['pointer', 'pointer']],"
+          },
+          {
+            "new": "          '_ZN3art15instrumentation15Instrumentation10DeoptimizeEPNS_9ArtMethodE',\n          '_ZN3art15instrumentation15Instrumentation13IsDeoptimizedEPNS_9ArtMethodE',",
+            "old": "          '_ZN3art15instrumentation15Instrumentation10DeoptimizeEPNS_9ArtMethodE',"
+          }
+        ],
+        "path": "lib/android.js"
+      },
+      {
+        "afterSha256": "ab52edd1582d68ca765a4c052134a941f726f7d150ca8e50d3f8dea1a3aef487",
+        "beforeSha256": "2dac3a8e2c7424965a6462c970a937d065a094d0e740a51a59373386836baa7c",
+        "operations": [
+          {
+            "new": "  deoptimizeMethod,\n  deoptimizeMethods\n} from './lib/android.js';",
+            "old": "  deoptimizeMethod\n} from './lib/android.js';"
+          },
+          {
+            "new": "  deoptimizeMethod (method) {\n    const { vm } = this;\n    return deoptimizeMethod(vm, vm.getEnv(), method);\n  }\n\n  deoptimizeMethods (methods, options = {}) {\n    const { vm } = this;\n    return deoptimizeMethods(vm, vm.getEnv(), methods, options);\n  }\n",
+            "old": "  deoptimizeMethod (method) {\n    const { vm } = this;\n    return deoptimizeMethod(vm, vm.getEnv(), method);\n  }\n"
+          }
+        ],
+        "path": "index.js"
+      },
+      {
+        "afterSha256": "3c695f5d1b77becad529c6c58b313412f0618288887e92155bb4b5258c61fb41",
+        "beforeSha256": "d13f96a494192f0bd53f97d34acd744418d9f49ff30946fc6665542decfe6ad8",
+        "operations": [
+          {
+            "new": "        function deoptimizeBootImage(): void;\n\n        /** Decode and deoptimize one method handle (hnubl scoped bridge API). */\n        function deoptimizeMethod(method: NativePointer): void;\n\n        /** Short, bounded Native-state ART batches; handles never persist across processes. */\n        function deoptimizeMethods(methods: NativePointer[], options?: { batchSize?: number }): {\n            count: number;\n            batches: number;\n            batch_size: number;\n            strategy: 'selective_batch' | 'selective_legacy';\n            skipped: number;\n            requested_count: number;\n            already_global: boolean;\n        };\n",
+            "old": "        function deoptimizeBootImage(): void;\n"
+          }
+        ],
+        "path": "index.d.ts"
+      }
+    ],
+    "id": "hnubl-selective-deoptimization-batch-v1",
+    "maximumBatchSize": 64,
+    "nativeStateQuery": {
+      "deviceDynsymVerified": true,
+      "lock": "exclusive mutator lock inside suspended block",
+      "optional": true,
+      "prototype": "bool Instrumentation::IsDeoptimized(ArtMethod*)",
+      "source": "https://android.googlesource.com/platform/art/+/refs/heads/main/runtime/instrumentation.h",
+      "symbol": "_ZN3art15instrumentation15Instrumentation13IsDeoptimizedEPNS_9ArtMethodE"
+    },
+    "noGlobalDeoptimizationAdded": true,
+    "origin": "local-scoped-policy",
+    "persistentPointers": false,
+    "purpose": "Opaque method IDs resolve before bounded Native-state exclusive batches. Shared process-local single/batch success registry makes repeated calls idempotent and records partial successes after ResumeAll. Optional official IsDeoptimized query checks external ART state while holding the same exclusive lock; no guessed offsets. Successful global deoptimization is separately recorded; BootImage does not mark all app methods. Original legacy/global behavior and no persistent addresses retained.",
+    "runtimeVersionUnchanged": "17.25.0",
+    "schema": 1
+  },
+  "bridgeSelectivePolicy": {
+    "afterSha256": "1ab32411d6ea7108d2e2d3b37a21bdf09fbaf9265951bd6f44b3173fdf352dfb",
+    "baseVersion": "7.0.13",
+    "beforeSha256": "656f42dab10a2a21bef590a26b7cc333edb44601c276591fcf0e0b232451d7db",
+    "id": "hnubl-selective-deoptimization-method-id-v1",
+    "new": "requestDeoptimization(vm, env, kSelectiveDeoptimization, unwrapMethodId(method));",
+    "noGlobalDeoptimizationAdded": true,
+    "old": "requestDeoptimization(vm, env, kSelectiveDeoptimization, method);",
+    "origin": "local-scoped-policy",
+    "path": "lib/android.js",
+    "purpose": "Decode opaque JNI method IDs, including constructor handles, through the bridge's existing runtime-aware decoder before the selective ArtMethod API.",
+    "runtimeVersionUnchanged": "17.25.0",
+    "schema": 1
+  },
   "frida": {
     "bytes": 84601832,
     "elfSha256": "1d3374cdbb73f3fe4737f7e7a77e6d17e19914f16d1bffbd6c42999800f8dbeb",
@@ -146,6 +393,133 @@
     "classes": 3134,
     "sha256": "79b9ed26f09012a0195068003e208dd39a280fa8939ca399ccff081ba717f698",
     "sourceJadxSha256": "fe3e12c45acf75f92369685fd02d1d7a7323385dc725680a9b98a0dac0ea554b"
+  },
+  "runtimeVariant": {
+    "changes": [
+      {
+        "after": 107,
+        "before": 102,
+        "offset": 1430751
+      },
+      {
+        "after": 115,
+        "before": 114,
+        "offset": 1430752
+      },
+      {
+        "after": 117,
+        "before": 105,
+        "offset": 1430753
+      },
+      {
+        "after": 95,
+        "before": 100,
+        "offset": 1430754
+      },
+      {
+        "after": 102,
+        "before": 97,
+        "offset": 1430755
+      },
+      {
+        "after": 105,
+        "before": 95,
+        "offset": 1430756
+      },
+      {
+        "after": 108,
+        "before": 109,
+        "offset": 1430757
+      },
+      {
+        "after": 58,
+        "before": 109,
+        "offset": 1430759
+      },
+      {
+        "after": 115,
+        "before": 102,
+        "offset": 1430760
+      },
+      {
+        "after": 48,
+        "before": 100,
+        "offset": 1430761
+      },
+      {
+        "after": 0,
+        "before": 58,
+        "offset": 1430762
+      },
+      {
+        "after": 0,
+        "before": 115,
+        "offset": 1430763
+      },
+      {
+        "after": 0,
+        "before": 48,
+        "offset": 1430764
+      },
+      {
+        "after": 192,
+        "before": 75,
+        "offset": 9535960
+      },
+      {
+        "after": 3,
+        "before": 118,
+        "offset": 9535961
+      },
+      {
+        "after": 95,
+        "before": 7,
+        "offset": 9535962
+      },
+      {
+        "after": 214,
+        "before": 21,
+        "offset": 9535963
+      }
+    ],
+    "derivedElfSha256": "3db476d1cfb390f4feab17ca4463c047c2007b71d1f62873f539a5e6523a802b",
+    "elfBytes": 84601832,
+    "globalPolicyReloadEnabled": false,
+    "id": "hnubl-ksu-provider-no-global-policy-v1",
+    "initializerSha256": "8b98c8ef5cc55b2c5eed8603c54897c19b00c309c869887907192f44da65a8e1",
+    "memfdLabelSetterSha256": "89c602c29c5ab3080232ebf52d8de2cb6b774704192f02fa77f547d55cc23f66",
+    "originalRuntimeFallbackEnabled": false,
+    "policyFunctionSha256": "f6f88c187787219f7e08963ae6a19e02353a6ae118b333f747585de52a2387ea",
+    "recipeSha256": "99426af17754f76560fd866307f9eafa7e0277907bbd0098c2a4ad8ebba07b92",
+    "requiredProviderContext": "u:object_r:ksu_file:s0",
+    "schema": 1,
+    "sections": {
+      ".rodata": {
+        "address": 1249280,
+        "bytes": 6279308,
+        "flags": 50,
+        "offset": 1249280
+      },
+      ".text": {
+        "address": 9514496,
+        "bytes": 74207632,
+        "flags": 6,
+        "offset": 9514496
+      }
+    },
+    "sourcePatchSha256": "bf78702d1e4ed7f395375702f431ab7650c65dab16a61c71c52ef42fb602e5bf",
+    "sourceUrls": [
+      "https://github.com/frida/frida-core/blob/17.25.0/inject/inject-glue.c",
+      "https://github.com/frida/frida-core/blob/17.25.0/src/linux/linjector.vala",
+      "https://github.com/frida/frida-core/blob/17.25.0/lib/selinux/patch.c"
+    ],
+    "uniqueDirectPolicyCallers": [
+      9535960
+    ],
+    "upstreamElfSha256": "1d3374cdbb73f3fe4737f7e7a77e6d17e19914f16d1bffbd6c42999800f8dbeb",
+    "upstreamUrl": "https://github.com/frida/frida/releases/download/17.25.0/frida-inject-17.25.0-android-arm64.xz",
+    "upstreamVersion": "17.25.0",
+    "upstreamXzSha256": "987d0a900cf1bc3878ba8b34b00ad2889e55e4ba26a8da7140a881f652982a73"
   },
   "schema": 1
 }

@@ -123,12 +123,26 @@ class FlashingUnlockCompatibilityTest {
     @Test fun rejectsTamperedFinishedAdaptersInsteadOfRepairingTheirClaims() {
         val source = source()
         val completed = AblEfisp.patch(source.bytes, PatchMode.FREEDOM)
-        val image = PeImage.parse(completed.output)
+        // Isolate flashing's own malformed adapter contract. Changing an inner
+        // native byte under VM's immutable receipt is separately a whole-layer
+        // integrity error, which the default API must reject before matching.
+        val withoutVm = VmDtboCompatPatcher.remove(completed.output)
+        val image = PeImage.parse(withoutVm)
         val plan = requireNotNull(FlashingUnlockPatcher.analyze(image))
         val front = requireNotNull(plan.existingFrontStubRva)
         val transaction = requireNotNull(plan.existingTransactionStubRva)
         assertEquals(0x52800020, image.word(transaction + 20))
         assertEquals(0x2a1f03e0, image.word(transaction + 48))
+        val completedImage=PeImage.parse(completed.output)
+        val tamperedWhole=changed(completedImage,mapOf(transaction + 48 to 0x52800020))
+        val wholeSnapshot=tamperedWhole.bytes.copyOf()
+        val receiptFailure=assertThrows(PatchException::class.java) {
+            AblEfisp.patch(tamperedWhole.bytes,PatchMode.FREEDOM)
+        }
+        assertTrue(receiptFailure.message.orEmpty(),receiptFailure.message.orEmpty().contains("VM DTBO"))
+        assertArrayEquals("Whole-layer rejection preserves the tampered caller-owned image",wholeSnapshot,tamperedWhole.bytes)
+        assertArrayEquals("The untampered complete output remains idempotent",completed.output,
+            AblEfisp.patch(completed.output,PatchMode.FREEDOM).output)
         // WRITE_CONFIG becoming READ would create a false commit. READ_CONFIG
         // becoming WRITE would issue a second write from the temporary buffer.
         rejectUnchanged(changed(image, mapOf(transaction + 20 to 0x2a1f03e0)))
@@ -142,6 +156,6 @@ class FlashingUnlockCompatibilityTest {
         // Exact reimport must reject reversed original lock/current semantics.
         val oldConditional = requireNotNull(image.word(front + 4))
         rejectUnchanged(changed(image, mapOf(front + 4 to (oldConditional xor 1))))
-        assertArrayEquals(completed.output, image.bytes)
+        assertArrayEquals(withoutVm, image.bytes)
     }
 }

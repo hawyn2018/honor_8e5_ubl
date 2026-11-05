@@ -13,6 +13,8 @@ final class NativePolicyTypes {
     static String rules(String client, String server, String socket) throws IOException {
         for (String type : new String[] { client, server, socket }) if (type == null || !type.matches("[A-Za-z0-9_]+")) throw new IOException("SELinux rule type rejected");
         return "allow " + client + " " + server + " unix_stream_socket connectto\n" +
-            "allow " + client + " " + socket + " sock_file { getattr write }\n";
+            "allow " + client + " " + socket + " sock_file { getattr write }\n" +
+            // Only the already verified native daemon's actual SELinux type.
+            "allow " + client + " " + client + " process execmem\n";
     }
 }

@@ -7,6 +7,7 @@
 #define KBL_DRIVER_TEST 1
 #include "../kbl_driver.c"
 
+static unsigned fake_native_in_job,fake_native_job_active;
 static unsigned checks,cases,el=1,allocs,frees,page_allocs,page_frees,handles,installs,uninstalls,locates;
 static unsigned fail_free,fail_uninstall,missing_attr,deny_attr,deny_clear,deny_get,fail_start,start_calls,stop_calls;
 static unsigned fail_page_alloc,partial_page_alloc;
@@ -39,6 +40,7 @@ static int native_start(void*o,void**out){(void)o;CHECK(np->stack_bytes==256u*10
 static int native_submit(void*c,const unsigned char*p,size_t n,uint64_t*j){(void)c;(void)p;(void)n;*j=1;return 0;}
 static int native_poll(void*c,uint64_t j,unsigned b,unsigned char*p,size_t cap,size_t*w,int*d,int*r){(void)c;(void)j;(void)b;(void)p;(void)cap;*w=0;*d=1;*r=0;return 0;}
 static int native_stop(void*c){++stop_calls;np->release(np->opaque,c,sizeof(struct fake_context));return 0;}
+int kbl_native_get_stats(void*c,struct kbl_native_stats*s){(void)c;memset(s,0,sizeof(*s));s->el=el;s->in_job=fake_native_in_job;s->job_active=fake_native_job_active;return 0;}
 int kbl_native_backend(struct kbl_backend*b,const struct kbl_native_platform*p){np=p;*b=(struct kbl_backend){0,current_el,native_start,native_submit,native_poll,native_stop,0,0};return 0;}
 /* This legacy failure model intentionally has no external native file API.
  * Real native ADB/broker integration is covered by its separate fixture. */

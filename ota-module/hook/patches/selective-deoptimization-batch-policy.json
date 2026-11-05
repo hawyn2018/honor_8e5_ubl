@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "id": "hnubl-selective-deoptimization-batch-v1",
+  "origin": "local-scoped-policy",
+  "baseVersion": "7.0.13",
+  "runtimeVersionUnchanged": "17.25.0",
+  "noGlobalDeoptimizationAdded": true,
+  "defaultBatchSize": 32,
+  "maximumBatchSize": 64,
+  "persistentPointers": false,
+  "files": [
+    {
+      "path": "lib/android.js",
+      "beforeSha256": "c07e48215e756ce62a0cf2907e4dd5657caaf5bafc99e990941e4c74a9393af4",
+      "afterSha256": "e576b6904da6febc76f5d5407719949b9076998263a51d89a76de79481081c1f",
+      "operations": [
+        {
+          "old": "export function deoptimizeMethod (vm, env, method) {\n  requestDeoptimization(vm, env, kSelectiveDeoptimization, unwrapMethodId(method));\n}\n",
+          "new": "// Runtime-local only: native ART addresses must never survive this bridge VM.\nconst selectiveDeoptimizedMethods = new Set();\nlet globalDeoptimizationApplied = false;\n\nexport function deoptimizeMethod (vm, env, method) {\n  deoptimizeMethods(vm, env, [method]);\n}\n\n/** Decode opaque JNI IDs before short Native-state exclusive ART batches.\n * Successful methods share one process-local registry across single/batch calls.\n */\nexport function deoptimizeMethods (vm, env, methods, options = {}) {\n  if (!Array.isArray(methods)) {\n    throw new TypeError('Selective methods must be an array');\n  }\n  const batchSize = options.batchSize === undefined ? 32 : options.batchSize;\n  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64) {\n    throw new RangeError('Selective batchSize must be an integer from 1 to 64');\n  }\n  const level = getAndroidApiLevel();\n  if (level < 24) {\n    throw new Error('This API is only available on Android >= 7.0');\n  }\n  const decoded = [];\n  const identities = [];\n  const seen = new Set();\n  for (const handle of methods) {\n    if (handle === null || handle === undefined || typeof handle.isNull !== 'function' || handle.isNull()) {\n      throw new TypeError('Selective method handle must be a non-null NativePointer');\n    }\n    const method = unwrapMethodId(handle);\n    if (method === null || method === undefined || typeof method.isNull !== 'function' || method.isNull()) {\n      throw new Error('Decoded selective ArtMethod must be non-null');\n    }\n    const identity = method.toString();\n    if (!seen.has(identity)) {\n      seen.add(identity);\n      decoded.push(method);\n      identities.push(identity);\n    }\n  }\n  const strategy = level < 30 ? 'selective_legacy' : 'selective_batch';\n  const requested = decoded.length;\n  if (globalDeoptimizationApplied || requested === 0) {\n    return { count: 0, batches: 0, batch_size: batchSize, strategy,\n      skipped: requested, requested_count: requested, already_global: globalDeoptimizationApplied };\n  }\n  let count = 0, skipped = 0, batches = 0;\n  if (level < 30) {\n    for (let i = 0; i < decoded.length; i++) {\n      if (selectiveDeoptimizedMethods.has(identities[i])) { skipped++; continue; }\n      requestDeoptimization(vm, env, kSelectiveDeoptimization, decoded[i]);\n      selectiveDeoptimizedMethods.add(identities[i]);\n      count++; batches++;\n    }\n    return { count, batches, batch_size: 1, strategy, skipped, requested_count: requested, already_global: false };\n  }\n  // Resolve every capability, address and batch before STW. No JNI, reflection,\n  // lazy lookup, allocation, registry mutation or user callback runs inside it.\n  const api = getApi();\n  const instrumentation = api.artInstrumentation;\n  if (instrumentation === null || instrumentation === undefined) {\n    throw new Error('ART Instrumentation unavailable for selective batch deoptimization');\n  }\n  if (api['art::ThreadList::SuspendAll'] === undefined || api['art::ThreadList::ResumeAll'] === undefined) {\n    throw new Error('ART exclusive suspension API unavailable');\n  }\n  const deoptimize = api['art::Instrumentation::Deoptimize'];\n  if (deoptimize === undefined) {\n    throw new Error('ART selective deoptimization API unavailable');\n  }\n  // Official exported query, when present, also detects other hook engines.\n  // Read under the same exclusive lock as mutation to avoid a query/mutate race.\n  const isDeoptimized = api['art::Instrumentation::IsDeoptimized'];\n  const enableDeopt = api['art::Instrumentation::EnableDeoptimization'];\n  const enabledAddress = enableDeopt === undefined ? null :\n    instrumentation.add(getArtInstrumentationSpec().offset.deoptimizationEnabled);\n  const pending = [];\n  for (let i = 0; i < decoded.length; i++) {\n    // When ART offers its own query it is authoritative: a different engine may\n    // have since undeoptimized a method or reclaimed/reused an old address.\n    if (isDeoptimized === undefined && selectiveDeoptimizedMethods.has(identities[i])) { skipped++; continue; }\n    pending.push(i);\n  }\n  for (let offset = 0; offset < pending.length; offset += batchSize) {\n    const batchIndices = pending.slice(offset, offset + batchSize);\n    const batch = batchIndices.map(i => decoded[i]);\n    // Preallocate outside STW; record only integer counters in the native loop.\n    const applied = new Uint8Array(batch.length);\n    let completed = 0;\n    try {\n      withAllArtThreadsSuspended(() => {\n        if (enableDeopt !== undefined && enabledAddress.readU8() === 0) {\n          enableDeopt(instrumentation);\n        }\n        for (let i = 0; i < batch.length; i++) {\n          if (isDeoptimized !== undefined && isDeoptimized(instrumentation, batch[i])) {\n            completed++;\n            continue;\n          }\n          deoptimize(instrumentation, batch[i]);\n          applied[i] = 1;\n          completed++;\n        }\n      });\n      batches++;\n    } finally {\n      // The helper has already resumed every ART thread, including on failure.\n      // Persist successes from a partially completed batch before propagating.\n      for (let i = 0; i < completed; i++) {\n        selectiveDeoptimizedMethods.add(identities[batchIndices[i]]);\n        if (applied[i] === 1) count++; else skipped++;\n      }\n    }\n  }\n  return { count, batches, batch_size: batchSize, strategy, skipped,\n    requested_count: requested, already_global: false };\n}\n"
+        },
+        {
+          "old": "export function deoptimizeEverything (vm, env) {\n  requestDeoptimization(vm, env, kFullDeoptimization);\n}",
+          "new": "export function deoptimizeEverything (vm, env) {\n  if (globalDeoptimizationApplied) {\n    return;\n  }\n  requestDeoptimization(vm, env, kFullDeoptimization);\n  // Only a successful original global operation authorizes selective skipping.\n  globalDeoptimizationApplied = true;\n}"
+        },
+        {
+          "old": "          _ZN3art15instrumentation15Instrumentation10DeoptimizeEPNS_9ArtMethodE: ['art::Instrumentation::Deoptimize', 'void', ['pointer', 'pointer']],",
+          "new": "          _ZN3art15instrumentation15Instrumentation10DeoptimizeEPNS_9ArtMethodE: ['art::Instrumentation::Deoptimize', 'void', ['pointer', 'pointer']],\n          _ZN3art15instrumentation15Instrumentation13IsDeoptimizedEPNS_9ArtMethodE: ['art::Instrumentation::IsDeoptimized', 'bool', ['pointer', 'pointer']],"
+        },
+        {
+          "old": "          '_ZN3art15instrumentation15Instrumentation10DeoptimizeEPNS_9ArtMethodE',",
+          "new": "          '_ZN3art15instrumentation15Instrumentation10DeoptimizeEPNS_9ArtMethodE',\n          '_ZN3art15instrumentation15Instrumentation13IsDeoptimizedEPNS_9ArtMethodE',"
+        }
+      ]
+    },
+    {
+      "path": "index.js",
+      "beforeSha256": "2dac3a8e2c7424965a6462c970a937d065a094d0e740a51a59373386836baa7c",
+      "afterSha256": "ab52edd1582d68ca765a4c052134a941f726f7d150ca8e50d3f8dea1a3aef487",
+      "operations": [
+        {
+          "old": "  deoptimizeMethod\n} from './lib/android.js';",
+          "new": "  deoptimizeMethod,\n  deoptimizeMethods\n} from './lib/android.js';"
+        },
+        {
+          "old": "  deoptimizeMethod (method) {\n    const { vm } = this;\n    return deoptimizeMethod(vm, vm.getEnv(), method);\n  }\n",
+          "new": "  deoptimizeMethod (method) {\n    const { vm } = this;\n    return deoptimizeMethod(vm, vm.getEnv(), method);\n  }\n\n  deoptimizeMethods (methods, options = {}) {\n    const { vm } = this;\n    return deoptimizeMethods(vm, vm.getEnv(), methods, options);\n  }\n"
+        }
+      ]
+    },
+    {
+      "path": "index.d.ts",
+      "beforeSha256": "d13f96a494192f0bd53f97d34acd744418d9f49ff30946fc6665542decfe6ad8",
+      "afterSha256": "3c695f5d1b77becad529c6c58b313412f0618288887e92155bb4b5258c61fb41",
+      "operations": [
+        {
+          "old": "        function deoptimizeBootImage(): void;\n",
+          "new": "        function deoptimizeBootImage(): void;\n\n        /** Decode and deoptimize one method handle (hnubl scoped bridge API). */\n        function deoptimizeMethod(method: NativePointer): void;\n\n        /** Short, bounded Native-state ART batches; handles never persist across processes. */\n        function deoptimizeMethods(methods: NativePointer[], options?: { batchSize?: number }): {\n            count: number;\n            batches: number;\n            batch_size: number;\n            strategy: 'selective_batch' | 'selective_legacy';\n            skipped: number;\n            requested_count: number;\n            already_global: boolean;\n        };\n"
+        }
+      ]
+    }
+  ],
+  "purpose": "Opaque method IDs resolve before bounded Native-state exclusive batches. Shared process-local single/batch success registry makes repeated calls idempotent and records partial successes after ResumeAll. Optional official IsDeoptimized query checks external ART state while holding the same exclusive lock; no guessed offsets. Successful global deoptimization is separately recorded; BootImage does not mark all app methods. Original legacy/global behavior and no persistent addresses retained.",
+  "nativeStateQuery": {
+    "symbol": "_ZN3art15instrumentation15Instrumentation13IsDeoptimizedEPNS_9ArtMethodE",
+    "optional": true,
+    "prototype": "bool Instrumentation::IsDeoptimized(ArtMethod*)",
+    "lock": "exclusive mutator lock inside suspended block",
+    "source": "https://android.googlesource.com/platform/art/+/refs/heads/main/runtime/instrumentation.h",
+    "deviceDynsymVerified": true
+  }
+}

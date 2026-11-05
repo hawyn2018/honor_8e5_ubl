@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "id": "hnubl-art-quick-code-publication-v1",
+  "origin": "local-scoped-policy",
+  "baseVersion": "7.0.13",
+  "runtimeVersionUnchanged": "17.25.0",
+  "noGlobalDeoptimizationAdded": true,
+  "persistentPointers": false,
+  "files": [
+    {
+      "path": "lib/android.js",
+      "beforeSha256": "e971012635ae8a051eef84e09330de4bdb561cc2164d7a838e7b42ddc50b90f7",
+      "afterSha256": "1a4554cf82f05a68e625fd3070009ecbbb8130722ece5e6cb5caa1483cc6d6b0",
+      "operations": [
+        {
+          "old": "const artQuickInterceptors = [];",
+          "new": "const artQuickInterceptors = [];\nconst retiredArtQuickCodeInterceptors = [];"
+        },
+        {
+          "old": "const artQuickCodePrologueWriters = {",
+          "new": "function retireArtQuickCodeInterceptor (owner) {\n  if (owner._retired === true) return;\n  owner._retired = true;\n  retiredArtQuickCodeInterceptors.push(owner);\n}\n\nfunction publishArtQuickCodePatch (target, bytes, relocatedLength) {\n  const api = getApi();\n  if (api['art::ThreadList::SuspendAll'] === undefined || api['art::ThreadList::ResumeAll'] === undefined) {\n    throw new Error('ART exclusive suspension API unavailable for quick-code publication');\n  }\n  const size = bytes.byteLength;\n  if (size === 0 || (relocatedLength !== undefined && size > relocatedLength)) {\n    throw new Error('ART quick-code patch exceeds its completed relocation');\n  }\n  // Prepare every byte/callback before STW. No writer/literal generation or\n  // Java/JNI work runs in the apply callbacks, including failure rollback.\n  const previous = target.readByteArray(size);\n  const copy = code => code.writeByteArray(bytes);\n  const restore = code => code.writeByteArray(previous);\n  let failure = null, rollbackFailure = null;\n  withAllArtThreadsSuspended(() => {\n    try { Memory.patchCode(target, size, copy); }\n    catch (error) {\n      failure = error;\n      try { Memory.patchCode(target, size, restore); }\n      catch (error) { rollbackFailure = error; }\n    }\n  });\n  if (failure !== null) {\n    if (rollbackFailure !== null) failure.quickCodeRollbackFailure = String(rollbackFailure);\n    throw failure;\n  }\n  return bytes;\n}\n\nconst artQuickCodePrologueWriters = {"
+        },
+        {
+          "old": "function writeArtQuickCodePrologueX86 (target, trampoline, redirectSize) {\n  Memory.patchCode(target, 16, code => {\n    const writer = new X86Writer(code, { pc: target });\n\n    writer.putJmpAddress(trampoline);\n    writer.flush();\n  });\n}",
+          "new": "function writeArtQuickCodePrologueX86 (target, trampoline, redirectSize, prologueLength) {\n  const code = Memory.alloc(64);\n  const writer = new X86Writer(code, { pc: target });\n  writer.putJmpAddress(trampoline);\n  writer.flush();\n  return publishArtQuickCodePatch(target, code.readByteArray(writer.offset), prologueLength);\n}"
+        },
+        {
+          "old": "function writeArtQuickCodePrologueArm (target, trampoline, redirectSize) {\n  const targetAddress = target.and(THUMB_BIT_REMOVAL_MASK);\n\n  Memory.patchCode(targetAddress, 16, code => {\n    const writer = new ThumbWriter(code, { pc: targetAddress });\n\n    writer.putLdrRegAddress('pc', trampoline.or(1));\n    writer.flush();\n  });\n}",
+          "new": "function writeArtQuickCodePrologueArm (target, trampoline, redirectSize, prologueLength) {\n  const targetAddress = target.and(THUMB_BIT_REMOVAL_MASK);\n  const code = Memory.alloc(64);\n  const writer = new ThumbWriter(code, { pc: targetAddress });\n  writer.putLdrRegAddress('pc', trampoline.or(1));\n  writer.flush();\n  return publishArtQuickCodePatch(targetAddress, code.readByteArray(writer.offset), prologueLength);\n}"
+        },
+        {
+          "old": "function writeArtQuickCodePrologueArm64 (target, trampoline, redirectSize) {\n  Memory.patchCode(target, 16, code => {\n    const writer = new Arm64Writer(code, { pc: target });\n\n    if (redirectSize === 16) {\n      writer.putLdrRegAddress('x16', trampoline);\n    } else {\n      writer.putAdrpRegAddress('x16', trampoline);\n    }\n\n    writer.putBrReg('x16');\n\n    writer.flush();\n  });\n}",
+          "new": "function writeArtQuickCodePrologueArm64 (target, trampoline, redirectSize, prologueLength) {\n  const code = Memory.alloc(64);\n  const writer = new Arm64Writer(code, { pc: target });\n  if (redirectSize === 16) {\n    writer.putLdrRegAddress('x16', trampoline);\n  } else {\n    writer.putAdrpRegAddress('x16', trampoline);\n  }\n  writer.putBrReg('x16');\n  writer.flush();\n  return publishArtQuickCodePatch(target, code.readByteArray(writer.offset), prologueLength);\n}"
+        },
+        {
+          "old": "    const Writer = thunkWriters[Process.arch];\n    Memory.patchCode(quickCodeAddress, prologueLength, code => {\n      const writer = new Writer(code, { pc: quickCodeAddress });\n\n      const { overwrittenPrologue } = this;\n\n      writer.putBytes(overwrittenPrologue.readByteArray(prologueLength));\n      writer.flush();\n    });\n\n    this._destroyTrampoline();",
+          "new": "    const published = this.publishedPrologue;\n    if (published !== null) {\n      const observed = new Uint8Array(quickCodeAddress.readByteArray(published.byteLength));\n      const expected = new Uint8Array(published);\n      let owned = observed.length === expected.length;\n      for (let i = 0; owned && i < expected.length; i++) owned = observed[i] === expected[i];\n      if (!owned) {\n        // Do not restore over an identifiable later owner. This preflight is\n        // not a claim to synchronize arbitrary third-party native writers.\n        this.restoreSkipped = true;\n        retireArtQuickCodeInterceptor(this);\n        return;\n      }\n    }\n    const bytes = this.overwrittenPrologue.readByteArray(prologueLength);\n    try { publishArtQuickCodePatch(quickCodeAddress, bytes); }\n    finally {\n      // Native/in-flight calls may still return through the retired trampoline.\n      retireArtQuickCodeInterceptor(this);\n    }"
+        },
+        {
+          "old": "    writePrologue(quickCode, trampoline, redirectSize);",
+          "new": "    try {\n      this.publishedPrologue = writePrologue(quickCode, trampoline, redirectSize, prologueLength);\n    } catch (error) {\n      retireArtQuickCodeInterceptor(this);\n      throw error;\n    }"
+        },
+        {
+          "old": "    this.overwrittenPrologueLength = 0;",
+          "new": "    this.overwrittenPrologueLength = 0;\n    this.publishedPrologue = null;"
+        },
+        {
+          "old": "let taughtArtAboutMethodInstrumentation = false;",
+          "new": "let taughtArtAboutMethodInstrumentation = false;\nlet artMethodInstrumentationFailure = null;"
+        },
+        {
+          "old": "function ensureArtKnowsHowToHandleMethodInstrumentation (vm) {\n  if (taughtArtAboutMethodInstrumentation) {\n    return;\n  }\n  taughtArtAboutMethodInstrumentation = true;\n\n  instrumentArtQuickEntrypoints(vm);\n  instrumentArtMethodInvocationFromInterpreter();\n  instrumentArtGarbageCollection();\n  instrumentArtFixupStaticTrampolines();\n}",
+          "new": "function ensureArtKnowsHowToHandleMethodInstrumentation (vm) {\n  if (artMethodInstrumentationFailure !== null) throw artMethodInstrumentationFailure;\n  if (taughtArtAboutMethodInstrumentation) {\n    return;\n  }\n  taughtArtAboutMethodInstrumentation = true;\n  try {\n    instrumentArtQuickEntrypoints(vm);\n    instrumentArtMethodInvocationFromInterpreter();\n    instrumentArtGarbageCollection();\n    instrumentArtFixupStaticTrampolines();\n  } catch (error) {\n    // Valid already-published entries stay rooted; never claim half-bootstrap\n    // is ready or stack a second initialization onto its remaining patches.\n    artMethodInstrumentationFailure = error;\n    taughtArtAboutMethodInstrumentation = false;\n    throw error;\n  }\n}"
+        },
+        {
+          "old": "const inlineHooks = [];",
+          "new": "const inlineHooks = [];\nconst retiredInlineHooks = [];"
+        },
+        {
+          "old": "class InlineHook {\n  constructor (address, size, trampoline) {\n    this.address = address;\n    this.size = size;\n    this.originalCode = address.readByteArray(size);\n    this.trampoline = trampoline;\n  }\n\n  revert () {\n    Memory.patchCode(this.address, this.size, code => {\n      code.writeByteArray(this.originalCode);\n    });\n  }\n}",
+          "new": "class InlineHook {\n  constructor (address, size, trampoline) {\n    this.address = address;\n    this.size = size;\n    this.originalCode = address.readByteArray(size);\n    this.trampoline = trampoline;\n    this.publishedCode = null;\n  }\n\n  revert () {\n    try {\n      if (this.publishedCode !== null) {\n        const observed = new Uint8Array(this.address.readByteArray(this.publishedCode.byteLength));\n        const expected = new Uint8Array(this.publishedCode);\n        let owned = observed.length === expected.length;\n        for (let i = 0; owned && i < expected.length; i++) owned = observed[i] === expected[i];\n        if (!owned) { this.restoreSkipped = true; return; }\n      }\n      publishArtQuickCodePatch(this.address, this.originalCode);\n    } finally {\n      // Existing/paused native stack visitors may still return through this page.\n      if (this._retired !== true) { this._retired = true; retiredInlineHooks.push(this); }\n    }\n  }\n}"
+        },
+        {
+          "old": "  inlineHooks.push(new InlineHook(address, redirectCapacity, trampoline));\n\n  Memory.patchCode(address, redirectCapacity, code => {\n    const writer = new ThumbWriter(code, { pc: address });\n    writer.putLdrRegAddress('pc', trampoline.or(1));\n    writer.flush();\n  });",
+          "new": "  const hook = new InlineHook(address, redirectCapacity, trampoline);\n  inlineHooks.push(hook);\n  const code = Memory.alloc(64);\n  const writer = new ThumbWriter(code, { pc: address });\n  writer.putLdrRegAddress('pc', trampoline.or(1));\n  writer.flush();\n  hook.publishedCode = publishArtQuickCodePatch(address, code.readByteArray(writer.offset), redirectCapacity);"
+        },
+        {
+          "old": "  inlineHooks.push(new InlineHook(address, size, trampoline));\n\n  Memory.patchCode(address, size, code => {\n    const writer = new Arm64Writer(code, { pc: address });\n    writer.putLdrRegAddress(scratchReg, trampoline);\n    writer.putBrReg(scratchReg);\n    writer.flush();\n  });",
+          "new": "  const hook = new InlineHook(address, size, trampoline);\n  inlineHooks.push(hook);\n  const code = Memory.alloc(64);\n  const writer = new Arm64Writer(code, { pc: address });\n  writer.putLdrRegAddress(scratchReg, trampoline);\n  writer.putBrReg(scratchReg);\n  writer.flush();\n  hook.publishedCode = publishArtQuickCodePatch(address, code.readByteArray(writer.offset), size);"
+        },
+        {
+          "old": "let taughtArtAboutReplacementMethods = false;",
+          "new": "let taughtArtAboutReplacementMethods = false;\nlet artReplacementMethodInstrumentationFailure = null;"
+        },
+        {
+          "old": "function ensureArtKnowsHowToHandleReplacementMethods (vm) {\n  if (taughtArtAboutReplacementMethods) {\n    return;\n  }\n  taughtArtAboutReplacementMethods = true;\n\n  if (!maybeInstrumentGetOatQuickMethodHeaderInlineCopies()) {\n    const { getOatQuickMethodHeaderImpl } = artController;\n    if (getOatQuickMethodHeaderImpl === null) {\n      return;\n    }\n\n    try {\n      Interceptor.replace(getOatQuickMethodHeaderImpl, artController.hooks.ArtMethod.getOatQuickMethodHeader);\n    } catch (e) {\n      /*\n       * Already replaced by another script. For now we don't support replacing methods from multiple scripts,\n       * but we'll allow users to try it if they're feeling adventurous.\n       */\n    }\n  }\n\n  const apiLevel = getAndroidApiLevel();\n\n  let copyingPhase = null;\n  const api = getApi();\n  if (apiLevel > 28) {\n    copyingPhase = api.find('_ZN3art2gc9collector17ConcurrentCopying12CopyingPhaseEv');\n  } else if (apiLevel > 22) {\n    copyingPhase = api.find('_ZN3art2gc9collector17ConcurrentCopying12MarkingPhaseEv');\n  }\n  if (copyingPhase !== null) {\n    Interceptor.attach(copyingPhase, artController.hooks.Gc.copyingPhase);\n  }\n\n  let runFlip = null;\n  runFlip = api.find('_ZN3art6Thread15RunFlipFunctionEPS0_');\n  if (runFlip === null) {\n    runFlip = api.find('_ZN3art6Thread15RunFlipFunctionEPS0_b');\n  }\n  if (runFlip !== null) {\n    Interceptor.attach(runFlip, artController.hooks.Gc.runFlip);\n  }\n}\n",
+          "new": "function ensureArtKnowsHowToHandleReplacementMethods (vm) {\n  if (artReplacementMethodInstrumentationFailure !== null) throw artReplacementMethodInstrumentationFailure;\n  if (taughtArtAboutReplacementMethods) {\n    return;\n  }\n  taughtArtAboutReplacementMethods = true;\n\n  try {\n    if (!maybeInstrumentGetOatQuickMethodHeaderInlineCopies()) {\n      const { getOatQuickMethodHeaderImpl } = artController;\n      if (getOatQuickMethodHeaderImpl === null) {\n        return;\n      }\n\n      try {\n        Interceptor.replace(getOatQuickMethodHeaderImpl, artController.hooks.ArtMethod.getOatQuickMethodHeader);\n      } catch (e) {\n        /*\n         * Already replaced by another script. For now we don't support replacing methods from multiple scripts,\n         * but we'll allow users to try it if they're feeling adventurous.\n         */\n      }\n    }\n\n    const apiLevel = getAndroidApiLevel();\n\n    let copyingPhase = null;\n    const api = getApi();\n    if (apiLevel > 28) {\n      copyingPhase = api.find('_ZN3art2gc9collector17ConcurrentCopying12CopyingPhaseEv');\n    } else if (apiLevel > 22) {\n      copyingPhase = api.find('_ZN3art2gc9collector17ConcurrentCopying12MarkingPhaseEv');\n    }\n    if (copyingPhase !== null) {\n      Interceptor.attach(copyingPhase, artController.hooks.Gc.copyingPhase);\n    }\n\n    let runFlip = null;\n    runFlip = api.find('_ZN3art6Thread15RunFlipFunctionEPS0_');\n    if (runFlip === null) {\n      runFlip = api.find('_ZN3art6Thread15RunFlipFunctionEPS0_b');\n    }\n    if (runFlip !== null) {\n      Interceptor.attach(runFlip, artController.hooks.Gc.runFlip);\n    }\n  } catch (error) {\n    artReplacementMethodInstrumentationFailure = error;\n    taughtArtAboutReplacementMethods = false;\n    throw error;\n  }\n}\n"
+        }
+      ]
+    }
+  ],
+  "purpose": "Prepare and flush complete quick-entry prologue bytes off-target before exclusive ART suspension; the paused patchCode callback only copies prepared bytes and finalizes I-cache synchronization. Restore uses the same publication protocol and retains retired trampoline owners/slices until script end. No live literal placeholder, JNI or writer generation during suspension; existing architecture/relocation choices remain. Before restoring, skip an identifiable later owner and retain trampolines. Commit errors attempt prepared rollback inside the same suspension. A failed shared bootstrap is sticky until target-process recreation, so partial success cannot be reported as complete. Also covers original ARM/ARM64 inlined OatQuickMethodHeader redirects and InlineHook restoration. Trampoline construction remains private/unpublished; semantic scan/relocation/register selection is unchanged."
+}

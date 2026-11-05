@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "id": "hnubl-selective-deoptimization-method-id-v1",
+  "origin": "local-scoped-policy",
+  "baseVersion": "7.0.13",
+  "runtimeVersionUnchanged": "17.25.0",
+  "path": "lib/android.js",
+  "beforeSha256": "656f42dab10a2a21bef590a26b7cc333edb44601c276591fcf0e0b232451d7db",
+  "afterSha256": "1ab32411d6ea7108d2e2d3b37a21bdf09fbaf9265951bd6f44b3173fdf352dfb",
+  "old": "requestDeoptimization(vm, env, kSelectiveDeoptimization, method);",
+  "new": "requestDeoptimization(vm, env, kSelectiveDeoptimization, unwrapMethodId(method));",
+  "purpose": "Decode opaque JNI method IDs, including constructor handles, through the bridge's existing runtime-aware decoder before the selective ArtMethod API.",
+  "noGlobalDeoptimizationAdded": true
+}

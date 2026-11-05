@@ -30,7 +30,7 @@ object PatchEngine {
     @JvmOverloads
     fun analyzeAndPatch(input: ByteArray, mode: PatchMode = PatchMode.FREEDOM): PatchResult {
         val extracted = extract(input)
-        val image = PeImage.parse(extracted.output)
+        val image = PeImage.parse(VmDtboCompatPatcher.remove(extracted.output))
         val analysis = SemanticPatcher.analyze(image)
         val pssPolicy = PssVerificationPatcher.analyze(image, analysis.stateVerifierRva)
         val additional = if (mode == PatchMode.FREEDOM_FAKE_LOCK) {
@@ -40,6 +40,12 @@ object PatchEngine {
             CheckRootPolicyPatcher.analyze(image)
         } else SemanticPlan(emptyList(), emptyList())
         val optionalNotes = arrayListOf<String>()
+        // This independent native policy belongs below owned VM/KBL mappings.
+        // Otherwise a recovery key-only fallback would mutate the native layer
+        // after VM's restoration receipt has captured its checksum.
+        val fastbootKey = OptionalPatchPolicy.analyze("音量下 Fastboot 资格策略", SemanticPlan(emptyList(), emptyList()), optionalNotes) {
+            FastbootKeyPolicyPatcher.analyze(image)
+        }
         val recovery = OptionalPatchPolicy.analyze("原生哈希日志上报路径恢复", emptyList<BootFailurePolicyPatcher.Plan>(), optionalNotes) {
             BootFailurePolicyPatcher.analyze(image)
         }
@@ -129,7 +135,7 @@ object PatchEngine {
         val superEdits = superUnlock?.let { plan -> SuperUnlockPatcher.edits(plan,
             requireNotNull(superAllocation),
         ) }.orEmpty()
-        val plan = analysis.edits + pssPolicy.edits + additional.edits + rootPolicy.edits + recoveryEdits + lateEdits + rollbackUpdate.edits + compatibility.edits + avbVersions.edits + specialSdam.edits + hashDescriptors.flatMap(AvbHashDescriptorPatcher::edits) + unlockEdits + mappingEdits + superEdits
+        val plan = analysis.edits + pssPolicy.edits + additional.edits + rootPolicy.edits + fastbootKey.edits + recoveryEdits + lateEdits + rollbackUpdate.edits + compatibility.edits + avbVersions.edits + specialSdam.edits + hashDescriptors.flatMap(AvbHashDescriptorPatcher::edits) + unlockEdits + mappingEdits + superEdits
         val output = outputImage.bytes.copyOf()
         val occupied = HashSet<Int>()
         val matches = plan.map { edit ->
@@ -156,9 +162,11 @@ object PatchEngine {
         val unlockNotes = flashingUnlock?.notes?.plus(
             "确认菜单之前的 OKAY 仅表示命令已接受；成功依据为事务内真实协议写入结果和独立缓冲区读回，不使用 Locked/Unlocked/Relocked、locked/unlocked 或 SAFE/RISK 显示值。",
         ) ?: listOf("未发现可匹配的普通 flashing unlock 流程，没有添加此项修改。")
+        val vmDtbo = VmDtboCompatPatcher.patch(output)
+        val unchanged = vmDtbo.bytes.contentEquals(extracted.output)
         return PatchResult(
-            output, extracted.sourceFormat, input.sha256(), output.sha256(), output.size,
-            matches, extracted.notes + optionalNotes + analysis.notes + pssPolicy.notes + additional.notes + rootPolicy.notes + recoveryNotes + lateNotes + rollbackUpdate.notes + compatibility.notes + avbVersions.notes + specialSdam.notes +
+            vmDtbo.bytes, extracted.sourceFormat, input.sha256(), vmDtbo.bytes.sha256(), vmDtbo.bytes.size,
+            (matches + vmDtbo.patches).map { if (unchanged) it.copy(alreadyApplied = true) else it }, extracted.notes + optionalNotes + vmDtbo.notes + fastbootKey.notes + analysis.notes + pssPolicy.notes + additional.notes + rootPolicy.notes + recoveryNotes + lateNotes + rollbackUpdate.notes + compatibility.notes + avbVersions.notes + specialSdam.notes +
                 (if (hashDescriptors.isEmpty()) listOf("未发现 HashDescriptor 数据摘要比较路径，保留原流程。") else listOf(
                     "按摘要比较调用、ABI 结果消费者、长度门与原生成功输出关系定位 ${hashDescriptors.size} 处共用 HashDescriptor 校验。",
                     "保留读盘、SHA 摘要计算与非零长度处理，仅将摘要比较结果固定为通过；保留原生条件分支和成功路径。",
@@ -170,7 +178,7 @@ object PatchEngine {
                 if (mappingEdits.isEmpty()) "输出保留原有 PE 节布局、入口与加载长度。"
                 else "原 RX 尾部不足，已为新增命令追加只读可执行映射并同步 PE 元数据；原节地址、原始文件偏移和入口保持。",
                 "已写入定位到的功能修改点。",
-            ), matches.all { it.alreadyApplied }, mode,
+            ), unchanged, mode,
         )
     }
 }

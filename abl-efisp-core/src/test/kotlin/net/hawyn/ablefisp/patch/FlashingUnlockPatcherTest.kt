@@ -31,7 +31,10 @@ class FlashingUnlockPatcherTest {
     @Test fun fourLayoutsBothModesRetainEveryByteOutsideTheFiveNewEdits() {
         for (f in fixtures) for (mode in PatchMode.entries) {
             val source = raw(f); val snapshot = source.copyOf()
-            val result = AblEfisp.patch(source, mode)
+            val finalResult = AblEfisp.patch(source, mode)
+            // Validate/remove the independently executed VM receipt and exact
+            // key span before comparing this historical per-feature baseline.
+            val result = finalResult.preVmHistoricalView()
             val historical = File(root(), "analysis/flashing-unlock-20261029/baseline/${f.name}.${if (mode == PatchMode.FREEDOM) "freedom" else "fake"}.pe").readBytes()
             val baseline = nativeReportingGolden(f, mode, historical)
             assertTrue(result.patches.none { it.name == "恢复原生 AVB hash 故障上报调用" })
@@ -64,9 +67,9 @@ class FlashingUnlockPatcherTest {
             assertArrayEquals(baseline.copyOfRange(0, before.headersSize), result.output.copyOfRange(0, after.headersSize))
             for (stub in added.drop(3)) assertArrayEquals(ByteArray(stub.after.split(' ').size),
                 baseline.copyOfRange(stub.fileOffset, stub.fileOffset + stub.after.split(' ').size))
-            val repeated = AblEfisp.patch(result.output, mode)
+            val repeated = AblEfisp.patch(finalResult.output, mode)
             assertTrue(repeated.alreadyPatched)
-            assertArrayEquals(result.output, repeated.output)
+            assertArrayEquals(finalResult.output, repeated.output)
             assertArrayEquals(snapshot, source)
         }
     }
@@ -115,7 +118,8 @@ class FlashingUnlockPatcherTest {
         for (mode in PatchMode.entries) {
             val baseline = File(root(), "analysis/flashing-unlock-20261029/baseline/new.${if (mode == PatchMode.FREEDOM) "freedom" else "fake"}.pe").readBytes()
             val snapshot = baseline.copyOf()
-            val upgrade = AblEfisp.patch(baseline, mode)
+            val finalUpgrade = AblEfisp.patch(baseline, mode)
+            val upgrade = finalUpgrade.preVmHistoricalView()
             assertFalse(upgrade.alreadyPatched)
             val dataHash = upgrade.patches.filter { it.name.startsWith("AVB HashDescriptor") }
             assertEquals(1, dataHash.size)
@@ -131,7 +135,7 @@ class FlashingUnlockPatcherTest {
             assertEquals(7 + dataHash.count { !it.alreadyApplied } + compatibility.count { !it.alreadyApplied } + pss.count { !it.alreadyApplied } + special.count { !it.alreadyApplied } + nativeReporting.count { !it.alreadyApplied },
                 upgrade.patches.count { !it.alreadyApplied })
             assertArrayEquals(snapshot, baseline)
-            assertTrue(AblEfisp.patch(upgrade.output, mode).alreadyPatched)
+            assertTrue(AblEfisp.patch(finalUpgrade.output, mode).alreadyPatched)
         }
     }
 

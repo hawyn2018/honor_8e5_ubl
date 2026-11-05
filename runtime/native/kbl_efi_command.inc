@@ -44,14 +44,18 @@ static int efi_exit_text(struct native*c,const uint16_t*text,size_t n){
     }return 0;
 }
 static int efi_command(struct native*c){
-    if(c->argc<2)return error(c,"usage: efi [-bl|--bootloader] PATH [ARGS...]");
-    int path=1,bootloader=0;
-    if(equal(c->argv[path],"-bl")||equal(c->argv[path],"--bootloader")){
-        bootloader=1;++path;
-        if(path>=c->argc||!c->argv[path][0])return error(c,"EFI bootloader option requires PATH");
-        if(equal(c->argv[path],"-bl")||equal(c->argv[path],"--bootloader"))return error(c,"duplicate EFI bootloader option before PATH");
+    if(c->argc<2)return error(c,"usage: efi [-bl|--bootloader] [-cs|--clearstart] [--] PATH [ARGS...]");
+    int path=1,bootloader=0,clearstart=0;
+    for(;path<c->argc;++path){
+        if(equal(c->argv[path],"--")){++path;break;}
+        if(equal(c->argv[path],"-bl")||equal(c->argv[path],"--bootloader")){
+            if(bootloader)return error(c,"duplicate EFI bootloader option before PATH");bootloader=1;
+        }else if(equal(c->argv[path],"-cs")||equal(c->argv[path],"--clearstart")){
+            if(clearstart)return error(c,"duplicate EFI clearstart option before PATH");clearstart=1;
+        }else break;
     }
-    if(!c->p.efi_run&&!c->p.efi_run_full)return error(c,"UEFI application provider unavailable");
+    if(path>=c->argc||!c->argv[path][0])return error(c,"EFI option requires PATH");
+    if(clearstart?!c->p.efi_clearstart:(!c->p.efi_run&&!c->p.efi_run_full))return error(c,"UEFI application provider unavailable");
     if(c->io_owner||c->fs_busy)return error(c,"UEFI transaction busy");
     struct kbl_file_stat st;int rc=v_stat(c,c->argv[path],&st);
     if(rc||st.type!=KBL_FILE_REGULAR||!st.bytes||st.bytes>SIZE_MAX)return error(c,"EFI file missing, empty or not addressable");
@@ -75,6 +79,14 @@ static int efi_command(struct native*c){
     }
     struct kbl_efi_run_full_result full;zero(&full,sizeof(full));
     struct kbl_efi_run_result*result=&full.result;
+    if(clearstart){
+        ++c->fs_busy;
+        rc=c->p.efi_clearstart(c->p.opaque,image,(size_t)st.bytes,options,options_bytes,result);
+        --c->fs_busy;
+        free_owned(c,image);free_owned(c,options);
+        if(rc){text(c,"EFI clearstart prepare stage=");number(c,result->stage);text(c," status=");efi_hex(c,result->status);text(c,"\n");return error(c,"EFI clearstart preparation failed; Fastboot retained");}
+        return text(c,"EFI clearstart queued; native job will return before cleanup/start. Parent EFISP and driver remain resident.\n")?1:0;
+    }
     /* No USB polling, yielding or filesystem library reentry across firmware. */
     ++c->fs_busy;
     if(c->p.efi_run_full)rc=c->p.efi_run_full(c->p.opaque,image,(size_t)st.bytes,options,options_bytes,&full);

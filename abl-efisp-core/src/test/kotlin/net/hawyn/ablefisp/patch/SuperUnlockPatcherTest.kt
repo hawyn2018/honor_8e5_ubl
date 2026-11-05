@@ -146,8 +146,22 @@ class SuperUnlockPatcherTest {
 
     @Test fun alteredExistingModuleIsRejectedRatherThanReapplied() {
         val result = AblEfisp.patch(image("new").bytes, PatchMode.FREEDOM_FAKE_LOCK)
-        val copy = result.output.copyOf()
         val block = result.patches.single { it.name.startsWith("oem superunlock：BLTools") }
+        // Corrupting any inner byte under VM's immutable receipt must reject
+        // the complete artifact before optional command matching takes place.
+        val whole = result.output.copyOf()
+        whole[block.fileOffset + SuperUnlockCode.TOTAL_BYTES - 1] = 0
+        val wholeSnapshot = whole.copyOf()
+        val receiptFailure = assertThrows(PatchException::class.java) {
+            AblEfisp.patch(whole, PatchMode.FREEDOM_FAKE_LOCK)
+        }
+        assertTrue(receiptFailure.message.orEmpty(), receiptFailure.message.orEmpty().contains("VM DTBO"))
+        assertArrayEquals("Whole-layer rejection preserves caller input", wholeSnapshot, whole)
+
+        // Strictly remove the validated outer layer before exercising the
+        // command adapter's own unchanged optional-skip/tamper contract.
+        val withoutVm = VmDtboCompatPatcher.remove(result.output)
+        val copy = withoutVm.copyOf()
         assertNotEquals(0, copy[block.fileOffset + SuperUnlockCode.TOTAL_BYTES - 1].toInt())
         copy[block.fileOffset + SuperUnlockCode.TOTAL_BYTES - 1] = 0
         val snapshot = copy.copyOf()
@@ -179,6 +193,9 @@ class SuperUnlockPatcherTest {
             assertArrayEquals("Required core/fake-lock policy still applies: $name", expected,
                 skipped.output.copyOfRange(at, at + expected.size))
         }
+        val repeated = AblEfisp.patch(result.output, PatchMode.FREEDOM_FAKE_LOCK)
+        assertTrue(repeated.alreadyPatched)
+        assertArrayEquals("Untampered complete output stays identical", result.output, repeated.output)
     }
 
     @Test fun fullRxTailGetsItsOwnMappingWithoutMovingOriginalSections() {
@@ -187,7 +204,11 @@ class SuperUnlockPatcherTest {
         val input = AblEfisp.extract(inputFile.readBytes()).output
         val unchanged = input.copyOf(); val before = PeImage.parse(input)
         for (mode in PatchMode.entries) {
-            val result = AblEfisp.patch(input, mode); val after = PeImage.parse(result.output)
+            val result = AblEfisp.patch(input, mode)
+            // Count and inspect this command's own new mapping independently
+            // of the sealed VM layer, which may now fit after NT relocation.
+            val commandOutput = VmDtboCompatPatcher.remove(result.output)
+            val after = PeImage.parse(commandOutput)
             assertTrue(result.output.size > input.size)
             assertEquals(before.entryRva, after.entryRva)
             assertEquals(before.imageBase, after.imageBase)
@@ -197,6 +218,11 @@ class SuperUnlockPatcherTest {
             assertEquals(".textsu", own.name)
             assertTrue(own.executable && !own.writable)
             val proof = plan(after); val allocation = requireNotNull(proof.existingAllocationRva)
+            val completeProof = plan(PeImage.parse(result.output))
+            assertArrayEquals("The complete output retains the same command magic", proof.magic, completeProof.magic)
+            // ByteArray equality is referential in the data-class default;
+            // compare its contents above and every other Plan field below.
+            assertEquals("The complete output retains the same command ABI", proof.copy(magic=completeProof.magic), completeProof)
             assertEquals(own.rva, allocation)
             assertTrue(own.rawSize >= SuperUnlockCode.TOTAL_BYTES)
             val mapping = result.patches.filter { it.name.startsWith("oem superunlock：PE映射元数据") }

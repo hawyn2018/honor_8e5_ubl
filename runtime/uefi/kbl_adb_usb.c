@@ -129,7 +129,7 @@ int kbl_adb_usb_init(struct kbl_adb_usb*s,const struct kbl_adb_usb_environment*e
     void*opaque,int(*span)(void*,const void*,size_t)){
     if(!s||!e||s->initialized||!e->device||!e->usbfn||!e->activation_fence||!e->control_router||!e->feed||!e->poll||!e->output||!e->output_done||!e->disconnect||
        !e->device->start_ex||!e->device->send||!e->device->allocate||!e->device->free||!e->device->abort||!e->device->stall||!e->usbfn->transfer||!e->usbfn->abort_transfer||!e->usbfn->max_transfer)return ERROR;
-    if(kbl_adb_usb_descriptors(&s->descriptors,d,opaque,span))return ERROR;s->env=*e;s->initialized=1;s->phase=KBL_ADB_USB_IDLE;return 0;
+    if(kbl_adb_usb_descriptors(&s->descriptors,d,opaque,span))return ERROR;s->original_source=d;s->env=*e;s->initialized=1;s->phase=KBL_ADB_USB_IDLE;return 0;
 }
 int kbl_adb_usb_arm(struct kbl_adb_usb*s){if(!s||!s->initialized||(s->phase!=KBL_ADB_USB_IDLE&&s->phase!=KBL_ADB_USB_RESIDENT))return ERROR;s->stop_requested=0;s->stop_stalled=0;s->frame_remaining=0;s->fault=0;s->phase=KBL_ADB_USB_ARMED;return 0;}
 static int allocate_buffers(struct kbl_adb_usb*s){
@@ -151,6 +151,28 @@ static int queue_rx(struct kbl_adb_usb*s){if(s->rx_pending||s->rx_held||s->stop_
 void kbl_adb_usb_request_stop(struct kbl_adb_usb*s){if(s&&s->initialized){s->stop_requested=1;if(s->composite_started&&s->phase!=KBL_ADB_USB_RESIDENT)s->phase=KBL_ADB_USB_STOPPING;}}
 int kbl_adb_usb_dma_quiet(const struct kbl_adb_usb*s){return s&&!s->rx_pending&&!s->tx_pending&&!s->control_pending;}
 int kbl_adb_usb_can_release(const struct kbl_adb_usb*s){return s&&s->initialized&&!s->configuration_uncertain&&!s->composite_started&&!s->router_installed&&!s->rx&&!s->tx&&!s->control&&kbl_adb_usb_dma_quiet(s);}
+int kbl_adb_usb_clearstart_release(struct kbl_adb_usb*s){
+    if(!s||!s->initialized)return ERROR;
+    if(s->configuration_uncertain||!s->stop_requested||
+       (s->phase!=KBL_ADB_USB_RESIDENT&&s->phase!=KBL_ADB_USB_IDLE))return ERROR;
+    s->clearstart_release=1;
+    if(s->control_pending){
+        s->control_cancelled=1;
+        if(!s->control_abort){s->control_abort=1;s->last_status=s->env.usbfn->abort_transfer(s->env.usbfn,0,s->control_direction);}
+        return AGAIN;
+    }
+    if(!kbl_adb_usb_dma_quiet(s))return AGAIN;
+    if(s->composite_started){
+        if(!s->original_source)return ERROR;
+        s->configuration_uncertain=1;++s->reconfig_calls;
+        s->last_status=((kefi_status(*)(const struct kbl_usb_descriptor_set*))s->env.device->start_ex)(s->original_source);
+        if(s->last_status)return ERROR; /* Retain descriptors/router on uncertain hardware. */
+        s->configuration_uncertain=0;s->composite_started=0;s->connected=0;
+    }
+    if(s->router_installed){if(s->env.control_router(s->env.opaque,0))return AGAIN;s->router_installed=0;}
+    if(release_buffers(s))return AGAIN;s->phase=KBL_ADB_USB_IDLE;
+    return kbl_adb_usb_can_release(s)?0:AGAIN;
+}
 int kbl_adb_usb_step(struct kbl_adb_usb*s,unsigned budget){
     if(!s||!s->initialized)return ERROR;
     if(s->phase==KBL_ADB_USB_RESIDENT)return 0;
@@ -260,7 +282,7 @@ int kbl_adb_usb_fn_event(struct kbl_adb_usb*s,uint32_t message,size_t bytes,cons
     /* Actual UsbfnDwc3 reports the 32-byte payload union for SETUP although
      * only its first 8 bytes are copied. Other providers report 8 directly.
      * The outer event owner already checks returned bytes against capacity. */
-    if(message==1&&bytes>=8){const unsigned char*q=payload;int owned=control_recognizes(s,q);s->control_queued=0;
+    if(message==1&&bytes>=8){const unsigned char*q=payload;int owned=!s->clearstart_release&&control_recognizes(s,q);s->control_queued=0;
         if(s->control_pending){if(owned){copy(s->control_setup,q,8);s->control_queued=1;}control_cancel(s);return owned?1:0;}
         return owned?control_send(s,q):0;
     }

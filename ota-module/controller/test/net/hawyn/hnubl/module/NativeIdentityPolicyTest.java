@@ -19,7 +19,14 @@ public final class NativeIdentityPolicyTest {
         check(NativePolicyTypes.type("u:r:update_engine:s0\0").equals("update_engine"),"actual daemon type");
         check(NativePolicyTypes.type("u:object_r:update_engine_data_file:s0:c123,c456").equals("update_engine_data_file"),"actual socket type ignores categories");
         String rules=NativePolicyTypes.rules("update_engine","ksu","update_engine_data_file");
-        check(rules.equals("allow update_engine ksu unix_stream_socket connectto\nallow update_engine update_engine_data_file sock_file { getattr write }\n"),"only narrow observed-type rules are emitted");
+        check(rules.equals("allow update_engine ksu unix_stream_socket connectto\nallow update_engine update_engine_data_file sock_file { getattr write }\nallow update_engine update_engine process execmem\n"),"only narrow observed-type rules are emitted");
+        check(rules.equals(NativePolicyTypes.rules("update_engine","ksu","update_engine_data_file")),"same observed types produce a stable policy cache key");
+        check(rules.lines().distinct().count()==3,"each generated rule occurs exactly once");
+        String vendorRules=NativePolicyTypes.rules("vendor_update_engine_11","root_provider","vendor_ota_data_file");
+        check(vendorRules.equals("allow vendor_update_engine_11 root_provider unix_stream_socket connectto\nallow vendor_update_engine_11 vendor_ota_data_file sock_file { getattr write }\nallow vendor_update_engine_11 vendor_update_engine_11 process execmem\n"),"native memory permission follows actual vendor type instead of fixed device domain");
+        check(!vendorRules.contains("allow domain ")&&!vendorRules.contains("allow appdomain ")&&!vendorRules.contains("permissive ")&&!vendorRules.contains("frida_"),"no all-domain rule, permissive mode or new Frida label");
+        rejects(()->NativePolicyTypes.rules("update_engine\nallow domain domain process execmem","ksu","type"));
+        rejects(()->NativePolicyTypes.rules("update_engine","ksu","type;"));
         rejects(()->NativePolicyTypes.type("u:r:bad\nallow:s0"));rejects(()->NativePolicyTypes.rules("*","ksu","type"));rejects(()->NativePolicyTypes.rules("update_engine","ksu;","type"));
         System.out.println("NATIVE_IDENTITY_POLICY_CHECKS="+checks);
     }

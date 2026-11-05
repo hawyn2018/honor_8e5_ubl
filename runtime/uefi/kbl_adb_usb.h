@@ -80,6 +80,8 @@ struct kbl_adb_usb {
     struct kbl_adb_usb_descriptors descriptors;
     unsigned phase,initialized,composite_started,router_installed,connected,stop_requested,fault;
     unsigned configuration_uncertain,stop_stalled;
+    unsigned clearstart_release;
+    const struct kbl_usb_descriptor_set *original_source;
     void *rx,*tx,*control;size_t rx_used,rx_at,tx_bytes,control_bytes,transfer_limit,packet_bytes,frame_remaining;
     unsigned rx_pending,tx_pending,rx_abort,tx_abort,control_pending,control_direction,control_abort,control_stage;
     unsigned control_cancelled,control_queued;unsigned char control_setup[8];
@@ -104,6 +106,10 @@ void kbl_adb_usb_request_stop(struct kbl_adb_usb *);
 int kbl_adb_usb_dma_quiet(const struct kbl_adb_usb *);
 /* A live composite config references this driver even after ADB stops. */
 int kbl_adb_usb_can_release(const struct kbl_adb_usb *);
+/* Explicit clearstart only, after stopped ADB reaches RESIDENT/IDLE. Waits
+ * for exact DMA terminal events, restores parent-owned original descriptors,
+ * removes EP0 router and frees buffers. Ordinary stop keeps resident mode. */
+int kbl_adb_usb_clearstart_release(struct kbl_adb_usb *);
 _Static_assert(sizeof(struct kbl_usb_descriptor_set)==64,"UsbDevice descriptor-set ABI");
 _Static_assert(offsetof(struct kbl_usb_descriptor_set,strings)==56,"descriptor strings ABI");
 _Static_assert(offsetof(struct kbl_usbfn_protocol,event)==0x48,"UsbfnIo EventHandler ABI");

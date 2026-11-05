@@ -10,7 +10,7 @@
   </p>
   <p><strong>hnubl专为荣耀8e5设备解锁BL+假回锁适配的全功能解锁神器，目前已合入保留锁态OTA功能。</strong></p>
   <p>A full-featured bootloader unlock and simulated relock toolkit for HONOR 8e5 (Snapdragon 8 Elite Gen 5) devices,<br/>now with OTA support that preserves the configured lock state.</p>
-  <p><code>3.0.0</code> &nbsp;·&nbsp; Android / Miuix &nbsp;·&nbsp; <a href="LICENSE">AGPL-3.0-only</a> &nbsp;·&nbsp; Source-only releases</p>
+  <p><code>3.0.6</code> &nbsp;·&nbsp; Android / Miuix &nbsp;·&nbsp; <a href="LICENSE">AGPL-3.0-only</a> &nbsp;·&nbsp; Source-only releases</p>
   <p><a href="#简体中文"><strong>中文版</strong></a> &nbsp;|&nbsp; <a href="#english"><strong>English</strong></a></p>
 </div>
 
@@ -137,6 +137,10 @@ OTA 备份目录为：
 
 完整 OTA 修补外部来源失败时可确认使用内置 ABL 重试；仅刷写 / 导出失败会显示重试建议。请根据实际所选来源、备份和输出日志判断结果。
 
+### 3.0.6 更新重点
+
+新版软件更新恢复定向处理。持久缓存仅保存通过真机绑定和重启屏障检查的映射，同一软件更新 APK 的新进程可复用。详见 [3.0.6 兼容修复与验证范围](docs/version-3.0.6.md)。
+
 ### 3.0.0 更新重点
 
 **修复保留锁态 OTA 已成功后，返回软件更新仍显示“继续流程”，或点击重启再次回到 hnubl 的问题。应用与配套模块同步为 3.0.0。**
@@ -255,6 +259,10 @@ Changing either source manually selects Custom OTA. Advanced options include lea
 OTA backups are saved in `Download/hnubl/hnubl_ota_backup_yyyyMMdd_HHmmss/`.
 
 **Flash EFISP only** updates EFISP separately. **Export EFISP** generates and saves an image without writing a partition. Neither replaces the full lock-state preservation workflow or grants its reboot permission. EFISP-only completion also offers **Return to system updater**; image export has no reboot action.
+
+### What's new in 3.0.6
+
+Restores selective handling for newer Software Update versions. The persistent cache stores mappings only after verified runtime binding and reboot protection. A new process for the same updater APK can reuse the mapping. See [3.0.6 compatibility and validation](docs/version-3.0.6.md#english).
 
 ### What's new in 3.0.0
 

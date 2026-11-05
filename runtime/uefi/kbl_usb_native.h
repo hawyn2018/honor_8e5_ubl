@@ -81,6 +81,9 @@ int kbl_native_usb_init(struct kbl_native_usb_binding *,const struct kbl_native_
 int kbl_native_usb_observe(struct kbl_native_usb_binding *);
 int kbl_native_usb_begin(struct kbl_native_usb_binding *);
 int kbl_native_usb_stop_observing(struct kbl_native_usb_binding *);
+/* Explicit clearstart only: abort parent RX and wait for its terminal event.
+ * No timeout guesses or freeing DMA still owned by the controller. */
+int kbl_native_usb_clearstart_quiesce(struct kbl_native_usb_binding *);
 const struct kbl_firmware_link *kbl_native_usb_link(struct kbl_native_usb_binding *);
 int kbl_native_usb_can_release(const struct kbl_native_usb_binding *);
 int kbl_native_usb_extensions(struct kbl_native_usb_binding *,const struct kbl_native_usb_extensions *);

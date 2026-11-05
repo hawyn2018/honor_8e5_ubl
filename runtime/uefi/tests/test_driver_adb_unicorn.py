@@ -44,13 +44,14 @@ def build(output):
         'case 12:return g.usb.attached;case 13:return g.adb_error;\n'
         'case 14:return g.adb_usb.rx_pending;case 15:return g.adb_usb.tx_pending;\n'
         'case 16:return g.adb_usb.configuration_uncertain;case 17:return g.session.phase;\n'
-        'case 18:return g.reply_count;case 19:return g.reply_overflow;case 20:return (uintptr_t)g.reply_lines;\n'
+        'case 18:return g.reply_count;case 19:return g.reply_overflow;case 20:return (uintptr_t)(g.reply_lines?g.reply_lines:g.reply_inline);\n'
         'case 21:return kbl_adb_parked(g.adb);case 22:return kbl_adb_native_quiescent(g.adb);\n'
         'case 23:return kbl_adb_healthy(g.adb);case 24:return g.session.generation;case 25:return g.session.job;default:return 0;}}\n',encoding='utf-8')
     span_source=output/'span_model.c'
     span_source.write_text('#include <stddef.h>\nint kbl_driver_test_span(const void*p,size_t n,unsigned f){(void)p;(void)n;(void)f;return 0;}\n')
+    blob,_=builder.build_handoff(LLVM,output)
     commands=[];objects=[]
-    for index,s in enumerate([*builder.SOURCES,span_source]):
+    for index,s in enumerate([*builder.SOURCES,blob,span_source]):
         source=wrapper if s.name=='kbl_driver.c'else s
         obj=output/(str(index)+'-'+s.stem+'.obj');objects.append(obj)
         cmd=[LLVM/'clang.exe',*builder.compile_flags(s)]
@@ -220,7 +221,7 @@ class Fixture(u.BoundFixture):
             usb,extra,disk,calls=before
             assert self.extra_calls==extra and self.disk_calls==disk
             assert all(self.usb_calls[k]==usb[k]+(1 if k=='usb_send'else 0)for k in usb)
-            assert all(self.calls[k]==calls[k]+(1 if k=='final'else 0)for k in calls)
+            assert all(self.calls[k]==calls[k]+(1 if k=='final'else 0)for k in calls),(calls,self.calls)
             self.status_checks.append({'lines':count,'maxLineBytes':max(map(len,lines)),
                 'overflow':False,'extraUsbCalls':'Only one original native Fastboot final Send','reply':lines})
         return self.final[0]
@@ -434,3 +435,4 @@ def main():
     (out/'validation.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps({'passed':True,'cases':len(results),'report':str(out/'validation.json')},indent=2))
 if __name__=='__main__':main()
+

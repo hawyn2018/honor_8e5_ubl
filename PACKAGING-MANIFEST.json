@@ -1,0 +1,22 @@
+{
+  "application": {
+    "applicationId": "net.hawyn.honor8e5ubl",
+    "versionCode": 105,
+    "versionName": "3.0.6"
+  },
+  "baseline": "3.0.5",
+  "excluded": [
+    "APKs",
+    "signing private keys",
+    "local logs",
+    "build caches",
+    "node_modules"
+  ],
+  "license": "AGPL-3.0-only",
+  "module": {
+    "sha256": "c45c3992838cbdd7c373184a3bb2f2252964222d63de4f8791c686c9daf0994b",
+    "version": "3.0.6",
+    "versionCode": 105
+  },
+  "scope": "OTA function-derived static initializer compatibility and verified descriptor cache persistence"
+}

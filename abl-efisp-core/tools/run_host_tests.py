@@ -2,7 +2,7 @@
 from pathlib import Path
 import hashlib,json,os,re,shutil,subprocess,sys
 MODULE=Path(__file__).resolve().parents[1]
-WORKSPACE=MODULE.parents[2]
+WORKSPACE=MODULE.parent
 APP=MODULE.parent/'app'
 CACHE=Path.home()/'.gradle/caches/modules-2/files-2.1'
 OUT=MODULE/'build/host-tests'
@@ -22,7 +22,9 @@ xz=jar('org.tukaani','xz','1.12')
 compiler=[kotlin('kotlin-compiler-embeddable'),kotlin('kotlin-build-tools-api'),kotlin('kotlin-daemon-embeddable'),kotlin('kotlin-script-runtime'),stdlib,jar('org.jetbrains.kotlin','kotlin-reflect','1.6.10'),jar('org.jetbrains.kotlinx','kotlinx-coroutines-core-jvm','1.8.0'),annotations]
 cp=lambda x:os.pathsep.join(map(str,x))
 sources=sorted((MODULE/'src/main/kotlin').rglob('*.kt'))+sorted((MODULE/'src/test/kotlin').rglob('*.kt'))
-sources += [APP/'src/main/java/dev/honor/bootforge/core/EfispImagePatcher.kt',APP/'src/test/java/dev/honor/bootforge/core/EfispImagePatcherTest.kt']
+sources += [APP/'src/main/java/dev/honor/bootforge/core/EfispImagePatcher.kt',
+            APP/'src/main/java/dev/honor/bootforge/core/ImagePatchFailureBoundary.kt',
+            APP/'src/test/java/dev/honor/bootforge/core/EfispImagePatcherTest.kt']
 classes=[]
 for p in sources:
  text=p.read_text(encoding='utf-8')

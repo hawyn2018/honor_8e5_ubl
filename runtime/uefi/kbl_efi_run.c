@@ -234,6 +234,7 @@ static int cleanup(struct kbl_efi_launcher *l) {
       return -KBL_EIO;
     }
   }
+  l->prepared = 0;
   void **owned[3] = {&l->exit_data, &l->options, &l->file_buffer};
   for (unsigned i = 0; i < 3; ++i)
     if (*owned[i] && !(i == 0 && l->exit_borrowed)) {
@@ -304,7 +305,7 @@ static void capture_exit(struct kbl_efi_launcher *l,
 static int run(struct kbl_efi_launcher *l, const void *image,
                 size_t image_bytes, const uint16_t *options,
                 size_t options_bytes, struct kbl_efi_run_result *r,
-                struct kbl_efi_run_full_result *full) {
+                struct kbl_efi_run_full_result *full, int prepare_only) {
   struct kefi_boot_services *b;
   struct kefi_loaded_image *loaded = 0;
   uint16_t *exit_data = 0;
@@ -388,6 +389,11 @@ static int run(struct kbl_efi_launcher *l, const void *image,
     rc = -KBL_EPERM;
     goto cleanup;
   }
+  if (prepare_only) {
+    l->active = 0;
+    l->prepared = 1;
+    return 0;
+  }
   r->stage = KBL_EFI_START;
   s = ((start_fn)b->start_image)(l->child, &l->exit_bytes, &exit_data);
   l->exit_data = exit_data;
@@ -424,7 +430,7 @@ cleanup:
 int kbl_efi_run(struct kbl_efi_launcher *l, const void *image,
                 size_t image_bytes, const uint16_t *options,
                 size_t options_bytes, struct kbl_efi_run_result *r) {
-  return run(l,image,image_bytes,options,options_bytes,r,0);
+  return run(l,image,image_bytes,options,options_bytes,r,0,0);
 }
 int kbl_efi_run_full(struct kbl_efi_launcher *l, const void *image,
                 size_t image_bytes, const uint16_t *options,
@@ -432,5 +438,34 @@ int kbl_efi_run_full(struct kbl_efi_launcher *l, const void *image,
   if (!r)
     return -KBL_EINVAL;
   clear(r,sizeof(*r));
-  return run(l,image,image_bytes,options,options_bytes,&r->result,r);
+  return run(l,image,image_bytes,options,options_bytes,&r->result,r,0);
+}
+
+int kbl_efi_prepare(struct kbl_efi_launcher *l, const void *image,
+                   size_t bytes, const uint16_t *options, size_t option_bytes,
+                   struct kbl_efi_run_result *r) {
+  return run(l,image,bytes,options,option_bytes,r,0,1);
+}
+int kbl_efi_start_prepared(struct kbl_efi_launcher *l,
+                          struct kbl_efi_run_result *r) {
+  struct kefi_boot_services *b;
+  uint16_t *exit_data=0;
+  int e,rc=0;
+  if(!l||!r)return -KBL_EINVAL;
+  clear(r,sizeof(*r));r->stage=KBL_EFI_START;
+  if(l->active||l->exit_borrowed)return -KBL_EBUSY;
+  if(!l->prepared||!l->child)return -KBL_EINVAL;
+  if((e=services(l,&b)))return e;
+  unsigned before=l->current_el(l->opaque);r->el_before=before;
+  if(!before||before!=l->expected_el)return -KBL_EPERM;
+  l->active=1;l->prepared=0;
+  r->status=((start_fn)b->start_image)(l->child,&l->exit_bytes,&exit_data);
+  l->exit_data=exit_data;r->stage=KBL_EFI_RETURN;
+  r->el_after=l->current_el(l->opaque);
+  if(r->el_after!=before)rc=-KBL_EPERM;
+  else if(l->exit_data&&l->exit_bytes>UINTPTR_MAX-(uintptr_t)l->exit_data)rc=-KBL_EIO;
+  else capture_exit(l,r);
+  l->active=0;e=cleanup(l);r->cleanup_status=l->last_cleanup;
+  if(e){r->stage=KBL_EFI_CLEANUP;if(!rc)rc=e;}
+  return rc;
 }

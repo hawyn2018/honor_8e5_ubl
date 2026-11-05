@@ -1,0 +1,53 @@
+hnubl 3.0.2 / ABL-EFISP fakebl 1.3.10
+
+KBL EFI 运行方式
+
+efi /path/image.efi [参数...]
+保留同步执行方式。目标返回后继续原 KBL 会话。
+
+efi -bl /path/efisp.img
+efi --bootloader /path/efisp.img
+保留只作用于 RAM 副本的 Fastboot 启动方式。
+
+efi -cs /path/image.efi [参数...]
+efi --clearstart /path/image.efi [参数...]
+新增显式交接方式：先准备目标和参数，再等待原 native 作业与输出结束，
+清理会话、文件、挂载和跟踪分配，等待 USB/ADB 传输终态并归还接管接口，
+最后由独立 EFI 应用启动已准备的目标。
+可以与 -bl / --bootloader 组合；-- 用于结束选项解析。
+
+交接后父 EFISP 和 KBL driver 映射仍驻留，供外层固件调用帧返回使用。
+交接过程不提前结束 UEFI Boot Services，不释放仍在执行的代码或栈。
+kblstatus 提供交接阶段、原始 EFI 状态、清理及 Fastboot RX 恢复状态。
+目标返回或交接失败后，kbloff / 下次 kblstart 可重试尚未完成的资源释放。
+
+手动失败计数清除
+
+clear errorcount
+只清除本工具的 HnublEfispBootFailures 私有记录，读回确认后同步当前
+EFISP 的对应失败缓存。输出使用英文。固件防回滚计数、OEM 记录和 A/B
+槽位状态不属于此命令的处理范围。
+
+手动 continue
+
+手动 continue 调用 BootLinux 返回时保留原始返回值、原调用栈和原生
+清理流程；相关诊断尾字段保留，不作为修改原始返回值的依据。
+
+VM DTBO 启动前兼容
+
+自动识别接口位于原生 BootLinux 正常引导路径，按键和 Fastboot 模式
+判断完成之后才可能执行；Fastboot 主循环不运行该扫描、不新增读盘。
+接口读取原生已经加载的 DTBO，依据实际 FDT 的 VM 角色名、安全域、
+host VMID、板型及第二 cell 匹配条目。有效原索引保持；找到唯一匹配
+时才整体提交修正后的索引。DTBO 表头 ID 本身不作为 VM 身份。
+
+诊断格式：
+VM DTBO pre-handoff status=%d board=%x board-cell1=%x
+0=保留有效索引；1=按内容匹配修正；负值区分模式、格式、无匹配、
+歧义及未支持格式，并保留原生处理。
+
+支持 DTBO v0 和 v1 未压缩条目；v1 压缩条目保留原生处理。
+该接口在交给内核之前选择索引，不接管内核启动后的 HTVM panic。
+生产识别不使用机型、固件版本、镜像 SHA 或绝对地址适配表。
+
+验证范围与具体产物摘要以随附的最终发布记录为准。

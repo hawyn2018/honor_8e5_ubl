@@ -65,7 +65,7 @@ def tree_hash(directory):
 
 def source_snapshot():
     result = {"build_module.py": file_sha(__file__)}
-    for folder in ("broker/src", "controller/src", "discovery/src", "hook/src", "hook/patches", "module"):
+    for folder in ("broker/src", "controller/src", "discovery/src", "hook/src", "hook/patches", "runtime-patches", "module"):
         for name, sha in tree_hash(ROOT / folder).items(): result[folder + "/" + name] = sha
     return result
 
@@ -189,6 +189,22 @@ def build(args, out, stage):
     need(len(elf) == FRIDA_BYTES and digest(elf) == FRIDA_ELF_SHA and elf[:4] == b"\x7fELF" and
          int.from_bytes(elf[18:20], "little") == 183, "Frida ELF identity mismatch")
     if (incoming / "frida-inject").exists(): need(file_sha(incoming / "frida-inject") == FRIDA_ELF_SHA, "Uncompressed Frida runtime differs")
+    runtime_recipe = ROOT / "runtime-patches/derive_runtime.py"
+    runtime_patch = ROOT / "runtime-patches/frida-17.25.0-root-provider.patch"
+    runtime_spec = importlib.util.spec_from_file_location("hnubl_runtime_variant", runtime_recipe)
+    runtime_helper = importlib.util.module_from_spec(runtime_spec)
+    previous_bytecode = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        runtime_spec.loader.exec_module(runtime_helper)
+    finally:
+        sys.dont_write_bytecode = previous_bytecode
+    # No official-runtime fallback: a guard or provider-variant error stops the
+    # build instead of restoring Frida's automatic global SELinux reload.
+    elf, runtime_variant = runtime_helper.derive(elf)
+    runtime_variant.update({"recipeSha256": file_sha(runtime_recipe),
+                            "sourcePatchSha256": file_sha(runtime_patch)})
+    write_json(stage / "runtime-variant.json", runtime_variant)
     jvm = stage / "jvm-deps.jar"
     if args.jadx:
         jadx = Path(args.jadx).resolve(); need(jadx.is_file(), "JADX jar missing")
@@ -217,6 +233,16 @@ def build(args, out, stage):
         need(old_lock["bridgeBackport"] == bridge_backport["metadata"], "Recorded bridge backport identity changed")
     if old_lock.get("bridgeLocalPolicy"):
         need(old_lock["bridgeLocalPolicy"] == bridge_backport["localPolicy"], "Recorded local bridge policy identity changed")
+    if old_lock.get("bridgeSelectivePolicy"):
+        need(old_lock["bridgeSelectivePolicy"] == bridge_backport["selectiveDeoptimizationPolicy"], "Recorded selective bridge policy identity changed")
+    if old_lock.get("bridgeSelectiveAtomicPolicy"):
+        need(old_lock["bridgeSelectiveAtomicPolicy"] == bridge_backport["selectiveAtomicPolicy"], "Recorded selective exclusive policy identity changed")
+    if old_lock.get("bridgeSelectiveBatchPolicy"):
+        need(old_lock["bridgeSelectiveBatchPolicy"] == bridge_backport["selectiveBatchPolicy"], "Recorded selective batch policy identity changed")
+    if old_lock.get("bridgeNativeTransactionFilterPolicy"):
+        need(old_lock["bridgeNativeTransactionFilterPolicy"] == bridge_backport["nativeTransactionFilterPolicy"], "Recorded native transaction filter identity changed")
+    if old_lock.get("bridgeQuickCodePublicationPolicy"):
+        need(old_lock["bridgeQuickCodePublicationPolicy"] == bridge_backport["quickCodePublicationPolicy"], "Recorded quick-code publication identity changed")
     write_json(stage / "bridge-backport-verification.json", bridge_backport)
     java_sources = sorted(p for folder in ("broker/src", "controller/src", "discovery/src") for p in (ROOT / folder).rglob("*.java"))
     need(len(java_sources) >= 9, "Incomplete broker/controller/discovery source set")
@@ -270,10 +296,23 @@ def build(args, out, stage):
     if args.jadx: need(file_sha(args.jadx) == jvm_info["sourceJadxSha256"], "JADX dependency changed during build")
     js_inputs(js, {"js": js_info})
     inputs_lock = {"schema": 1, "frida": frida_meta, "jvm": jvm_info, "js": js_info,
-                   "bridgeBackport": bridge_backport["metadata"], "bridgeLocalPolicy": bridge_backport["localPolicy"]}
+                   "bridgeBackport": bridge_backport["metadata"], "bridgeLocalPolicy": bridge_backport["localPolicy"],
+                   "bridgeSelectivePolicy": bridge_backport["selectiveDeoptimizationPolicy"],
+                   "bridgeSelectiveAtomicPolicy": bridge_backport["selectiveAtomicPolicy"],
+                   "bridgeSelectiveBatchPolicy": bridge_backport["selectiveBatchPolicy"],
+                   "bridgeNativeTransactionFilterPolicy": bridge_backport["nativeTransactionFilterPolicy"],
+                   "bridgeQuickCodePublicationPolicy": bridge_backport["quickCodePublicationPolicy"],
+                   "runtimeVariant": runtime_variant}
     # Persist portable inputs; do not vendor node_modules, logs, classes or raw ELF.
     atomic_bytes(vendored / FRIDA_XZ, compressed.read_bytes())
-    write_json(vendored / "download-manifest.json", frida_meta)
+    # Preserve the exact official provenance file; derived identities are kept
+    # separately in runtimeVariant and must never impersonate this download.
+    portable_manifest = vendored / "download-manifest.json"
+    if portable_manifest.exists():
+        need(json.loads(portable_manifest.read_text(encoding="utf-8")) == frida_meta,
+             "Existing official Frida manifest differs from verified input")
+    else:
+        atomic_bytes(portable_manifest, (incoming / "download-manifest.json").read_bytes())
     atomic_bytes(vendored / "jvm-deps.jar", jvm.read_bytes())
     for name in ("package.json", "package-lock.json"): atomic_bytes(vendored / "js" / name, (js / name).read_bytes())
     write_json(lock_path, inputs_lock)
@@ -285,9 +324,13 @@ def build(args, out, stage):
     for name in ("broker.jar", "agent.bundle.js", "native-slot.bundle.js", "bin/frida-inject"): need(name not in entries, "Generated module entry collides with source: " + name)
     entries.update({"broker.jar": (broker_bytes, 0o644), "agent.bundle.js": (bundle.read_bytes(), 0o644),
                     "native-slot.bundle.js": (native_bundle.read_bytes(), 0o644), "bin/frida-inject": (elf, 0o755)})
-    for name in ("bridge-backport.json", "api37-reflection-policy.json", "api37-reflection-policy.diff",
+    for name in ("bridge-backport.json", "api37-reflection-policy.json", "api37-reflection-policy.diff", "selective-deoptimization-policy.json", "selective-deoptimization-atomic-policy.json", "selective-deoptimization-batch-policy.json", "native-transaction-filter-policy.json", "art-quick-code-publication-policy.json",
                  "LGPL-2.0-only.txt", "WxWindows-exception-3.1.txt"):
         entries["licenses/frida-java-bridge-" + name] = ((ROOT / "hook/patches" / name).read_bytes(), 0o644)
+    for name in ("derive_runtime.py", "frida-17.25.0-root-provider.patch", "README.md"):
+        entries["licenses/frida-runtime-" + name] = ((ROOT / "runtime-patches" / name).read_bytes(), 0o644)
+    entries["licenses/frida-runtime-variant.json"] = (
+        (json.dumps(runtime_variant, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(), 0o644)
     payload_manifest = {n: digest(b) for n, (b, _) in sorted(entries.items())}
     entries["payload-sha256.json"] = ((json.dumps(payload_manifest, indent=2, sort_keys=True) + "\n").encode(), 0o644)
     module_bytes = zip_bytes(entries); module_sha = digest(module_bytes)
@@ -299,6 +342,7 @@ def build(args, out, stage):
                 "dependencyLockSha256": file_sha(lock_path), "tools": {n: {"path": str(p), "sha256": file_sha(p)} for n, p in tools.items()},
                 "moduleSha256": module_sha, "moduleBytes": len(module_bytes), "payloads": payload_manifest,
                 "bridgeBackport": bridge_backport,
+                "runtimeVariant": runtime_variant,
                 "assets": str(assets), "stage": str(stage), "deviceOperations": False}
     write_json(out / "build-manifest.json", manifest)
     return manifest

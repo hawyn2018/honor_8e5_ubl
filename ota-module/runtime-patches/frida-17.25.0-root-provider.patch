@@ -1,0 +1,20 @@
+--- a/inject/inject-glue.c
++++ b/inject/inject-glue.c
+@@ -11,6 +11,6 @@ frida_inject_environment_init (void)
+   frida_init_with_runtime (FRIDA_RUNTIME_GLIB);
+ 
+ #ifdef HAVE_ANDROID
+-  frida_selinux_patch_policy ();
++  /* hnubl variant: leave global SELinux policy to the existing Root provider. */
+ #endif
+ }
+--- a/src/linux/linjector.vala
++++ b/src/linux/linjector.vala
+@@ -259,6 +259,6 @@
+ 	private static void adjust_fd_permissions (FileDescriptor fd) {
+ #if ANDROID
+-		SELinux.fsetfilecon (fd.handle, "u:object_r:frida_memfd:s0");
++		SELinux.fsetfilecon (fd.handle, "u:object_r:ksu_file:s0");
+ #endif
+ 	}
+ }

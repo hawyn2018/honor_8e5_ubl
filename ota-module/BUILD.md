@@ -37,6 +37,22 @@ python .\ota-module\build_module.py
 
 The existing JVM and JS dependency lock is checked before using the vendored inputs. A changed dependency stops the build rather than silently replacing the lock. Rebuilding on a different OS revalidates the same JS package lock and records that platform's installed package hashes, since esbuild's native executable is platform-specific.
 
+## KSU-provider runtime variant
+
+The original Frida XZ and download manifest remain unchanged. The builder derives
+the hnubl runtime with the pure-standard-library recipe in `runtime-patches/`.
+The exact upstream ELF hash, initializer/label structure and output hash must
+match; any mismatch stops the build. The derived runtime skips Frida's automatic
+whole-policy export/reload and reuses the provider's existing `ksu_file` memfd
+context. It does not fall back to the original policy-rewriting initializer.
+See `runtime-patches/README.md` for scope, required existing provider permissions,
+source changes, all pinned hashes and offline positive/negative guard tests.
+
+Runtime provenance is included as `runtimeVariant` in the build manifest and
+dependency lock, as `runtime-variant.json` in staging, and as
+`licenses/frida-runtime-variant.json` in the module ZIP. All four records agree,
+and the payload hash manifest binds the derived executable.
+
 ## Outputs and recovery after interruption
 
 The default working output is `ota-module/build`. `--out` can select an external analysis directory; it cannot point into Java/JS/module source folders. Every run uses a new staging directory and keeps failed logs for inspection. No recursive deletion is used.

@@ -334,6 +334,8 @@ static int independent_sessions(void){
     CHECK(run("rm /first/shared",0));CHECK(run("rm /first",0));
     CHECK(finish());++native_test_groups;return 1;
 }
+static unsigned errorcount_calls,errorcount_failure;
+static int fixture_errorcount(void*opaque){(void)opaque;++errorcount_calls;return errorcount_failure?-KBL_EIO:0;}
 static unsigned efi_calls,efi_error,efi_provider_error;
 static const unsigned char*efi_expected_image=(const unsigned char*)"MZ!!";
 static size_t efi_expected_image_bytes=4;
@@ -350,7 +352,8 @@ static int fixture_efi(void*opaque,const void*image,size_t image_bytes,const uin
 }
 static int explicit_efi_application(void){
     CHECK(init());CHECK(!efi_calls);CHECK(kbl_native_put(ctx,"/tool.efi","MZ!!",4)==KBL_OK);
-    CHECK(run("efi /tool.efi",1)&&contains("provider unavailable"));CHECK(finish());
+    CHECK(run("efi /tool.efi",1)&&contains("provider unavailable"));
+    CHECK(run("clear errorcount",1)&&contains("provider unavailable")&&!errorcount_calls);CHECK(finish());
     p.efi_run=fixture_efi;ctx=0;CHECK(!b.start(b.opaque,&ctx));
     CHECK(!efi_calls);CHECK(kbl_native_put(ctx,"/tool.efi","MZ!!",4)==KBL_OK);
     CHECK(run("true",0)&&!efi_calls);CHECK(run("efi /tool.efi one 'a b'",0)&&efi_calls==1&&contains("EFI exit data: OK"));
@@ -375,6 +378,18 @@ static int explicit_efi_application(void){
     CHECK(!kbl_native_get_stats(ctx,&after));CHECK(before.owned_allocations==after.owned_allocations&&before.owned_bytes==after.owned_bytes);
     CHECK(run("efi /tool.efi '\xc0\xaf'",1)&&contains("invalid UTF-8")&&efi_calls==4);
     CHECK(!kbl_native_get_stats(ctx,&after));CHECK(before.owned_allocations==after.owned_allocations&&before.owned_bytes==after.owned_bytes);
+    /* -cs is opt-in, options stop at PATH, and both aliases preserve args. */
+    CHECK(run("efi -cs /tool.efi one 'a b'",1)&&contains("provider unavailable"));
+    CHECK(finish());p.efi_clearstart=fixture_efi;p.clear_errorcount=fixture_errorcount;ctx=0;CHECK(!b.start(b.opaque,&ctx));
+    CHECK(!kbl_native_put(ctx,"/tool.efi","MZ!!",4));unsigned calls=efi_calls;
+    CHECK(run("efi -cs /tool.efi one 'a b'",0)&&efi_calls==calls+1&&contains("clearstart queued"));
+    CHECK(run("efi --clearstart -- /tool.efi one 'a b'",0)&&efi_calls==calls+2);
+    CHECK(run("efi -cs --clearstart /tool.efi",1)&&contains("duplicate")&&efi_calls==calls+2);
+    CHECK(run("efi --clearstart",1)&&contains("requires PATH"));
+    CHECK(!errorcount_calls);CHECK(run("clear errorcount",0)&&errorcount_calls==1&&contains("cleared and verified"));
+    errorcount_failure=1;CHECK(run("clear errorcount",1)&&errorcount_calls==2&&contains("reset failed"));errorcount_failure=0;
+    CHECK(run("clear errorcount extra",1)&&errorcount_calls==2);
+    efi_provider_error=1;CHECK(run("efi -cs /tool.efi one 'a b'",1)&&contains("Fastboot retained"));efi_provider_error=0;
     CHECK(run("echo survived",0)&&contains("survived"));CHECK(finish());++native_test_groups;return 1;
 }
 static unsigned char boot_source[0x1400],boot_prepared[0x1400],boot_check[0x1400];
@@ -420,6 +435,11 @@ static int explicit_efi_bootloader(void){
     CHECK(run("efi --bootloader /no-target.img one 'a b'",1)&&efi_calls==calls+4&&contains("preparation"));
     CHECK(!kbl_native_get_stats(ctx,&after));CHECK(after.owned_allocations==before.owned_allocations&&after.owned_bytes==before.owned_bytes);
     CHECK(run("echo survived-bootloader",0)&&contains("survived-bootloader"));
+    CHECK(finish());p.efi_clearstart=fixture_efi;ctx=0;CHECK(!b.start(b.opaque,&ctx));
+    CHECK(!kbl_native_put(ctx,"/boot.img",boot_source,sizeof(boot_source)));
+    efi_expected_image=boot_prepared;
+    CHECK(run("efi -cs --bootloader /boot.img one 'a b'",0)&&contains("RAM override")&&contains("clearstart queued"));
+    CHECK(run("efi -bl --clearstart /boot.img one 'a b'",0)&&contains("clearstart queued"));
     efi_expected_image=(const unsigned char*)"MZ!!";efi_expected_image_bytes=4;
     CHECK(finish());++native_test_groups;return 1;
 }

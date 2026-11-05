@@ -178,6 +178,23 @@ FIXTURE_API int kbl_adb_usb_test_run(void){checks=0;fixture();
     CHECK(kbl_adb_usb_step(&transport,1)<0&&transport.stop_stalled==1&&stall_out_attempts==1&&stall_in_attempts==1&&!frees);
     CHECK(kbl_adb_usb_step(&transport,1)<0&&stall_out_attempts==1&&stall_in_attempts==2&&!frees);
     fail_stall_ep=0;CHECK(kbl_adb_usb_step(&transport,1)==0&&stall_out_attempts==1&&stall_in_attempts==3&&transport.phase==KBL_ADB_USB_RESIDENT);
+    /* clearstart explicitly ends resident USB; ordinary stop above still parks.
+     * EP0 abort is a request. Retain every buffer/router until terminal DMA. */
+    CHECK(setup()==0&&activate()==0);kbl_adb_usb_request_stop(&transport);
+    CHECK(kbl_adb_usb_step(&transport,1)>0);CHECK(event(2,transport.rx,0,KBL_USB_CANCELLED)==1);
+    CHECK(kbl_adb_usb_step(&transport,1)==0&&transport.phase==KBL_ADB_USB_RESIDENT);
+    unsigned char setup_packet[]={0xc0,0x20,0,0,4,0,64,0};
+    CHECK(kbl_adb_usb_fn_event(&transport,1,8,setup_packet)==1&&transport.control_pending);
+    CHECK(kbl_adb_usb_clearstart_release(&transport)>0&&fn_aborts==1&&hooks==1&&starts==1);
+    CHECK(kbl_adb_usb_clearstart_release(&transport)>0&&fn_aborts==1);
+    CHECK(fn_event(1,2,0)==1&&!transport.control_pending);
+    CHECK(kbl_adb_usb_clearstart_release(&transport)==0&&starts==2&&last_set==&set&&!hooks&&frees==allocations);
+    CHECK(kbl_adb_usb_can_release(&transport)&&!transport.composite_started);
+    CHECK(kbl_adb_usb_fn_event(&transport,1,8,setup_packet)==0);
+    CHECK(setup()==0&&activate()==0);kbl_adb_usb_request_stop(&transport);CHECK(kbl_adb_usb_step(&transport,1)>0);
+    CHECK(event(2,transport.rx,0,KBL_USB_CANCELLED)==1&&kbl_adb_usb_step(&transport,1)==0);
+    fail_rollback=1;CHECK(kbl_adb_usb_clearstart_release(&transport)<0&&transport.configuration_uncertain&&transport.control&&hooks==1);
+    CHECK(!kbl_adb_usb_can_release(&transport));
     /* Leave a clean descriptor fixture available to the real provider test. */
     fixture();CHECK(kbl_adb_usb_descriptors(&built,&set,0,span)==0);return 0;
 }

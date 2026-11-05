@@ -26,6 +26,15 @@ overload once after the broker has durably replaced 1 with 0. Synchronous nested
 entries on that same original call path do not consume twice. No synthetic
 reboot command replaces the updater's original behavior.
 
+The async continuation can call a saved Java overload outside its original ART
+replacement frame. Virtual dispatch may then enter the hook again. A synchronous
+scope matches that immediate self-entry by thread, overload, actual Java receiver
+and arguments (a static overload has no instance receiver), and calls the original from inside the replacement frame. The
+scope is consumed once and removed on return or exception; it stores no file
+permission and cannot authorize a later click or another thread. This preserves
+the single final CONSUME and the official slot operation while allowing the real
+PowerManager reboot method to execute after background preparation.
+
 Payload callbacks do not reset permission merely because the completed page is
 shown again. A reset failure keeps the manual gate closed and reports the error;
 the next manual click retries the reset and redirects to hnubl for preservation.

@@ -38,6 +38,39 @@ static int read_envelope(const unsigned char *arg,size_t bytes) {
  for(size_t i=5;i<21;++i)if(!((arg[i]>='0'&&arg[i]<='9')||(arg[i]>='a'&&arg[i]<='f')||(arg[i]>='A'&&arg[i]<='F')))return 0;
  return 1;
 }
+/* Native Fastboot may free its complete command list when continue leaves the
+ * loop, then create a new list on recovery. Our private state survives that
+ * native cleanup. Reconcile it only after an exact explicit lazy request.
+ * Match the owned name pointer, byte length and handler together; never read a
+ * foreign name or infer ownership merely from equal command text.
+ * Brent's cycle check needs no allocation and adds no arbitrary list limit.
+ */
+static int registered_entries(const struct kbl_parent_lazy_config *l,uintptr_t base,uint32_t *present) {
+ const uint64_t *entries=(const void *)(base+l->entries_rva);
+ uintptr_t node=*(const uintptr_t *)(base+l->head_rva),anchor=node;
+ size_t power=1,span=0;
+ uint32_t mask=0,all=(UINT32_C(1)<<l->count)-1;
+ while(node) {
+  if(node%sizeof(uintptr_t)||node>UINTPTR_MAX-256)return 0;
+  const char *prefix=*(const char *const *)(node+l->prefix_offset);
+  void *handler=*(void *const *)(node+l->handler_offset);
+  uint32_t length=*(const uint32_t *)(node+l->length_offset);
+  for(unsigned i=0;i<l->count;++i) {
+   const char *name=(const void *)(base+entries[i*2]);
+   if(prefix==name&&handler==(void *)(base+entries[i*2+1])) {
+    size_t n=0;while(n<64&&name[n])++n;
+    if(n&&n<=63&&length==n)mask|=UINT32_C(1)<<i;
+   }
+  }
+  if(mask==all){*present=mask;return 1;}
+  uintptr_t next=*(const uintptr_t *)(node+l->next_offset);
+  if(next&&next==anchor)return 0;
+  ++span;
+  if(span==power){anchor=next;span=0;if(power<=SIZE_MAX/2)power*=2;}
+  node=next;
+ }
+ *present=mask;return 1;
+}
 /* Called only after the assembly edge has matched an entire entry and NUL.
  * NativeRegister returns void, including silent allocation failure. Observe
  * the real native head/node after every call; a retry only fills missing
@@ -63,6 +96,11 @@ void kbl_parent_lazy_start(const struct kbl_parent_config *c,uintptr_t base,
  struct kbl_parent_state *s=(void *)(base+c->state_rva);
  if(s->registering){send_final(&x,0,"KBL registration busy");return;}
  s->registering=1;
+ uint32_t present=0;
+ if(!registered_entries(l,base,&present)){
+  s->registering=0;send_final(&x,0,"KBL native command list invalid");return;
+ }
+ s->registered_mask=present;
  const uint64_t *entries=(const void *)(base+l->entries_rva);
  uintptr_t *head=(void *)(base+l->head_rva);
  for(unsigned i=0;i<l->count;++i){

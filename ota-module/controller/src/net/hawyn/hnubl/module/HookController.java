@@ -24,6 +24,7 @@ public final class HookController {
     private final File module;
     private final String activationId;
     private final String engineSha;
+    private final String agentSha, runtimeCacheIdentity;
     private final OtaOptions.Active options;
     private String apkHash = "", appVersion = "";
     private JSONObject mapping;
@@ -52,9 +53,14 @@ public final class HookController {
     private ControllerReadiness readiness = new ControllerReadiness(false);
     private volatile String terminalError = "";
     private static final long METADATA_INTERVAL = TimeUnit.SECONDS.toNanos(10);
-    private static final int CACHE_SCHEMA = 1;
     private static final int MAPPING_SCHEMA = 1;
     private boolean discoveryCached;
+    private boolean mappingCacheWritePending;
+    private String cacheReason = "not_checked";
+    private final CachedMappingRecovery cacheRecovery = new CachedMappingRecovery();
+    private final MappingGeneration mappingGeneration = new MappingGeneration();
+    private Session pendingCacheRecovery;
+    private int sessionStartCount;
     private int scanCount;
     private ActivityManager activityManager;
     private volatile String processDiscoverySource = "initializing";
@@ -75,6 +81,11 @@ public final class HookController {
         this.module = module.getCanonicalFile();
         this.activationId = activationId;
         this.engineSha = engineSha.toLowerCase(Locale.ROOT);
+        try { this.agentSha = sha256(new File(this.module, "agent.bundle.js")); }
+        catch (Exception invalidAgent) { throw new IOException("Agent identity unavailable", invalidAgent); }
+        // Cheap immutable platform identity, captured once. No recurring libart scan.
+        this.runtimeCacheIdentity = android.os.Build.VERSION.SDK_INT + ":" + Arrays.toString(android.os.Build.SUPPORTED_ABIS) +
+            ":" + android.os.Build.FINGERPRINT + ":" + System.getProperty("java.vm.name", "") + ":" + System.getProperty("java.vm.version", "");
         try { OtaEventJournal.context(activationId, this.engineSha, null, null); }
         catch (RuntimeException | LinkageError ignored) { }
         // Capture once per activation. Saving a WebUI choice cannot silently
@@ -192,6 +203,7 @@ public final class HookController {
         while (!stopping) {
             boolean updaterRunning = false;
             try {
+                recoverCachedMapping();
                 refreshBroker();
                 refreshMapping(false);
                 Map<Integer, Long> alive = updaterProcesses();
@@ -226,6 +238,12 @@ public final class HookController {
                             sessions.put(entry.getKey(), session);
                             startCriticalSession(session::start, failure ->
                                 failSession(session, "Critical injector launch failed: " + failure));
+                        } else {
+                            Session existing = sessions.get(entry.getKey());
+                            if (existing.ready && existing.eternalized && !existing.residentReuseRecorded) {
+                                existing.residentReuseRecorded = true;
+                                existing.journal.residentReuse(sessionStartCount);
+                            }
                         }
                     }
                     boolean ready = !sessions.isEmpty();
@@ -282,9 +300,11 @@ public final class HookController {
         }
     }
 
-    private boolean refreshMapping(boolean forceMetadata) throws Exception {
+    private boolean refreshMapping(boolean forceMetadata) throws Exception { return refreshMapping(forceMetadata, false); }
+
+    private boolean refreshMapping(boolean forceMetadata, boolean forceDiscovery) throws Exception {
         long now = System.nanoTime();
-        if (!forceMetadata && metadataAttempted && now < nextMetadataCheck) {
+        if (!forceDiscovery && !forceMetadata && metadataAttempted && now < nextMetadataCheck) {
             if (mapping == null && criticalMappingFailure != null) throw criticalMappingFailure;
             if (!metadataError.isEmpty()) throw new IOException(metadataError);
             if (mapping == null) throwMappingUnavailable();
@@ -300,7 +320,7 @@ public final class HookController {
             if (mapping == null && criticalMappingFailure != null) throw criticalMappingFailure;
             throw failure;
         }
-        if (current.equals(mappingMetadata)) {
+        if (!forceDiscovery && current.equals(mappingMetadata)) {
             if (mapping == null) throwMappingUnavailable();
             return false;
         }
@@ -322,10 +342,12 @@ public final class HookController {
         try {
             String hash = sha256(current.apk);
             analyzedHash = hash;
-            JSONObject discovered = hash.equals(apkHash) && validMapping(mapping, hash) ? mapping :
-                readDiscoveryCache(hash);
+            boolean memoryHit = !forceDiscovery && hash.equals(apkHash) && validMapping(mapping, hash);
+            if (memoryHit) cacheReason = "verified_resident_mapping";
+            JSONObject discovered = memoryHit ? mapping : forceDiscovery ? null : readDiscoveryCache(hash);
             boolean cached = discovered != null;
             if (!cached) {
+                if (forceDiscovery) cacheReason = "runtime_validation_failed_forced_rediscovery";
                 scanned = true;
                 scanCount++;
                 discovered = new JSONObject(OucDiscovery.discover(current.apk));
@@ -344,6 +366,13 @@ public final class HookController {
             if (!validMapping(discovered, hash)) throw new IOException("Incomplete or mismatched semantic discovery: " + discovered);
             if (stopping) throw new InterruptedException("Controller disposed during semantic analysis");
             mapping = discovered;
+            // A memory hit keeps its assignment history. A disk read or a fresh
+            // scan publishes a new generation; only the first fresh assignment
+            // is a non-cache origin. Later new PIDs reuse a memory cache.
+            if (!memoryHit) {
+                mappingGeneration.publish(cached);
+                mappingCacheWritePending = scanned;
+            }
             mappingMetadata = current;
             mappingError = "";
             criticalMappingFailure = null;
@@ -351,7 +380,9 @@ public final class HookController {
             apkHash = hash; appVersion = current.version; targetUid = current.uid;
             discoveryCached = cached;
             atomic(new File(STATE, "discovery.json"), mapping.toString(2));
-            if (scanned) writeDiscoveryCache(hash, discovered);
+            OtaEventJournal.record("discovery_cache", OtaEventJournal.fields("cache_hit", cached,
+                "reason", cacheReason, "scan_count", scanCount, "cache_recovery_count", cacheRecovery.count(),
+                "apk_sha256", hash, "identity_encoding", "dex-descriptor-v1"));
             return true;
         } catch (Exception failure) {
             // Failed/ambiguous mappings are cached too. Reopening the same version
@@ -417,29 +448,90 @@ public final class HookController {
     private JSONObject readDiscoveryCache(String apkHash) {
         File file = new File(STATE, "discovery-cache.json");
         try {
-            if (!Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS)) return null;
+            if (!Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS)) { cacheReason = "cache_absent_or_not_regular"; return null; }
             JSONObject cache = new JSONObject(new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8));
-            if (!Integer.valueOf(CACHE_SCHEMA).equals(cache.opt("schema")) ||
-                !engineSha.equals(cache.optString("engine_hash")) || !apkHash.equals(cache.optString("apk_hash"))) return null;
-            JSONObject candidate = cache.optJSONObject("mapping");
-            return validMapping(candidate, apkHash) ? candidate : null;
+            DiscoveryMappingCache.Result inspected = DiscoveryMappingCache.inspect(cache, engineSha, apkHash, agentSha, runtimeCacheIdentity);
+            cacheReason = inspected.reason;
+            return inspected.hit() && validMapping(inspected.mapping, apkHash) ? inspected.mapping : null;
         } catch (Exception invalid) {
             // A stale/truncated cache is optional evidence, never a replacement
             // for semantic analysis of the installed updater.
             System.err.println("[OUC discovery cache] ignored: " + invalid);
+            cacheReason = "cache_read_failed_" + invalid.getClass().getSimpleName();
             return null;
         }
     }
 
-    private void writeDiscoveryCache(String apkHash, JSONObject discovered) {
+    private boolean writeDiscoveryCache(String apkHash, JSONObject discovered) {
         try {
-            JSONObject cache = new JSONObject().put("schema", CACHE_SCHEMA).put("engine_hash", engineSha)
-                .put("apk_hash", apkHash).put("mapping", discovered);
+            JSONObject cache = DiscoveryMappingCache.encode(discovered, engineSha, apkHash, agentSha, runtimeCacheIdentity);
             atomic(new File(STATE, "discovery-cache.json"), cache.toString());
+            synchronized (this) { warnings.remove("discovery_cache"); }
+            OtaEventJournal.record("discovery_cache_written", OtaEventJournal.fields("apk_sha256", apkHash,
+                "cache_policy", OucDiscovery.CACHE_POLICY, "scan_count", scanCount));
+            return true;
         } catch (Exception failure) {
             // This performance cache is best effort. Validated hooks still work
             // when the optional cache cannot be persisted.
             System.err.println("[OUC discovery cache] write failed: " + failure);
+            synchronized (this) { warnings.put("discovery_cache", "Persistent cache unavailable; using the validated fresh mapping in memory: " + failure); }
+            OtaEventJournal.record("discovery_cache_write_failed", OtaEventJournal.fields("error", failure.toString(),
+                "apk_sha256", apkHash, "fresh_mapping_retained", true, "persistent_cache_updated", false));
+            return false;
+        }
+    }
+
+    /** An invalid cache is retried only in a fresh target. Never layer replacement hooks over a partial install. */
+    private boolean requestCacheRecovery(Session session, JSONObject event) {
+        if (!"cached_mapping_invalid".equals(event.optString("event"))) return false;
+        String decision = cacheRecovery.request(session.cachedMapping, session.mappingHash, engineSha + ":" + agentSha, event);
+        session.journal.cacheValidation(event.optString("stage"), event.optString("code"), event.optString("reason"), decision);
+        if (!"rediscovery_scheduled".equals(decision)) return false;
+        pendingCacheRecovery = session;
+        failSession(session, "Cached mapping validation failed; rebuilding once in a fresh updater process: " + event.optString("reason"));
+        return true;
+    }
+
+    private void recoverCachedMapping() throws Exception {
+        Session failed;
+        synchronized (this) {
+            failed = pendingCacheRecovery;
+            pendingCacheRecovery = null;
+            if (failed == null || stopping) return;
+            sessions.values().forEach(Session::stop);
+            sessions.clear();
+            readiness.invalidate();
+            phase = "重新定位软件更新功能";
+        }
+        // Stop before parsing as well: no partially installed agent is left active
+        // while the replacement mapping is being built. This is app-only cleanup;
+        // the OTA marker, deferred slot records and official install state are untouched.
+        OtaEventJournal.record("cached_mapping_rediscovery", OtaEventJournal.fields("phase", "start",
+            "target_pid", failed.pid, "target_start", failed.startTime, "cache_recovery_count", cacheRecovery.count()));
+        try {
+            CachedMappingRecovery.rebuild(new CachedMappingRecovery.Rebuild() {
+                @Override public void stopTarget() throws Exception {
+                    synchronized (HookController.this) {
+                        if (stopping) throw new InterruptedException("Controller disposed before cache recovery cleanup");
+                        command("am", "force-stop", "--user", "0", TARGET);
+                    }
+                }
+                @Override public void discoverAndPublish() throws Exception { refreshMapping(true, true); }
+                @Override public void startFreshTarget() throws Exception {
+                    synchronized (HookController.this) {
+                        if (stopping) throw new InterruptedException("Controller disposed before cache recovery restart");
+                        Intent launch = context.getPackageManager().getLaunchIntentForPackage(TARGET);
+                        if (launch == null || launch.getComponent() == null) throw new IOException("软件更新启动入口未找到");
+                        command("am", "start", "-W", "--user", "0", "-n", launch.getComponent().flattenToString());
+                    }
+                }
+            });
+            OtaEventJournal.record("cached_mapping_rediscovery", OtaEventJournal.fields("phase", "fresh_process_requested",
+                "apk_sha256", apkHash, "scan_count", scanCount, "cache_recovery_count", cacheRecovery.count()));
+        } catch (Exception | LinkageError error) {
+            OtaEventJournal.record("cached_mapping_rediscovery", OtaEventJournal.fields("phase", "failed",
+                "error", error.toString(), "cache_recovery_count", cacheRecovery.count()));
+            throw error;
         }
     }
 
@@ -668,25 +760,37 @@ public final class HookController {
     private final class Session {
         final int pid;
         final long startTime;
+        final boolean cachedMapping;
+        final String mappingHash;
+        final JSONObject sessionMapping;
+        final MappingGeneration.Selection mappingSelection;
         volatile boolean ready;
         volatile boolean stopped;
         volatile boolean eternalized;
+        boolean residentReuseRecorded;
         volatile String error = "";
         volatile Process injector;
         final AgentReadiness protection = new AgentReadiness();
         final SessionEventJournal journal;
         Session(int pid, long startTime) { this.pid = pid; this.startTime = startTime;
+            this.mappingSelection = mappingGeneration.assign(); this.cachedMapping = mappingSelection.cached;
+            this.mappingHash = apkHash; this.sessionMapping = mapping;
             this.journal = new SessionEventJournal(pid,startTime,activationId,engineSha,OtaEventJournal::record); }
         void start() throws Exception {
-            JSONObject parameters = new JSONObject().put("mapping", mapping).put("activation_id", activationId)
+            JSONObject parameters = new JSONObject().put("mapping", sessionMapping).put("activation_id", activationId)
+                .put("discovery_cached", cachedMapping)
                 .put("forceFullPackage", options.forceFullPackage)
                 .put("ota_socket", otaTransport == null ? "" : otaTransport.path);
             if (stopping || stopped) return;
+            if (!agentSha.equals(sha256(new File(module, "agent.bundle.js"))))
+                throw new IOException("Agent changed during activation; a fresh controller is required");
             final Process process = new ProcessBuilder(new File(module, "bin/frida-inject").getPath(), "-p", Integer.toString(pid), "-e",
                 "-s", new File(module, "agent.bundle.js").getPath(), "-P", parameters.toString())
                 .redirectErrorStream(true).start();
             injector = process;
             journal.start();
+            journal.mappingSource(cachedMapping, mappingSelection.source, cacheReason, mappingSelection.generation,
+                mappingSelection.assignment, ++sessionStartCount);
             everAttached = true;
             Thread monitor = new Thread(() -> {
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
@@ -703,6 +807,7 @@ public final class HookController {
                             if (event == null) continue;
                             synchronized (HookController.this) {
                                 if (stopped || stopping || sessions.get(pid) != this) return;
+                                if (requestCacheRecovery(this, event)) return;
                                 protection.accept(event);
                                 journal.accept(event);
                                 if (!protection.error.isEmpty()) { failSession(this, protection.error); return; }
@@ -719,6 +824,12 @@ public final class HookController {
                             // -e detached the host only after init resolved. The
                             // hooks now live in the updater until this PID exits.
                             eternalized = true; ready = true;
+                            if (mappingCacheWritePending && protection.verifiedSelectiveMapping &&
+                                    sessionMapping == mapping && mappingHash.equals(apkHash)) {
+                                mappingCacheWritePending = false;
+                                if (!writeDiscoveryCache(mappingHash, sessionMapping))
+                                    cacheReason = "fresh_mapping_memory_only";
+                            }
                         } else {
                             failSession(this, "注入初始化未完成（退出码 " + result + "，ready=" + protection.declaredReady + "）");
                         }
@@ -796,7 +907,11 @@ public final class HookController {
             .put("broker_error", brokerError)
             .put("native_slot_ready",nativeSlots!=null&&nativeSlots.ready()).put("native_slot_waiting",nativeSlots!=null&&nativeSlots.waiting())
             .put("app_version", appVersion).put("apk_sha256", apkHash).put("error", error)
-            .put("engine_hash", engineSha).put("discovery_cached", discoveryCached).put("scan_count", scanCount)
+            .put("engine_hash", engineSha).put("agent_hash", agentSha).put("discovery_cached", discoveryCached).put("scan_count", scanCount)
+            .put("cache_reason", cacheReason).put("cache_recovery_count", cacheRecovery.count())
+            .put("mapping_generation", mappingGeneration.generation()).put("mapping_assignments", mappingGeneration.assignments())
+            .put("session_start_count", sessionStartCount)
+            .put("resident_session_count", sessions.values().stream().filter(session -> session.ready && session.eternalized && !session.stopped).count())
             .put("force_full_package", options.forceFullPackage)
             .put("process_discovery_source", processDiscoverySource);
         status.put("critical_mapping_failure", criticalMappingFailure != null)
@@ -804,6 +919,9 @@ public final class HookController {
         org.json.JSONArray pids = new org.json.JSONArray();
         List<Integer> ordered = new ArrayList<>(sessions.keySet()); Collections.sort(ordered);
         ordered.forEach(pids::put); status.put("pids", pids);
+        JSONObject mappingSources = new JSONObject();
+        for (Integer pid : ordered) mappingSources.put(Integer.toString(pid), sessions.get(pid).mappingSelection.source);
+        status.put("session_mapping_sources", mappingSources);
         String comparable = status.toString();
         if (comparable.equals(lastStatus)) return;
         status.put("updated_at", System.currentTimeMillis());

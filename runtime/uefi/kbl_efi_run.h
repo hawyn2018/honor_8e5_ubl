@@ -8,7 +8,7 @@ struct kbl_efi_launcher {
   struct kefi_system_table *system;
   unsigned (*current_el)(void *);
   void *opaque;
-  unsigned active, expected_el, exit_borrowed;
+  unsigned active, expected_el, exit_borrowed, prepared;
   void *file_buffer, *options, *exit_data;
   size_t file_bytes, options_bytes, exit_bytes;
   kefi_status last_cleanup;
@@ -25,6 +25,12 @@ int kbl_efi_run(struct kbl_efi_launcher *, const void *, size_t,
 int kbl_efi_run_full(struct kbl_efi_launcher *, const void *, size_t,
                 const uint16_t *options, size_t options_bytes,
                 struct kbl_efi_run_full_result *);
+/* Two-phase explicit handoff: preparation owns firmware pools + loaded target
+ * and does not execute target code. Prepared start needs no native runtime.
+ * The launcher and current_el callback must survive until start/cleanup ends. */
+int kbl_efi_prepare(struct kbl_efi_launcher *, const void *, size_t,
+                const uint16_t *, size_t, struct kbl_efi_run_result *);
+int kbl_efi_start_prepared(struct kbl_efi_launcher *, struct kbl_efi_run_result *);
 /* Explicit stop/retry cleanup, never invoked by a boot-path hook. Failure
  * keeps image/options/file/exit-data ownership. No child is force terminated.
  */

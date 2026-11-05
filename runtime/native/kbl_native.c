@@ -434,7 +434,7 @@ static int command(struct native *c) {
     char **a=c->argv; int n=c->argc;
     if(equal(a[0],"help")) {
         text(c,"KBL native VFS commands:\nhelp el pwd ls cd mkdir touch cat cp mv rm echo hex stat true false\nsha256sum wc head tail grep hexdump xxd basename dirname printf dd sync mount umount\nefi PATH [ARGS...] (UEFI PE/COFF application, synchronous)\nefi -bl PATH [ARGS...] / efi --bootloader PATH [ARGS...] (explicit RAM-only bootloader mode)\n");
-        text(c,"grep matches literal bytes (-F -n -i -c -v); no regex or pipes.\n");
+        text(c,"efi -cs / --clearstart [--bootloader] PATH [ARGS...] (prepare, stop KBL, independent EFI handoff)\nclear errorcount (explicit KBL-owned counter reset)\ngrep matches literal bytes (-F -n -i -c -v); no regex or pipes.\n");
         text(c,"screenoff screenon screenstatus; poweroff (sync then EFI shutdown).\n");
         text(c,"./FILE [ARGS] runs a KBL ABI AArch64 ELF; exit keeps this runtime.\n"); return 0;
     }
@@ -458,6 +458,11 @@ static int command(struct native *c) {
     if(equal(a[0],"mount"))return mount_command(c);
     if(equal(a[0],"umount")){if(n!=2)return error(c,"usage: umount TARGET");int rc=mount_remove(c,a[1]);if(rc){text(c,"umount failed errno=");number(c,(uint64_t)-rc);text(c,"\n");return 1;}return 0;}
     if(equal(a[0],"efi"))return efi_command(c);
+    if(equal(a[0],"clear")&&n==2&&equal(a[1],"errorcount")){
+        if(!c->p.clear_errorcount)return error(c,"errorcount provider unavailable");
+        if(c->p.clear_errorcount(c->p.opaque))return error(c,"errorcount reset failed; see Fastboot diagnostics");
+        return text(c,"KBL-owned errorcount cleared and verified\n")?1:0;
+    }
     if(equal(a[0],"true")) return 0;
     if(equal(a[0],"dd"))return dd_command(c);
     if(equal(a[0],"sync"))return sync_command(c);

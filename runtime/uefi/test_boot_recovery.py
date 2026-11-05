@@ -30,7 +30,9 @@ STATE = {"base": 8, "handle": 16, "table": 24, "sp": 32, "nzcv": 40,
          "force": 48, "failures": 56, "status": 64, "reason": 72, "site": 80,
          "manual_depth": 88, "nv_status": 272, "initialized": 280,
          "watchdog_status": 288, "retry_count": 296, "pending": 304, "initial_canary": 312,
-         "boot_scope": 320, "nv_requested_count": 328}
+         "boot_scope": 320, "nv_requested_count": 328,
+         "manual_bootlinux_status": 336, "manual_bootlinux_count": 344,
+         "manual_bootlinux_site": 352}
 
 
 def q(value):
@@ -423,7 +425,7 @@ def bootlinux(h, returned):
             m.stop("returned-bootlinux-forced-fastboot-entry")
     def native(m):
         event = m.counts("BootLinux")[-1]
-        assert event["args"] == arguments and event["sp"] == nested - 96
+        assert event["args"] == arguments and event["sp"] == nested - 128
         assert [event["count"] for event in m.counts("SetVariable")] == [0]
         assert m.state_value("failures") == 2
         if returned:
@@ -441,6 +443,163 @@ def initial_threshold(h):
     assert visit["force"] == 1 and visit["failures"] >= 3
     assert visit["request"] == 1 and visit["continue"] == 0
     assert len(h.counts("Watchdog")) == 1 and not h.counts("Stall") and not h.counts("SetVariable")
+
+
+def manual_bootlinux_return(h, status):
+    """Real module instructions retain the native FASTBOOT -> AUTH -> handoff ABI."""
+    arguments = [0xA700000000000000 + index for index in range(8)]
+    secondary = 0x7A77000000000001
+    nested = h.root_sp - 0x2400
+    initial_count = h.nv_count or 0
+    initial_force = int(initial_count >= 3)
+    stage = 0
+    def original(m, count):
+        assert count == 1, "Manual BootLinux return restarted native main"
+        m.u.reg_write(a.UC_ARM64_REG_SP, nested)
+        m.go("FASTBOOT_ENTER", link=m.after)
+    def auth_native(m):
+        assert m.state_value("boot_scope") == 1
+        assert m.counts("nativeAuth")[-1]["args"] == arguments
+        m.native_return(0, secondary)
+    def boot_native(m):
+        event = m.counts("BootLinux")[-1]
+        assert event["args"] == arguments and event["sp"] == nested - 128
+        assert m.state_value("boot_scope") == 1
+        assert m.state_value("failures") == initial_count
+        m.native_return(status, secondary)
+    def after(m):
+        nonlocal stage
+        assert m.u.reg_read(a.UC_ARM64_REG_SP) == nested
+        assert m.state_value("boot_scope") == 0
+        if stage == 0:
+            stage = 1
+            m.go("AUTH", arguments, link=m.after)
+        elif stage == 1:
+            assert m.u.reg_read(X[0]) == 0 and m.u.reg_read(X[1]) == secondary
+            stage = 2
+            m.go("BOOTLINUX", arguments, link=m.after)
+        else:
+            assert m.u.reg_read(X[0]) == status and m.u.reg_read(X[1]) == secondary
+            assert [m.u.reg_read(r) for r in X[18:30]] == m.initial_gpr[18:30]
+            assert [m.u.reg_read(r) for r in D] == m.initial_fp
+            assert m.state_value("status") == status and m.state_value("reason") == 5
+            assert m.state_value("site") == m.module + m.offsets["BOOTLINUX"]
+            assert m.state_value("manual_bootlinux_status") == status
+            assert m.state_value("manual_bootlinux_count") == 1
+            assert m.state_value("manual_bootlinux_site") == m.module + m.offsets["BOOTLINUX"]
+            assert m.state_value("failures") == initial_count
+            assert m.state_value("force") == initial_force and m.state_value("pending") == 0
+            assert len(m.original_visits) == 1 and len(m.counts("BootLinux")) == 1
+            assert not m.counts("Stall") and not m.counts("NativeEventCleanup")
+            assert [e["count"] for e in m.counts("SetVariable")] == ([0] if initial_count else [])
+            assert bytes(m.u.mem_read(m.flags + 16, 1)) == (b"\0" if initial_force else b"\1")
+            assert bytes(m.u.mem_read(m.flags, 1)) == (b"\1" if initial_force else b"\0")
+            m.stop("manual-bootlinux-return-native-frame-and-status-preserved")
+    h.original_action, h.auth_action, h.bootlinux_action, h.after_action = original, auth_native, boot_native, after
+    h.run()
+
+
+def manual_bootlinux_diagnostic_survives_entry_return(h, status):
+    nested = h.root_sp - 0x2800
+    stage = 0
+    entry_return_link = 0
+    def original(m, count):
+        nonlocal entry_return_link
+        if count == 1:
+            entry_return_link = m.u.reg_read(X[30])
+            m.u.reg_write(a.UC_ARM64_REG_SP, nested)
+            m.go("FASTBOOT_ENTER", link=m.after)
+        else:
+            assert count == 2
+            assert m.state_value("reason") == 1 and m.state_value("status") == 0
+            assert m.state_value("manual_bootlinux_status") == status
+            assert m.state_value("manual_bootlinux_count") == 1
+            assert m.state_value("manual_bootlinux_site") == m.module + m.offsets["BOOTLINUX"]
+            assert m.state_value("failures") == 0
+            m.stop("manual-diagnostic-survives-native-cleanup-and-entry-return")
+    def native(m):
+        m.native_return(status, 0x77A4)
+    def after(m):
+        nonlocal stage
+        assert m.u.reg_read(a.UC_ARM64_REG_SP) == nested
+        if stage == 0:
+            stage = 1
+            m.go("BOOTLINUX", [0xA800000000000000+i for i in range(8)], link=m.after)
+        else:
+            assert m.u.reg_read(X[0]) == status
+            assert m.state_value("boot_scope") == 0
+            # Model the existing native command epilogue and Fastboot cleanup,
+            # then its ordinary LoaderEntry RET. The module executes the retry.
+            m.u.reg_write(a.UC_ARM64_REG_SP, m.root_sp)
+            m.u.reg_write(X[30], entry_return_link)
+            m.loader_return(0)
+    h.original_action, h.bootlinux_action, h.after_action = original, native, after
+    h.run()
+
+
+def manual_bootlinux_native_cleanup(h, status):
+    """Return to the live native frame, which then calls its own event cleanup."""
+    nested = h.root_sp - 0x2800
+    initial_count = h.nv_count or 0
+    initial_force = int(initial_count >= 3)
+    entry_return_link = 0
+    stage = 0
+    h.event_active = True
+    h.write_q(h.event_slot, 0xB00C000000000001)
+    config = h.module + h.offsets["CONFIG"]
+    h.write_q(config + 112, h.flags_rva + 48)
+    h.write_q(config + 120, h.cleanup_rva)
+
+    def original(m, count):
+        nonlocal entry_return_link
+        if count == 1:
+            entry_return_link = m.u.reg_read(X[30])
+            m.u.reg_write(a.UC_ARM64_REG_SP, nested)
+            m.go("FASTBOOT_ENTER", link=m.after)
+        else:
+            assert count == 2
+            assert m.state_value("failures") == initial_count
+            # The later ordinary LoaderEntry return retains its pre-existing
+            # retry policy; this is after native cleanup, outside the wrapper.
+            assert m.state_value("force") == 1
+            assert m.state_value("manual_bootlinux_status") == status
+            assert m.state_value("manual_bootlinux_count") == 1
+            assert m.read_q(m.event_slot) == 0
+            cleanup = m.counts("NativeEventCleanup")
+            assert len(cleanup) == 1 and cleanup[0]["sp"] == nested
+            assert [e["count"] for e in m.counts("SetVariable")] == ([0] if initial_count else [])
+            m.stop("manual-return-native-command-frame-performs-original-cleanup")
+
+    def native(m):
+        m.native_return(status, 0x77A4)
+
+    def after(m):
+        nonlocal stage
+        assert m.u.reg_read(a.UC_ARM64_REG_SP) == nested
+        if stage == 0:
+            stage = 1
+            m.go("BOOTLINUX", [0xA800000000000000+i for i in range(8)], link=m.after)
+        elif stage == 1:
+            assert m.u.reg_read(X[0]) == status and m.u.reg_read(X[1]) == 0x77A4
+            assert m.state_value("boot_scope") == 0
+            assert m.state_value("failures") == initial_count and m.state_value("force") == initial_force
+            assert not m.counts("NativeEventCleanup") and m.read_q(m.event_slot) != 0
+            assert bytes(m.u.mem_read(m.flags + 16, 1)) == (b"\0" if initial_force else b"\1")
+            # The modeled native command consumes BootLinux's original result
+            # before its own cleanup. The wrapper has already returned to it.
+            m.events.append({"kind": "NativeContinueResult", "status": hex(status), "sp": nested})
+            stage = 2
+            m.u.reg_write(X[30], m.after)
+            m.u.reg_write(a.UC_ARM64_REG_PC, m.base + m.cleanup_rva)
+        else:
+            assert stage == 2 and m.read_q(m.event_slot) == 0
+            assert len(m.counts("NativeEventCleanup")) == 1
+            m.u.reg_write(a.UC_ARM64_REG_SP, m.root_sp)
+            m.u.reg_write(X[30], entry_return_link)
+            m.loader_return(0)
+
+    h.original_action, h.bootlinux_action, h.after_action = original, native, after
+    h.run()
 
 
 def set_failure(h):
@@ -662,6 +821,20 @@ def main():
         ("manual-set-active-error-is-returned-not-recovered", {}, lambda h: manual(h, NOT_FOUND)),
         ("bootlinux-success-clears-persistent-count-before-handoff", {"nv_count": 2}, lambda h: bootlinux(h, False)),
         ("bootlinux-return-restores-ram-count-and-adds-one", {"nv_count": 2}, lambda h: bootlinux(h, True)),
+        ("manual-continue-bootlinux-zero-return-preserves-native-frame", {}, lambda h: manual_bootlinux_return(h, 0)),
+        ("manual-continue-bootlinux-error-return-is-diagnostic-only", {}, lambda h: manual_bootlinux_return(h, ERROR | 7)),
+        ("manual-continue-bootlinux-warning-return-preserved", {}, lambda h: manual_bootlinux_return(h, 1)),
+        ("manual-continue-bootlinux-does-not-increment-existing-count", {"nv_count": 2}, lambda h: manual_bootlinux_return(h, ERROR | 14)),
+        ("manual-continue-bootlinux-does-not-rewrite-threshold-count", {"nv_count": 3}, lambda h: manual_bootlinux_return(h, ERROR | 7)),
+        ("high-address-manual-continue-bootlinux-native-return", {"image_base": 0x190000000}, lambda h: manual_bootlinux_return(h, ERROR | 7)),
+        ("wide-rva-manual-continue-bootlinux-native-return", {"image_base": 0x190000000, "wide_rva": True}, lambda h: manual_bootlinux_return(h, ERROR | 7)),
+        ("manual-bootlinux-error-diagnostic-survives-native-entry-return", {}, lambda h: manual_bootlinux_diagnostic_survives_entry_return(h, ERROR | 7)),
+        ("manual-bootlinux-zero-diagnostic-survives-native-entry-return", {}, lambda h: manual_bootlinux_diagnostic_survives_entry_return(h, 0)),
+        ("high-address-manual-diagnostic-survives-native-entry-return", {"image_base": 0x190000000}, lambda h: manual_bootlinux_diagnostic_survives_entry_return(h, ERROR | 14)),
+        ("manual-zero-return-original-caller-performs-native-event-cleanup", {}, lambda h: manual_bootlinux_native_cleanup(h, 0)),
+        ("manual-error-return-original-caller-performs-native-event-cleanup", {}, lambda h: manual_bootlinux_native_cleanup(h, ERROR | 7)),
+        ("manual-error-existing-count-native-cleanup-and-diagnostic", {"nv_count": 3}, lambda h: manual_bootlinux_native_cleanup(h, ERROR | 14)),
+        ("high-wide-manual-warning-native-cleanup", {"image_base": 0x190000000, "wide_rva": True, "nv_count": 2}, lambda h: manual_bootlinux_native_cleanup(h, 1)),
         ("valid-counter-three-forces-first-entry", {"nv_count": 3}, initial_threshold),
         ("valid-counter-larger-than-threshold-forces-first-entry", {"nv_count": 9}, initial_threshold),
         ("getvariable-absent-allows-healthy-entry", {"get_present": False}, healthy),

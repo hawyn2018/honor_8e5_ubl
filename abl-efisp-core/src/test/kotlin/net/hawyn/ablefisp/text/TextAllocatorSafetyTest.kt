@@ -4,6 +4,8 @@ import net.hawyn.ablefisp.api.AblEfisp
 import net.hawyn.ablefisp.patch.PatchMode
 import net.hawyn.ablefisp.patch.PeImage
 import net.hawyn.ablefisp.patch.BootFailurePolicyPatcher
+import net.hawyn.ablefisp.patch.VmDtboCompatPatcher
+import net.hawyn.ablefisp.patch.preVmHistoricalView
 import net.hawyn.ablefisp.patch.sha256
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
@@ -95,7 +97,13 @@ class TextAllocatorSafetyTest {
             val source = File(root, path)
             assumeTrue("Local firmware integration input: $path", source.isFile)
             for (mode in PatchMode.entries) {
-                val pe = AblEfisp.patch(source.readBytes(), mode).output
+                val complete = AblEfisp.patch(source.readBytes(), mode).output
+                // The independent VM RX mapping and its receipt are sealed;
+                // text allocation in the API first strictly restores it.
+                // Exercise this historical allocator contract on that same
+                // restored input, and verify that isolation rebuilds exactly.
+                val pe = VmDtboCompatPatcher.remove(complete)
+                assertArrayEquals(complete, VmDtboCompatPatcher.patch(pe).bytes)
                 val image = TextPe(pe)
                 val refs = TextA64.refs(image)
                 val tail = image.sections.last { it.flags and 0x60000000L == 0x60000000L }
@@ -141,7 +149,10 @@ class TextAllocatorSafetyTest {
         assertEquals("367240ce5f77720612677224ecfbc397f53577b11354f30b4a3538ffed5e68ab",raw.sha256())
         val pe = AblEfisp.extract(raw).output
         for (mode in PatchMode.entries) {
-            val patched = AblEfisp.patch(pe, mode)
+            val complete = AblEfisp.patch(pe, mode)
+            // Preserve the historical exhaustive byte oracle by restoring
+            // only validated VM ownership and the exact reported key span.
+            val patched = complete.preVmHistoricalView()
             val core = patched.output
             val flashingEdits = patched.patches.filter { it.name.startsWith("flashing unlock：") }
             val independent = patched.patches.filter { it.name.startsWith("oem superunlock：") }
@@ -201,13 +212,19 @@ class TextAllocatorSafetyTest {
             assertTrue(pe.indices.all { pe[it] == core[it] || it in allowed })
             assertEquals(AblEfisp.scanText(pe).entries.associate { it.id to it.text },
                 AblEfisp.scanText(core).entries.associate { it.id to it.text })
+            assertEquals(AblEfisp.scanText(pe).entries.associate { it.id to it.text },
+                AblEfisp.scanText(complete.output).entries.associate { it.id to it.text })
             val result = TextEngine.apply(core,
                 mapOf("fastboot-unlocked" to "device freedom (github hawyn2018)"), autoWrapFastboot = false)
             assertTrue(result.changes.isEmpty())
             assertArrayEquals(core, result.output)
-            val imported = AblEfisp.patch(core, mode)
+            val completeText = AblEfisp.editText(complete.output,
+                mapOf("fastboot-unlocked" to "device freedom (github hawyn2018)"), false)
+            assertTrue(completeText.changes.isEmpty())
+            assertArrayEquals("Full API text no-op rebuilds the sealed VM layer exactly", complete.output, completeText.output)
+            val imported = AblEfisp.patch(complete.output, mode)
             assertTrue(imported.alreadyPatched)
-            assertArrayEquals(core, imported.output)
+            assertArrayEquals(complete.output, imported.output)
         }
     }
 

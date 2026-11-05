@@ -1,6 +1,6 @@
 id=hnubl_ota
 name=hnubl OTA companion
-version=3.0.0
-versionCode=99
+version=3.0.6
+versionCode=105
 author=hawyn
 description=Updater full-package control with WebUI, numeric/build version filtering, and reboot handoff to hnubl. Includes its runtime; no Zygisk or LSPosed dependency.

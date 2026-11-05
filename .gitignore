@@ -42,18 +42,3 @@ platform-tools/
 backups/
 rooted/
 integration/
-
-# Additional local caches and temporary compiler output
-node_modules/
-__pycache__/
-*.pyc
-*.pyo
-.cxx/
-.cache/
-.pytest_cache/
-*.o
-*.obj
-*.tmp
-*.bak
-*.orig
-bld/

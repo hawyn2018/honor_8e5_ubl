@@ -35,6 +35,10 @@
 #define BR_STATE_FP 208
 #define BR_STATE_PENDING 304
 #define BR_STATE_BOOT_SCOPE 320
+#define BR_STATE_MANUAL_BOOTLINUX_STATUS 336
+#define BR_STATE_MANUAL_BOOTLINUX_COUNT 344
+#define BR_STATE_MANUAL_BOOTLINUX_SITE 352
+#define BR_STATE_LAYOUT_BYTES 360
 
 #define BR_REASON_ENTRY_RETURN 1
 #define BR_REASON_AUTO_SLOT 2
@@ -48,6 +52,11 @@
 #include <stddef.h>
 #include <stdint.h>
 typedef uint64_t BRU64;
+#define BR_STATE_MAGIC UINT64_C(0x3742524642484e48)
+#define BR_RECORD_MAGIC UINT32_C(0x48424642)
+#define BR_RECORD_VERSION UINT32_C(1)
+#define BR_RECORD_ATTRIBUTES UINT32_C(7)
+#define BR_RECORD_CHECKSUM_SEED UINT32_C(0x917ab36d)
 typedef struct {
     BRU64 self_rva, state_rva, entry_rva, request_flag_rva, continue_flag_rva;
     BRU64 bootlinux_rva, set_active_rva, canary_rva, threshold, retry_us;
@@ -58,12 +67,19 @@ typedef struct {
     BRU64 force, failures, last_status, last_reason, last_site, manual_depth;
     BRU64 saved_gpr[13], alignment_padding, saved_fp[8];
     BRU64 nv_status, initialized, watchdog_status, retry_count, pending_fatal, initial_canary, boot_scope, nv_requested_count;
+    /* Diagnostic tail only. No permission, retry, or boot decision reads it. */
+    BRU64 manual_bootlinux_status, manual_bootlinux_count, manual_bootlinux_site;
 } BRState;
 _Static_assert(offsetof(BRState, saved_gpr) == BR_STATE_GPR, "GPR ABI");
 _Static_assert(offsetof(BRState, saved_fp) == BR_STATE_FP, "FP ABI");
 _Static_assert(offsetof(BRState, force) == BR_STATE_FORCE, "force ABI");
 _Static_assert(offsetof(BRState, pending_fatal) == BR_STATE_PENDING, "pending ABI");
 _Static_assert(offsetof(BRState, boot_scope) == BR_STATE_BOOT_SCOPE, "boot scope ABI");
+_Static_assert(offsetof(BRState, nv_requested_count) == 328, "NV deduplication ABI");
+_Static_assert(offsetof(BRState, manual_bootlinux_status) == BR_STATE_MANUAL_BOOTLINUX_STATUS, "manual result tail ABI");
+_Static_assert(offsetof(BRState, manual_bootlinux_count) == BR_STATE_MANUAL_BOOTLINUX_COUNT, "manual count tail ABI");
+_Static_assert(offsetof(BRState, manual_bootlinux_site) == BR_STATE_MANUAL_BOOTLINUX_SITE, "manual site tail ABI");
+_Static_assert(sizeof(BRState) == BR_STATE_LAYOUT_BYTES, "state layout ABI");
 _Static_assert(sizeof(BRConfig) == BR_CFG_BYTES, "config ABI");
 void br_initialize(BRState *state, const BRConfig *config);
 void br_prepare_retry(BRState *state, const BRConfig *config);

@@ -4,6 +4,10 @@ import {filterVersionResponse, parseFirmwareVersion} from './version-policy.js';
 import {installRebootLabels} from './reboot-labels.js';
 import {installCacheVersionQuery} from './cache-query.js';
 import {createRebootContext} from './reboot-context.js';
+import {createOriginalReplay} from './original-replay.js';
+import {installNativeRebootGuard} from './native-reboot-guard.js';
+import {createNativeRebootScope, applyCriticalDeoptimization} from './deoptimization-policy.js';
+import {createProcessMethodCache} from './method-resolution-cache.js';
 
 const TARGET = 'com.hihonor.ouc';
 const HNUBL = 'net.hawyn.honor8e5ubl';
@@ -31,7 +35,15 @@ let timerStartPatched = false;
 let diagnosticSequence = 0, attemptSequence = 0;
 let engineLifecycle = null, rebootPending = null, rebootRunnable = null, rebootJobSequence = 0;
 let rebootContext = null, deoptimized = false, continuationReady = false;
+let nativeRebootGuard = null, deoptimization = null;
+let methodCache = null, discoveryCached = false, cacheRecoveryReported = false;
+let initRequests = 0, initReuses = 0, hookInstallations = 0;
 const rebootJobs = new Map();
+const originalReplays = createOriginalReplay({
+  threadId: () => String(Java.use('java.lang.Thread').currentThread().getId()),
+  sameObject: (a, b) => typeof a.$isSameObject === 'function' && a.$isSameObject(b)
+});
+const nativeRebootScope = createNativeRebootScope(() => String(Java.use('java.lang.Thread').currentThread().getId()));
 const diagnosticSession = Date.now().toString(36);
 const stats = {denied: 0, allowed: 0, automaticBlocked: 0, reset: 0, versionLatest: 0, versionPreserved: 0,
   cacheLatest: 0, cachePreserved: 0};
@@ -48,7 +60,9 @@ function telemetry(event) {
   if (['cycle_reset', 'cycle_reset_failed', 'automatic_reboot_blocked', 'unclassified_reboot_blocked',
     'reboot_authorization_requested', 'reboot_authorization_result',
     'reboot_authorization_transport_error', 'reboot_execution_failed', 'original_reboot_entry_failed',
-    'payload_begin_blocked', 'redirect_to_hnubl', 'original_reboot_entry_allowed', 'terminal_reboot_blocked', 'reboot_frontier_passed', 'version_filter', 'cache_version_filter'].includes(event.event)) {
+    'payload_begin_blocked', 'redirect_to_hnubl', 'original_reboot_entry_allowed', 'original_reboot_replay_entered',
+    'original_reboot_entry_returned', 'native_reboot_blocked', 'runtime_deoptimized',
+    'terminal_reboot_blocked', 'reboot_frontier_passed', 'version_filter', 'cache_version_filter'].includes(event.event)) {
     try {
       const Log = Java.use('android.util.Log');
       Log.i.overload('java.lang.String', 'java.lang.String').call(Log, 'hnubl-ota', JSON.stringify(detail));
@@ -155,13 +169,19 @@ function original(overload, receiver, args) {
   return overload.call(receiver, ...args);
 }
 
-function originalReboot(overload, receiver, args) {
-  if (rebootLabels === null) return original(overload, receiver, args);
+function originalReboot(overload, receiver, args, isStatic = false, allowNative = false) {
+  // A static overload has no Java instance receiver. Its exact bound overload
+  // identifies the declaring class even if Java.use returns another wrapper.
+  const replay = () => {
+    const body = () => originalReplays.run(overload, isStatic ? null : receiver, args, () => original(overload, receiver, args));
+    return allowNative ? nativeRebootScope.run(body) : body();
+  };
+  if (rebootLabels === null) return replay();
   let called = false, result, nativeFailed = false, nativeFailure;
   const invoke = () => {
     if (called) return result;
     called = true;
-    try { result = original(overload, receiver, args); return result; }
+    try { result = replay(); return result; }
     catch (error) { nativeFailed = true; nativeFailure = error; throw error; }
   };
   try {
@@ -203,13 +223,13 @@ function installRebootContext(continuations) {
         !item.callback || item.callback.method_name !== 'run' || item.callback.return_type !== 'void' ||
         item.callback.is_static !== false || !Array.isArray(item.callback.parameter_types) || item.callback.parameter_types.length)
       throw new Error('Original reboot continuation ABI is not proved');
-    const type = Java.use(item.class_name);
     for (const ctor of item.constructors) {
       if (!Array.isArray(ctor.parameter_types)) throw new Error('Reboot constructor ABI missing');
-      const overload = type.$init.overload(...ctor.parameter_types);
+      const overload = methodCache.resolve({class_name:item.class_name,method_name:'<init>',
+        parameter_types:ctor.parameter_types,return_type:'void'}).method;
       overload.implementation = function (...args) { const result = original(overload, this, args); rebootContext.capture(this); return result; };
     }
-    const run = type[item.callback.method_name].overload();
+    const run = methodCache.resolve({class_name:item.class_name,...item.callback}).method;
     run.implementation = function () { return rebootContext.resume(this, () => original(run, this, [])); };
     counts.reboot_continuation = (counts.reboot_continuation || 0) + 1;
     installed.push({role:'reboot_continuation',class_name:item.class_name,method_name:item.callback.method_name,parameter_types:[]});
@@ -344,15 +364,17 @@ function prepareManualReboot(hook, overload, receiver, args, originalThreadId, t
             attempt_id: attemptId, thread_id: threadId, diagnostic_id: diagnosticId, terminal});
           let originalFailed = false;
           try {
-            rebootContext.enter('manual', () => originalReboot(overload, capturedReceiver, capturedArgs));
+            rebootContext.enter('manual', () => originalReboot(overload, capturedReceiver, capturedArgs, hook.is_static === true, terminal));
+            telemetry({event: 'original_reboot_entry_returned', attempt_id: attemptId, diagnostic_id: diagnosticId,
+              terminal, note: 'Java invocation returned; device reboot completion is not implied'});
           }
           catch (failure) { originalFailed = true; telemetry({event: 'original_reboot_entry_failed', attempt_id: attemptId, diagnostic_id: diagnosticId, reason: String(failure)}); }
           finally {
             if (!terminal) gateDepths.delete(threadId);
-            try { rebootBackground(() => { rebootTrace(originalFailed ? 'original_failed' : 'original_started', attemptId); release(); }); }
+            try { rebootBackground(() => { rebootTrace(originalFailed ? 'original_failed' : 'original_returned', attemptId); release(); }); }
             catch (failure) {
               reportWarning('engine_lifecycle', 'Background vendor lease cleanup could not be scheduled', failure);
-              setTimeout(() => Java.perform(() => { rebootTrace(originalFailed ? 'original_failed' : 'original_started', attemptId); release(); }), 0);
+              setTimeout(() => Java.perform(() => { rebootTrace(originalFailed ? 'original_failed' : 'original_returned', attemptId); release(); }), 0);
             }
             cleanup();
           }
@@ -442,8 +464,7 @@ function bindHook(hook) {
     counts[role] = (counts[role] || 0) + 1;
     return;
   }
-  const type = Java.use(hook.class_name);
-  const overload = type[hook.method_name].overload(...hook.parameter_types);
+  const {type,method:overload} = methodCache.resolve(hook);
 
   if (role === 'full_package') {
     if (hook.return_type !== 'java.lang.String') throw new Error('Package type result must be String');
@@ -507,6 +528,11 @@ function bindHook(hook) {
     if (hook.return_type !== 'void' || hook.parameter_types[hook.mode_arg] !== 'java.lang.String')
       throw new Error('Reboot gate reason descriptor is not proven');
     overload.implementation = function (...args) {
+      if (originalReplays.take(overload, hook.is_static === true ? null : this, args)) {
+        telemetry({event: 'original_reboot_replay_entered', terminal: false,
+          class_name: hook.class_name, method_name: hook.method_name});
+        return original(overload, this, args);
+      }
       const mode = args[hook.mode_arg];
       if (isAutomatic(mode, hook.automatic_values || []) || rebootContext.current() === 'automatic') {
         stats.automaticBlocked++;
@@ -542,6 +568,11 @@ function bindHook(hook) {
   } else if (role === 'reboot_terminal') {
     if (hook.return_type !== 'void' || hook.parameter_types.length !== 1 || hook.parameter_types[0] !== 'java.lang.String') throw new Error('Terminal reboot ABI missing');
     overload.implementation = function (...args) {
+      if (originalReplays.take(overload, this, args)) {
+        telemetry({event: 'original_reboot_replay_entered', terminal: true,
+          class_name: hook.class_name, method_name: hook.method_name});
+        return original(overload, this, args);
+      }
       const kind=isAutomatic(args[0],hook.automatic_values||[])?'automatic':rebootContext===null?'unknown':rebootContext.current();
       if (kind !== 'manual') {
         if (kind === 'automatic') stats.automaticBlocked++; else stats.denied++;
@@ -592,12 +623,28 @@ function inspect() {
     ...readiness(criticalReady, brokerReady), initialized, warnings,
     reboot_preparing: rebootPending !== null, engine_lifecycle_ready: engineLifecycle !== null,
     deoptimized, terminal_ready:(counts.reboot_terminal||0)>0, continuation_ready:continuationReady,
+    deoptimization, native_reboot_guard_ready: nativeRebootGuard !== null && nativeRebootGuard.ready === true,
+    native_reboot_guard:nativeRebootGuard !== null && typeof nativeRebootGuard.inspect === 'function' ? nativeRebootGuard.inspect() : null,
+    initialization_requests:initRequests,initialization_reuses:initReuses,hook_installations:hookInstallations,
+    mapping_source:discoveryCached?'validated_cache':'semantic_discovery',
+    method_resolution_cache:methodCache === null ? null : methodCache.inspect(),
+    reboot_labels:rebootLabels !== null && typeof rebootLabels.inspect === 'function' ? rebootLabels.inspect() : null,
     ota_socket: otaSocket, apk_sha256: mapping && mapping.apk_sha256, force_full_package: forceFullPackage};
 }
 
+function cachedMappingInvalid(failure, stage) {
+  if (discoveryCached && !cacheRecoveryReported) {
+    cacheRecoveryReported = true;
+    telemetry({event:'cached_mapping_invalid',stage,code:'runtime_mapping_mismatch',reason:String(failure)});
+  }
+  return failure;
+}
+
 function init(stage, parameters) {
-  if (initialized) return Promise.resolve(inspect());
-  if (initialization !== null) return initialization;
+  initRequests++;
+  if (initialized) { initReuses++; return Promise.resolve(inspect()); }
+  if (initialization !== null) { initReuses++; return initialization; }
+  hookInstallations++;
   initialization = new Promise((resolve, reject) => {
     Java.perform(() => {
       try {
@@ -611,6 +658,8 @@ function init(stage, parameters) {
         const processName = Array.from(chars).slice(0, count > 0 ? count : 0).join('').split('\0')[0];
         if (processName !== TARGET && !processName.startsWith(TARGET + ':')) throw new Error('Target process identity mismatch');
         Java.classFactory.loader = app.getClassLoader();
+        methodCache = createProcessMethodCache(Java);
+        discoveryCached = parameters && parameters.discovery_cached === true;
         const suppliedSocket = parameters && parameters.ota_socket;
         const actualSocket = String(app.getFilesDir().getAbsolutePath()) + '/hnubl-module/ota.sock';
         if (suppliedSocket !== undefined && suppliedSocket !== null &&
@@ -621,15 +670,37 @@ function init(stage, parameters) {
         forceFullPackage = parameters && parameters.forceFullPackage === true;
         if (!mapping || mapping.schema !== 1 || mapping.package !== TARGET ||
             mapping.discovery_complete !== true || !Array.isArray(mapping.hooks)) throw new Error('Incomplete semantic discovery mapping');
-        // Install the final boundary before optional hooks or continuation setup.
-        // Until origin tracking is available, its unknown-origin path stays shut.
         const terminalHooks = mapping.hooks.filter(hook => hook.role === 'reboot_terminal');
         if (!terminalHooks.length) throw new Error('Required terminal reboot entry is missing');
-        for (const hook of terminalHooks) try { bindHook(hook); }
-        catch (error) { failures.push({hook,error:String(error)}); throw new Error('A required discovered entry was not hooked: '+String(error)); }
-        if (typeof Java.deoptimizeEverything !== 'function') throw new Error('Target-process deoptimization unavailable');
-        Java.deoptimizeEverything(); deoptimized = true; telemetry({event:'runtime_deoptimized'});
-        installRebootContext(mapping.reboot_continuations);
+        const bindTerminals = () => {
+          for (const hook of terminalHooks) try { bindHook(hook); }
+          catch (error) { failures.push({hook,error:String(error)}); throw cachedMappingInvalid(new Error('A required discovered entry was not hooked: '+String(error)), 'critical_binding'); }
+        };
+        try { nativeRebootGuard = installNativeRebootGuard({Java, app, allowed: () => nativeRebootScope.take(),
+          warn: (message, detail) => reportWarning('native_reboot_guard', message, detail),
+          blocked: detail => {
+            stats.denied++;
+            setTimeout(() => Java.perform(() => {
+              telemetry({event: 'native_reboot_blocked', ...detail});
+              openHnubl();
+            }), 0);
+          }}); }
+        catch (error) {
+          nativeRebootGuard = {ready: false};
+          reportWarning('native_reboot_guard', 'Native boundary setup failed; preserving legacy coverage', error);
+        }
+        // A working native barrier protects the entire selective preflight.
+        // Resolve/deoptimize original Java ArtMethods before replacing them.
+        // Without it, retain the old terminal-first full-coverage sequence.
+        if (nativeRebootGuard.ready !== true) bindTerminals();
+        deoptimization = applyCriticalDeoptimization({Java, mapping, nativeReady: nativeRebootGuard.ready === true,
+          resolver:methodCache,onMappingInvalid:reason => {
+            if (discoveryCached) throw cachedMappingInvalid(new Error(reason), 'method_resolution');
+          },warn: (message, detail) => reportWarning('deoptimization', message, detail)});
+        deoptimized = deoptimization.ready === true; telemetry({event:'runtime_deoptimized', ...deoptimization});
+        if (nativeRebootGuard.ready === true) bindTerminals();
+        try { installRebootContext(mapping.reboot_continuations); }
+        catch (error) { throw cachedMappingInvalid(error, 'continuation_binding'); }
         try { engineLifecycle = bindEngineLifecycle(mapping.engine_lifecycle); }
         catch (failure) { reportWarning('engine_lifecycle', 'Optional vendor engine lifecycle binding unavailable', failure); }
         for (const role of mapping.optional_missing || [])
@@ -643,7 +714,7 @@ function init(stage, parameters) {
           }
         }
         const requiredFailures = failures.filter(failure => isCriticalRole(failure.hook.role));
-        if (requiredFailures.length > 0) throw new Error('A required discovered entry was not hooked: ' + JSON.stringify(requiredFailures));
+        if (requiredFailures.length > 0) throw cachedMappingInvalid(new Error('A required discovered entry was not hooked: ' + JSON.stringify(requiredFailures)), 'critical_binding');
         if (!deoptimized || !continuationReady || !requiredReady(counts)) throw new Error('Required hook coverage is incomplete: ' + JSON.stringify(counts));
         criticalReady = true;
         try {

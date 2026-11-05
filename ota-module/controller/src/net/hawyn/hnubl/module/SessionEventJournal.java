@@ -16,6 +16,20 @@ final class SessionEventJournal {
         this.pid=pid;this.start=start;this.activation=activation;this.engine=engine;this.observer=observer;
     }
     synchronized void start() { if (!started) { started=true;emit("session_start", new JSONObject()); } }
+    synchronized void mappingSource(boolean cached,String reason,int count){try{
+        emit("session_mapping",new JSONObject().put("cache_hit",cached).put("reason",reason).put("session_start_count",count));
+    }catch(Exception|LinkageError ignored){ }}
+    synchronized void mappingSource(boolean cached,String source,String reason,long generation,int assignment,int count){try{
+        emit("session_mapping",new JSONObject().put("cache_hit",cached).put("source",source).put("reason",reason)
+            .put("mapping_generation",generation).put("mapping_assignment",assignment).put("session_start_count",count));
+    }catch(Exception|LinkageError ignored){ }}
+    synchronized void residentReuse(int count){try{
+        emit("session_resident_reuse",new JSONObject().put("reason","same_pid_and_start_time")
+            .put("session_start_count",count).put("hooks_reinstalled",false));
+    }catch(Exception|LinkageError ignored){ }}
+    synchronized void cacheValidation(String stage,String code,String reason,String decision){try{
+        emit("session_cache_validation",new JSONObject().put("stage",stage).put("code",code).put("reason",reason).put("decision",decision));
+    }catch(Exception|LinkageError ignored){ }}
     synchronized void accept(JSONObject event) {
         String kind=event.optString("event");
         if (!kind.equals("critical_ready")&&!kind.equals("ready")&&!kind.equals("runtime_deoptimized")&&

@@ -46,6 +46,40 @@ it only initializes the new mapped watcher; opening OUC manually later injects
 the active setting. An unreadable process inventory or mapping is not idle
 readiness. It does not reboot the phone or change the OTA completion marker.
 
+## Cached mappings and resident sessions (3.0.5)
+
+`DiscoveryMappingCacheTest` exercises the production schema-2 semantic cache and
+the clean recovery sequencer. The cache binds the exact updater APK, controller,
+agent payload, locator policy and cheap SDK/ABI/firmware/VM identity. A digest
+protects the complete serialized mapping from truncation. It stores DEX method
+descriptors and semantic field identities; ArtMethod/JNI handles and process
+addresses are rejected. A new process resolves those identities in its own ART
+environment. Existing PID plus `/proc/PID/stat` start-time sessions keep the
+eternalized agent, and an Activity re-entry does not install it again.
+Mapping provenance is assigned per generation: the first session after a full
+scan is `fresh_discovery`, the first after persistent reuse is `disk_cache`, and
+later new PIDs reusing either mapping are `memory_cache`. Thus an in-memory hit
+also receives the bounded cache recovery, while a newly discovered first session
+does not. A real rediscovery resets the generation use count; Activity re-entry
+of the same retained session creates no assignment.
+
+The agent receives `discovery_cached` and may emit `cached_mapping_invalid` only
+for a failed critical contract preflight/binding, with `stage`, `code` and
+`reason`. The controller accepts at most one recovery per exact APK/controller/
+agent activation: stop the updater process, perform full semantic discovery,
+publish the fresh mapping, atomically update the persistent cache when writable,
+and launch a fresh updater process. A failed discovery/cleanup prevents restart;
+an optional cache I/O failure instead records `fresh_mapping_memory_only` and
+uses the validated fresh mapping. It never reuses the rejected mapping or stacks hooks.
+Broker, optional-feature and ART runtime failures are not cache-invalid events.
+The recovery does not modify completion permission, official update state or
+deferred slot records. Cache hit/miss reason, recovery count and actual session
+installation count are included in diagnostic events and status.
+
+Compile this test with the normal controller/discovery sources, Android compile
+jar, host org.json and the bundled DEX dependencies. It invokes no Android/root
+entry point; its sequence fixtures perform no reboot, slot or partition action.
+
 `IdleApplyTest` compiles with `UpdaterProcessProbe.java` and
 `ControllerReadiness.java` on a host JVM. It tests fake process directories,
 exact and child names, the pre-disposal snapshot, initial idle readiness,

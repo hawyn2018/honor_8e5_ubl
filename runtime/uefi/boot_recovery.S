@@ -189,12 +189,18 @@ br_pending:
 .hidden br_bootlinux
 br_bootlinux:
     bti c
-    sub sp, sp, #96
+    sub sp, sp, #128
     stp x0, x1, [sp]
     stp x2, x3, [sp, #16]
     stp x4, x5, [sp, #32]
     stp x6, x7, [sp, #48]
     stp x29, x30, [sp, #64]
+    /* Native Fastboot clears this scope; AUTH restores the caller's scope.
+     * Save it before before_bootlinux temporarily marks the native handoff.
+     */
+    BR_LOCATE
+    ldr x9, [x16, #BR_STATE_BOOT_SCOPE]
+    str x9, [sp, #80]
     bl br_pending
     BR_LOCATE
     mov x0, x16
@@ -208,6 +214,33 @@ br_bootlinux:
     ldp x4, x5, [sp, #32]
     ldp x6, x7, [sp, #48]
     blr x16
+    stp x0, x1, [sp, #96]
+    ldr x9, [sp, #80]
+    cbnz x9, .Lbr_automatic_bootlinux_return
+    /* A manual continue has a live native command frame and exit/cleanup
+     * path. Record the returned status without restarting main, changing
+     * failure counters, closing firmware events, or touching its exit flag.
+     */
+    BR_LOCATE
+    ldr x9, [sp, #96]
+    str x9, [x16, #BR_STATE_STATUS]
+    str x9, [x16, #BR_STATE_MANUAL_BOOTLINUX_STATUS]
+    ldr x9, [x16, #BR_STATE_MANUAL_BOOTLINUX_COUNT]
+    add x9, x9, #1
+    str x9, [x16, #BR_STATE_MANUAL_BOOTLINUX_COUNT]
+    mov x9, #BR_REASON_BOOTLINUX_RETURN
+    str x9, [x16, #BR_STATE_REASON]
+    adr x9, br_bootlinux
+    str x9, [x16, #BR_STATE_SITE]
+    str x9, [x16, #BR_STATE_MANUAL_BOOTLINUX_SITE]
+    ldr x9, [sp, #80]
+    str x9, [x16, #BR_STATE_BOOT_SCOPE]
+    ldp x0, x1, [sp, #96]
+    ldp x29, x30, [sp, #64]
+    add sp, sp, #128
+    ret
+.Lbr_automatic_bootlinux_return:
+    ldp x0, x1, [sp, #96]
     mov x1, x0
     mov x0, #BR_REASON_BOOTLINUX_RETURN
     adr x2, br_bootlinux

@@ -42,6 +42,14 @@ struct kbl_native_platform {
     /* Optional extension; old efi_run/result prefix remain usable unchanged. */
     int (*efi_run_full)(void *opaque,const void *image,size_t image_bytes,
                    const uint16_t *options,size_t options_bytes,struct kbl_efi_run_full_result *result);
+    /* Prepare and queue only. The provider copies all input before returning.
+     * It must wait until native job/poll and ADB-core callbacks return before
+     * stopping the runtime or starting an independent EFI handoff. Outer
+     * resident firmware event frames may remain and must never be unloaded. */
+    int (*efi_clearstart)(void *opaque,const void *image,size_t image_bytes,
+                   const uint16_t *options,size_t options_bytes,struct kbl_efi_run_result *result);
+    /* Explicit `clear errorcount` only. No startup or boot-path reset. */
+    int (*clear_errorcount)(void *opaque);
 };
 
 /* Fill a backend descriptor, without allocating or initializing a runtime.

@@ -241,7 +241,7 @@ test('new return types, arrays, covariant bridges and non-instance interface hel
   assert.equal(methods.bridge.length,1);assert.equal(methods.bridge[0].returnType,'java.lang.String');
 });
 function androidFixture({choose='throws',roots='inspector',parentClick=false,dialog=false,focused=true,decorContext=false,queuedMain=false,observer='available',
-  resourceName='para_restart_now',resourceText='Restart now',nativeText='Restart now',bodyCount=0,identity='unique',layoutDelivery='sync',textWatchers='available'}={}) {
+  resourceName='para_restart_now',resourceText='Restart now',nativeText='Restart now',bodyCount=0,identity='unique',layoutDelivery='sync',textWatchers='available',nativeCallbackGetter=false}={}) {
   const timers=new Map(),callbacks=[],properties=new Map(),requests=[],warnings=[];let timer=0;
   let reply={ok:true,state:0},chooseCalls=0,time=1000,scheduleFailure=false,textFailure=null,addFailure=null;
   const observers=new Map(),weakRefs=[];let callbackDepth=0,maxCallbackDepth=0,nativeDepth=0,maxNativeDepth=0,layoutEvents=0,observerAdds=0,observerRemoves=0;
@@ -283,27 +283,37 @@ function androidFixture({choose='throws',roots='inspector',parentClick=false,dia
       try{assert.ok(callbackDepth<25,'TextWatcher synchronously recursed');listener[name](...args);}finally{callbackDepth--;}
     }
   }
+  function newObserver() {
+      const target={kind:'observer',layouts:new Set(),focus:new Set(),scroll:new Set(),alive:true,equals(other){return this===unwrap(other);}};
+      const live=()=>{if(!target.alive)throw new Error('This ViewTreeObserver is not alive');};
+      Object.assign(target,{isAlive:()=>target.alive,
+        addOnGlobalLayoutListener(listener){live();observerAdds++;target.layouts.add(listener);},
+        removeOnGlobalLayoutListener(listener){live();observerRemoves++;target.layouts.delete(listener);},
+        removeGlobalOnLayoutListener(listener){live();observerRemoves++;target.layouts.delete(listener);},
+        addOnWindowFocusChangeListener(listener){live();observerAdds++;target.focus.add(listener);},
+        removeOnWindowFocusChangeListener(listener){live();observerRemoves++;target.focus.delete(listener);},
+        addOnScrollChangedListener(listener){live();observerAdds++;target.scroll.add(listener);},
+        removeOnScrollChangedListener(listener){live();observerRemoves++;target.scroll.delete(listener);}});
+      return target;
+  }
   function observerFor(root) {
     if(observer==='throws')throw new Error('getViewTreeObserver temporarily unavailable');
-    if(!observers.has(root)) {
-      const target={kind:'observer',layouts:new Set(),focus:new Set(),scroll:new Set(),alive:true,equals(other){return this===unwrap(other);}};
-      Object.assign(target,{isAlive:()=>target.alive,
-        addOnGlobalLayoutListener(listener){observerAdds++;target.layouts.add(listener);},
-        removeOnGlobalLayoutListener(listener){observerRemoves++;target.layouts.delete(listener);},
-        removeGlobalOnLayoutListener(listener){observerRemoves++;target.layouts.delete(listener);},
-        addOnWindowFocusChangeListener(listener){observerAdds++;target.focus.add(listener);},
-        removeOnWindowFocusChangeListener(listener){observerRemoves++;target.focus.delete(listener);},
-        addOnScrollChangedListener(listener){observerAdds++;target.scroll.add(listener);},
-        removeOnScrollChangedListener(listener){observerRemoves++;target.scroll.delete(listener);}});
-      observers.set(root,target);
-    }
+    if(!observers.has(root))observers.set(root,newObserver());
     return observers.get(root);
   }
   function nativeBody(fn) {nativeDepth++;maxNativeDepth=Math.max(maxNativeDepth,nativeDepth);try{return fn();}finally{nativeDepth--;}}
   const originalTimers={setTimeout:globalThis.setTimeout,clearTimeout:globalThis.clearTimeout,now:Date.now};
   globalThis.setTimeout=(fn,delay=0)=>{const id=++timer;timers.set(id,{fn,at:time+delay,delay});return id;};globalThis.clearTimeout=id=>timers.delete(id);
   Date.now=()=>time;
-  const method=(fn,args=[])=>({implementation:null,call:fn,argumentTypes:args.map(className=>({className})),returnType:{className:'void'}});let nativeCalls=0;
+  const method=(fn,args=[])=>{
+    const target={call:fn,argumentTypes:args.map(className=>({className})),returnType:{className:'void'}};
+    let replacement=null;
+    Object.defineProperty(target,'implementation',{configurable:true,get:()=>replacement,set(handler){
+      // Frida exposes a generated native callback, not the assigned JS function.
+      replacement=handler==null?null:nativeCallbackGetter?function(...values){return handler.apply(this,values);}:handler;
+    }});
+    return target;
+  };let nativeCalls=0;
   const perform=method(view=>{nativeCalls++;assert.equal((view.label||view).text,nativeRebootText);return true;});
   const call=method(view=>{nativeCalls++;assert.equal((view.label||view).text,nativeRebootText);return false;});
   const text={kind:'text',text:nativeText,equals(other){return this===other;},getText(){bridge.textReads++;if(this.body)bridge.bodyTextReads++;return this.text;},isShown:()=>true,
@@ -405,6 +415,11 @@ function androidFixture({choose='throws',roots='inspector',parentClick=false,dia
     addView(view,child){return addView.implementation?addView.implementation.call(view,child):addView.call(view,child);},
     focus(view,value){return focusChanged.implementation?focusChanged.implementation.call(view,value):focusChanged.call(view,value);},focusCalls:()=>focusCalls,
     emitLayout(root=group){dispatch(root,'layouts');},observerFor,
+    replaceObserver(root=group,{migrate=true,killOld=true}={}){
+      const old=observerFor(root),next=newObserver();
+      if(migrate)for(const kind of ['layouts','focus','scroll']){for(const listener of old[kind])next[kind].add(listener);old[kind].clear();}
+      old.alive=!killOld;observers.set(root,next);return {old,next};
+    },
     emitScroll(root=group){dispatch(root,'scroll');},bridge,body,
     scrollListenerCount(){return [...observers.values()].reduce((sum,value)=>sum+value.scroll.size,0);},
     watcherCount(view=null){return view==null?[...watchedTexts.values()].reduce((sum,value)=>sum+value.size,0):(watchedTexts.get(view)?.size||0);},
@@ -923,5 +938,151 @@ test('a missing TextWatcher interface falls back to local known-candidate checks
 });
 test('per-view watcher registration failure keeps local fixed-size correction and native click behavior',()=>{
   watcherFailureFallback('throws');
+});
+
+test('same active root resume refreshes STATE without rediscovering the view tree',()=>{
+  const f=fixture();f.labels.resume(f.owner);f.tick();const before=f.labels.inspect();
+  const writes=f.writes.length;f.setReply({ok:true,state:1});
+  for(let i=0;i<8;i++)f.labels.resume(f.owner);
+  f.tick();const after=f.labels.inspect();
+  assert.equal(after.discoveryCount,before.discoveryCount);assert.equal(after.sameRootResumeCount,before.sameRootResumeCount+8);
+  assert.equal(after.stateReadCount,before.stateReadCount+1,'pending forced marker requests coalesce');
+  assert.equal(f.native[0].text,'立即重启');assert.equal(f.writes.length,writes+1);f.labels.dispose();
+});
+
+test('pending root resume still coalesces and a genuinely new root performs discovery',()=>{
+  const f=fixture(),main=[];f.p.main=fn=>main.push(fn);
+  f.labels.resume(f.owner);f.labels.resume(f.owner);f.labels.resume(f.owner);
+  while(main.length)main.shift()();f.tick();while(main.length)main.shift()();
+  const before=f.labels.inspect();assert.equal(before.discoveryCount,1);assert.equal(before.pendingResumeCount,2);
+  f.other.views.push(f.button('Restart now'));f.labels.resume(f.other);
+  while(main.length)main.shift()();f.tick();while(main.length)main.shift()();
+  assert.equal(f.labels.inspect().discoveryCount,before.discoveryCount+1);assert.equal(f.other.views[0].text,'继续流程');
+  assert.equal(f.native[0].text,'立即重启','leaving the old root restores its native presentation');
+  f.labels.dispose();while(main.length)main.shift()();
+});
+
+test('Android resumed and post-resumed callbacks reuse the already discovered native root',()=>{
+  const f=androidFixture({choose:'missing',roots:'manager',layoutDelivery:'none',bodyCount:800});try{
+    const labels=f.install();f.tick();const before=labels.inspect(),bodyReads=f.bridge.bodyTextReads,walks=f.bridge.walks;
+    f.setReply({ok:true,state:1});
+    f.callbacks[0].onActivityResumed(f.activity);f.callbacks[0].onActivityPostResumed(f.activity);f.tick();
+    assert.equal(labels.inspect().sameRootResumeCount,before.sameRootResumeCount+2);
+    assert.equal(labels.inspect().discoveryCount,before.discoveryCount);assert.equal(f.bridge.walks,walks);
+    assert.equal(f.bridge.bodyTextReads,bodyReads);assert.equal(f.text.text,'立即重启');
+    labels.dispose();f.tick();
+  }finally{f.close();}
+});
+
+test('disposal restores actual NativeCallback getters instead of comparing them to JS handlers',()=>{
+  const f=androidFixture({choose:'missing',roots:'manager',nativeCallbackGetter:true});try{
+    const labels=f.install();f.tick();assert.equal(typeof f.perform.implementation,'function');assert.equal(typeof f.call.implementation,'function');
+    assert.equal(f.perform.implementation.call(f.text),true);assert.equal(f.nativeCalls(),1);
+    labels.dispose();f.tick();assert.equal(f.perform.implementation,null);assert.equal(f.call.implementation,null);
+    assert.equal(f.callbacks.length,0);assert.equal(f.watcherCount(),0);
+  }finally{f.close();}
+});
+
+test('disposal preserves a newer owners NativeCallback replacement',()=>{
+  const f=androidFixture({choose:'missing',roots:'manager',nativeCallbackGetter:true});try{
+    const labels=f.install();f.tick();const newerHandler=()=> 'new-owner';f.perform.implementation=newerHandler;
+    const newerCallback=f.perform.implementation;assert.notEqual(newerCallback,newerHandler);
+    labels.dispose();f.tick();assert.equal(f.perform.implementation,newerCallback);assert.equal(f.perform.implementation(),'new-owner');
+    assert.equal(f.call.implementation,null);f.perform.implementation=null;
+  }finally{f.close();}
+});
+
+test('reinjection with native callback getters removes the old observers and retains one fresh click wrapper',()=>{
+  const f=androidFixture({choose:'missing',roots:'manager',nativeCallbackGetter:true});try{
+    const old=f.install();f.tick();const first=f.perform.implementation;const next=f.install();f.tick();
+    assert.equal(old.inspect().stopped,true);assert.notEqual(f.perform.implementation,first);assert.equal(f.callbacks.length,1);
+    assert.equal(f.perform.implementation.call(f.text),true);assert.equal(f.nativeCalls(),1);
+    next.dispose();f.tick();assert.equal(f.perform.implementation,null);assert.equal(f.call.implementation,null);
+    assert.equal(f.watcherCount(),0);assert.equal(f.scrollListenerCount(),0);assert.equal(f.timers.size,0);
+  }finally{f.close();}
+});
+
+test('dead observers migrated into the current live root remove only this modules listener identities',()=>{
+  const f=androidFixture({choose:'missing',roots:'manager'});try{
+    const labels=f.install();f.tick();const old=f.observerFor(f.group);
+    const unrelated={layout:{},focus:{},scroll:{}};
+    old.layouts.add(unrelated.layout);old.focus.add(unrelated.focus);old.scroll.add(unrelated.scroll);
+    const {next}=f.replaceObserver();const removals=f.observerRemoves();
+    assert.equal(old.isAlive(),false);assert.equal(next.layouts.size,2);
+    labels.dispose();f.tick();
+    assert.deepEqual([...next.layouts],[unrelated.layout]);assert.deepEqual([...next.focus],[unrelated.focus]);assert.deepEqual([...next.scroll],[unrelated.scroll]);
+    assert.equal(f.observerRemoves(),removals+3);assert.ok(!f.warnings.some(args=>String(args).includes('not alive')));
+    assert.equal(f.callbacks.length,0);assert.equal(f.timers.size,0);
+  }finally{f.close();}
+});
+
+test('observer retirement cleans both still-live old and current observers and deduplicates identical roots',()=>{
+  const f=androidFixture({choose:'missing',roots:'manager'});try{
+    const labels=f.install();f.tick();const {old,next}=f.replaceObserver(f.group,{migrate:false,killOld:false});
+    const unrelated={};next.layouts.add(unrelated);const removals=f.observerRemoves();
+    labels.dispose();f.tick();assert.equal(old.layouts.size,0);assert.equal(old.focus.size,0);assert.equal(old.scroll.size,0);
+    assert.deepEqual([...next.layouts],[unrelated]);assert.equal(f.observerRemoves(),removals+6);
+  }finally{f.close();}
+  const same=androidFixture({choose:'missing',roots:'manager'});try{
+    const labels=same.install();same.tick();const removals=same.observerRemoves();labels.dispose();same.tick();
+    assert.equal(same.observerRemoves(),removals+3,'same native observer is removed once per own listener');
+  }finally{same.close();}
+});
+
+test('a collected root and unrecoverable dead observer deactivate callbacks and clear their weak roots',()=>{
+  const f=androidFixture({choose:'missing',roots:'manager'});try{
+    const labels=f.install();f.tick();const old=f.observerFor(f.group),listeners=[...old.layouts,...old.focus,...old.scroll];
+    old.alive=false;f.collectWeak(f.group);const removals=f.observerRemoves();labels.dispose();f.tick();
+    assert.equal(f.observerRemoves(),removals,'no illegal removal call is made on a known dead observer');
+    for(const listener of listeners){assert.equal(listener.hnublActive.value,false);assert.equal(listener.hnublRoot.value,null);}
+    assert.ok(!f.warnings.some(args=>String(args).includes('not alive')));assert.equal(f.callbacks.length,0);assert.equal(f.timers.size,0);
+  }finally{f.close();}
+});
+
+test('same-root reacquisition removes migrated old callbacks before installing the current live observers',()=>{
+  const f=androidFixture({choose:'missing',roots:'manager'});try{
+    const labels=f.install();f.tick();const {next}=f.replaceObserver();const before=labels.inspect();
+    f.callbacks[0].onActivityResumed(f.activity);f.tick();
+    assert.equal(next.layouts.size,1);assert.equal(next.focus.size,1);assert.equal(next.scroll.size,1);
+    assert.equal(labels.inspect().discoveryCount,before.discoveryCount);assert.equal(labels.inspect().sameRootResumeCount,before.sameRootResumeCount+1);
+    labels.dispose();f.tick();assert.deepEqual(f.listenerCounts(),{layouts:0,focus:0});assert.equal(f.scrollListenerCount(),0);
+    assert.ok(!f.warnings.some(args=>String(args).includes('not alive')));
+  }finally{f.close();}
+});
+
+test('PostResumed discovers an untracked Install control that became restart without layout or a text watcher',()=>{
+  const f=androidFixture({choose:'missing',roots:'manager',nativeText:'Install',layoutDelivery:'none',bodyCount:100});try{
+    const labels=f.install();f.tick();const before=labels.inspect();assert.equal(before.tracked,0);assert.equal(f.watcherCount(),0);
+    f.setText(f.text,'Restart now');assert.equal(f.layoutEvents(),0);f.callbacks[0].onActivityPostResumed(f.activity);f.tick();
+    assert.equal(labels.inspect().discoveryCount,before.discoveryCount+1);assert.equal(labels.inspect().tracked,1);
+    assert.equal(f.text.text,'继续流程');assert.equal(f.watcherCount(),1);labels.dispose();f.tick();
+  }finally{f.close();}
+});
+
+test('same-root resume with a collected candidate discovers its replacement rather than taking the stable fast path',()=>{
+  const f=fixture();f.labels.resume(f.owner);f.tick();const before=f.labels.inspect();
+  for(const ref of f.weak)if(ref.value===f.native[0])ref.value=null;
+  const replacement=f.button('Restart now');f.owner.views=[replacement];f.labels.resume(f.owner);f.tick();
+  assert.equal(f.labels.inspect().discoveryCount,before.discoveryCount+1);assert.equal(f.labels.inspect().tracked,1);
+  assert.equal(replacement.text,'继续流程');f.labels.dispose();
+});
+
+test('same-root local validation retiring every remembered candidate falls back to one discovery of a new native control',()=>{
+  const f=fixture();f.labels.resume(f.owner);f.tick();const before=f.labels.inspect();
+  f.native[0].text='Install';const replacement=f.button('Restart now');f.owner.views=[replacement];
+  f.labels.resume(f.owner);f.tick();assert.equal(f.labels.inspect().discoveryCount,before.discoveryCount+1);
+  assert.equal(replacement.text,'继续流程');assert.equal(f.native[0].text,'Install');f.labels.dispose();
+});
+
+for(const [name,change] of [['hidden',{visible:false}],['disabled',{enabled:false}],['no native listener',{listener:false}],['not clickable',{clickable:false}]])
+test('same-root '+name+' old candidate falls back once to find a replacement without layout',()=>{
+  const f=fixture();f.labels.resume(f.owner);f.tick();const before=f.labels.inspect();
+  Object.assign(f.native[0],change);const replacement=f.button('Restart now');f.owner.views=[replacement];
+  f.labels.resume(f.owner);f.tick();
+  assert.equal(f.labels.inspect().discoveryCount,before.discoveryCount+1);
+  assert.equal(replacement.text,'继续流程');assert.equal(f.labels.inspect().tracked,1);
+  assert.equal(f.native[0].text,'立即重启','ineligible old controls keep native presentation');
+  const stable=f.labels.inspect().discoveryCount;f.tick(2500);assert.equal(f.labels.inspect().discoveryCount,stable);
+  f.labels.dispose();
 });
 console.log(JSON.stringify({passed:true,tests:passed,deviceOperations:false,markerMutations:false,slotOperations:false,rebootOperations:false}));

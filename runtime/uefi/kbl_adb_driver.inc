@@ -42,7 +42,7 @@ static void adb_release(void*unused,void*memory,size_t bytes){
     g.adb_error=1;
 }
 static int adb_submit(void*p,const unsigned char*s,size_t n,uint64_t*job){
-    if(p!=&g||!live()||g.in_request||g.adb_call!=1)return KBL_ERROR;
+    if(p!=&g||!live()||g.in_request||g.adb_call!=1||g.cs.active)return KBL_ERROR;
     return kbl_native_service_submit(g.kernel.native,s,n,job);
 }
 static int adb_poll_job(void*p,uint64_t job,unsigned budget,unsigned char*out,size_t cap,size_t*n,int*done,int*exit){
@@ -71,7 +71,7 @@ static int adb_session_close(void*p,void*session){
     return kbl_native_session_close(g.kernel.native,session);
 }
 static int adb_session_submit(void*p,void*session,const unsigned char*line,size_t n,uint64_t*job){
-    if(p!=&g||!live()||g.in_request||g.adb_call!=1)return KBL_ERROR;
+    if(p!=&g||!live()||g.in_request||g.adb_call!=1||g.cs.active)return KBL_ERROR;
     return kbl_native_session_submit(g.kernel.native,session,line,n,job);
 }
 static int adb_session_poll_job(void*p,void*session,uint64_t job,unsigned budget,unsigned char*out,size_t cap,size_t*n,int*done,int*exit){
@@ -195,6 +195,7 @@ static void adb_idle(void*p){
         static const unsigned char off[]="oem kbloff";(void)kbl_handle(&g.session,&backend,off,sizeof(off)-1,&silent);
     }
     g.adb_in_idle=0;
+    clearstart_step(1);
 }
 static void adb_prepare_start(void){
     /* Only explicit kbladb reaches this point. A parked responder stays

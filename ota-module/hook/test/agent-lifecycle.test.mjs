@@ -4,7 +4,11 @@ import vm from 'node:vm';
 import * as policy from '../src/policy.js';
 import * as versions from '../src/version-policy.js';
 import {createRebootContext} from '../src/reboot-context.js';
+import {createOriginalReplay} from '../src/original-replay.js';
+import {installNativeRebootGuard} from '../src/native-reboot-guard.js';
+import {createNativeRebootScope, applyCriticalDeoptimization} from '../src/deoptimization-policy.js';
 import {installCacheVersionQuery} from '../src/cache-query.js';
+import {createProcessMethodCache} from '../src/method-resolution-cache.js';
 
 // Exercise the actual agent's binding/closure/lifecycle code with a Java ABI
 // fixture. No ART, broker socket, updater, payload, reboot or slot API is run.
@@ -16,14 +20,36 @@ const critical = () => [hook('reboot_terminal','reboot',['java.lang.String'],'vo
 
 function fixture({hooks=critical(), failedMethods=[], replies=[{ok:true,state:0,decision:'DENY'}],logFails=false,
   queued=false,state={ok:true,state:1},lifecycle=false,lifecycleBindFails=false,engineReady=false,engineStart=true,
-  traceFails=false,noLooper=false,postFails=false,threadFailAt=0,deoptFails=false}={}) {
+  traceFails=false,noLooper=false,postFails=false,threadFailAt=0,deoptFails=false,virtualReplay=false,nativeFailures=[],nativeBodies={},nativeBarrier=false,changedMethodContract=false}={}) {
   const events=[], timers=[], requests=[], calls=[], logs=[], traces=[], workers=[], main=[], stages=[]; const methods=new Map();
-  let lane='ui',rebootJob=false,manualAction=null,deopts=0,identity=0,references=0,starts=0,stops=0,liveRetains=0,threadStarts=0;
+  let lane='ui',rebootJob=false,manualAction=null,deopts=0,identity=0,references=0,starts=0,stops=0,liveRetains=0,threadStarts=0,nativeOptions=null;
+  const selectiveCalls=[],nativeCalls=[];
   const run=(where,body)=>{const previous=lane;lane=where;try{return body();}finally{lane=previous;}};
   const enqueue=(list,where,body)=>{if(queued)list.push(()=>run(where,body));else run(where,body);};
-  const looper={id:'original-looper'};
+  const looper={id:'original-looper'}, activeMethods=new Set();
   function method(name) {
-    if (!methods.has(name)) methods.set(name,{call(receiver,...args){calls.push({name,args});stages.push({native:name,lane,receiver});return name==='version'?'native-result':undefined;}});
+    if (!methods.has(name)) {
+      const value={returnType:{className:hooks.find(h=>h.method_name===name)?.return_type||'void'},
+        handle:{isNull:()=>false,toString:()=>name},call(receiver,...args){
+        // ART's virtual dispatch can re-enter an installed replacement when an
+        // asynchronous job invokes .call outside that method's replacement
+        // frame. A call made inside the replacement resolves the original.
+        if(virtualReplay && ['reboot','frontier'].includes(name) && !activeMethods.has(name)) {
+          const descriptor=hooks.find(h=>h.method_name===name);
+          return value.implementation.call(descriptor?.is_static?{classWrapper:'fresh-wrapper'}:Object.create(receiver),...args);
+        }
+        calls.push({name,args});stages.push({native:name,lane,receiver});
+        if(nativeFailures.includes(name))throw new Error('original native '+name+' failure');
+        if(nativeBodies[name])return nativeBodies[name](receiver,args);
+        return name==='version'?'native-result':undefined;
+      }};
+      let implementation;
+      Object.defineProperty(value,'implementation',{get:()=>implementation,set(fn){value.hooked=true;stages.push({hook:name});implementation=function(...args){
+        const prior=activeMethods.has(name);activeMethods.add(name);
+        try{return fn.apply(this,args);}finally{if(!prior)activeMethods.delete(name);}
+      };}});
+      methods.set(name,value);
+    }
     return methods.get(name);
   }
   const app={getPackageName:()=> 'com.hihonor.ouc',getClassLoader:()=>({}),
@@ -34,6 +60,9 @@ function fixture({hooks=critical(), failedMethods=[], replies=[{ok:true,state:0,
     if(!types[h.class_name])types[h.class_name]={};
     types[h.class_name][h.method_name]={overload:()=>{if(failedMethods.includes(h.method_name))throw new Error('missing optional ABI');return method(h.method_name);}};
   }
+  const reflected=(name,parameters,returns,handleName=name)=>({getName:()=>name,getModifiers:()=>changedMethodContract&&methods.get(handleName)?.hooked?0x100:0,
+    getParameterTypes:()=>parameters.map(name=>({getName:()=>name})),getReturnType:()=>({getName:()=>returns})});
+  for(const [name,type] of Object.entries(types))type.class={getDeclaredMethods:()=>hooks.filter(h=>h.class_name===name).map(h=>reflected(h.method_name,h.parameter_types,h.return_type)),getDeclaredConstructors:()=>[]};
   const engineSpec={class_name:'EngineFixture',factory:{method_name:'get',parameter_types:[],return_type:'EngineFixture',is_static:true},
     start:{method_name:'open',parameter_types:[],return_type:'boolean',is_static:false},stop:{method_name:'close',parameter_types:[],return_type:'void',is_static:false}};
   const vendor={id:'native-vendor-instance'},engine={
@@ -42,8 +71,10 @@ function fixture({hooks=critical(), failedMethods=[], replies=[{ok:true,state:0,
       if(engineStart instanceof Error)throw engineStart;if(engineStart){references++;engineReady=true;}return engineStart;}})},
     close:{overload:()=>({call(instance){assert.equal(instance.id,vendor.id);assert.equal(lane,'worker');stops++;references--;assert(references>=0);}})}
   };
-  const Java={deoptimizeEverything(){deopts++;if(deoptFails)throw new Error('deopt unavailable');},perform:fn=>fn(),scheduleOnMainThread:fn=>enqueue(main,'ui',fn),array:(_type,values)=>values,classFactory:{},cast:()=>{throw new Error('version getter failed');},
-    retain(value){if(value==null)return null;liveRetains++;let disposed=false;const copy=Object.create(value);copy.$dispose=()=>{assert(!disposed,'one retained-wrapper release');disposed=true;liveRetains--;};return copy;},
+  const Java={deoptimizeMethod:handle=>{if(changedMethodContract&&methods.get(handle.toString())?.hooked)throw Error('deoptimization after replacement');selectiveCalls.push(handle);stages.push({deoptimized:handle.toString()});},deoptimizeEverything(){deopts++;stages.push({globalDeoptimization:true});if(deoptFails)throw new Error('deopt unavailable');},perform:fn=>fn(),scheduleOnMainThread:fn=>enqueue(main,'ui',fn),array:(_type,values)=>values,classFactory:{},cast:()=>{throw new Error('version getter failed');},
+    retain(value){if(value==null)return null;if(!value._identity)value._identity=++identity;liveRetains++;let disposed=false;const copy=Object.create(value);
+      copy.$isSameObject=other=>copy._identity===other._identity;
+      copy.$dispose=()=>{assert(!disposed,'one retained-wrapper release');disposed=true;liveRetains--;};return copy;},
     registerClass(spec){assert.equal(spec.implements.length,1);assert.equal(spec.implements[0].name,'Runnable');
       assert.equal(spec.fields.hnublJob,'java.lang.String');return {$new(){return {hnublJob:{value:null},run(){spec.methods.run.call(this);},$dispose(){}};}};},
     use(name){
@@ -59,7 +90,8 @@ function fixture({hooks=critical(), failedMethods=[], replies=[{ok:true,state:0,
       if(name==='java.lang.IllegalStateException')return {$new:message=>new Error(message)};
       if(name==='java.lang.ref.WeakReference')return {$new(value){return {get:()=>({$isSameObject:other=>value._identity===other._identity}),$dispose(){}};}};
       if(name==='java.lang.System')return {identityHashCode(value){if(!value._identity)value._identity=++identity;return value._identity;}};
-      if(name==='RunFixture')return {$init:{overload:()=>method('ctor')},run:{overload:()=>method('runContinuation')}};
+      if(name==='java.lang.reflect.Proxy')return {isProxyClass:()=>false};
+      if(name==='RunFixture')return {class:{getDeclaredMethods:()=>[reflected('run',[],'void','runContinuation')],getDeclaredConstructors:()=>[reflected('<init>',['android.content.Context','java.lang.String'],'void','ctor')]},$init:{overload:()=>method('ctor')},run:{overload:()=>method('runContinuation')}};
       if(name==='EngineFixture'){if(lifecycleBindFails)throw new Error('optional original lifecycle ABI missing');return engine;}
       if(name==='android.util.Log'){
         const method={overload:()=>({call(_type,tag,message){if(logFails)throw new Error('logger unavailable');logs.push({tag,message});}})};
@@ -71,7 +103,9 @@ function fixture({hooks=critical(), failedMethods=[], replies=[{ok:true,state:0,
       if(types[name])return types[name];
       throw new Error('unavailable '+name);
     }};
-  const context=vm.createContext({...policy,...versions,createRebootContext,Java,installCacheVersionQuery,installRebootLabels:options=>{manualAction=options.manualAction;return {aroundOriginal:fn=>fn()};},rpc:{exports:{}},send:e=>events.push(JSON.parse(JSON.stringify(e))),
+  const context=vm.createContext({...policy,...versions,createRebootContext,createOriginalReplay,
+    installNativeRebootGuard:options=>{if(!nativeBarrier)return installNativeRebootGuard(options);stages.push({nativeGuardInstalled:true});nativeOptions=options;return {ready:true};},
+    createNativeRebootScope,applyCriticalDeoptimization,createProcessMethodCache,Java,installCacheVersionQuery,installRebootLabels:options=>{manualAction=options.manualAction;return {aroundOriginal:fn=>fn()};},rpc:{exports:{}},send:e=>events.push(JSON.parse(JSON.stringify(e))),
     setTimeout:fn=>{timers.push(()=>run('worker',fn));return timers.length;},clearTimeout(){},console});
   vm.runInContext(source,context);
   context.brokerRequest=command=>{
@@ -82,10 +116,18 @@ function fixture({hooks=critical(), failedMethods=[], replies=[{ok:true,state:0,
     const next=replies.length>1?replies.shift():replies[0];if(next instanceof Error)throw next;return next;};
   vm.runInContext('marker = command => brokerRequest(command)',context);
   const mapping={schema:1,package:'com.hihonor.ouc',discovery_complete:true,apk_sha256:'fixture',hooks,reboot_continuations:[{class_name:'RunFixture',constructors:[{parameter_types:['android.content.Context','java.lang.String']}],callback:{method_name:'run',parameter_types:[],return_type:'void',is_static:false}}],...(lifecycle?{engine_lifecycle:engineSpec}:{})};
+  if(nativeBarrier){
+    const dex=t=>({void:'V',int:'I',boolean:'Z'}[t]||'L'+t.replaceAll('.','/')+';');
+    const shape=v=>({...v,is_static:v.is_static===true,dex_method:dex(v.class_name)+'->'+v.method_name+'('+v.parameter_types.map(dex).join('')+')'+dex(v.return_type)});
+    const specs=hooks.filter(h=>['reboot_terminal','reboot_gate','reboot_context','countdown','payload_start','payload_complete'].includes(h.role)).map(shape);
+    specs.push(shape({class_name:'RunFixture',method_name:'<init>',parameter_types:['android.content.Context','java.lang.String'],return_type:'void'}),shape({class_name:'RunFixture',method_name:'run',parameter_types:[],return_type:'void'}));
+    mapping.deoptimization_plan={policy:'critical-dispatch-native-barrier-v1',requires_native_barrier:true,full_inline_caller_proof:false,methods:specs,method_count:specs.length,roots:specs.map(s=>s.dex_method)};
+  }
   const init=parameters=>context.rpc.exports.init('late',{mapping,...parameters});
   return {context,events,timers,requests,calls,logs,methods,traces,workers,main,stages,init,inspect:()=>context.rpc.exports.inspect(),
     flush(){while(workers.length||main.length){if(workers.length)workers.shift()();else main.shift()();}},
     get deopts(){return deopts;},
+    selectiveCalls,nativeCalls,nativeTransaction(){const allowed=nativeOptions.allowed();nativeCalls.push({allowed,lane});if(!allowed)nativeOptions.blocked({reason:'no_synchronous_authorized_original',transaction:'reboot',code:7});return allowed;},
     continuation(reason='ota'){const receiver={_identity:++identity};method('ctor').implementation.call(receiver,app,reason);enqueue(workers,'worker',()=>method('runContinuation').implementation.call(receiver));return receiver;},
     run(receiver){enqueue(workers,'worker',()=>method('runContinuation').implementation.call(receiver));},
     raw:(name,...args)=>method(name).implementation.call({},...args),
@@ -224,6 +266,90 @@ async function lifecycleCase(name,body){await body();lifecycleCases++;console.lo
 function noUiProtocol(f){for(const s of f.stages.filter(x=>x.command&&x.command!=='STATE'))assert.equal(s.lane,'worker',s.command+' ran on UI');
   assert.equal(f.requests.some(x=>x==='STATUS'||x==='PREPARE'),false,'phase/preflight commands must not participate in file permission');}
 
+await lifecycleCase('hybrid selective coverage opens one native scope only after final successful CONSUME',async()=>{
+  let f;f=fixture({queued:true,nativeBarrier:true,virtualReplay:true,replies:grantReplies(),nativeBodies:{reboot(){
+    assert.equal(f.requests.filter(x=>x==='CONSUME').length,1);assert.equal(f.nativeTransaction(),true);assert.equal(f.nativeTransaction(),false);
+  }}});await f.init();assert.equal(f.inspect().deoptimization.strategy,'selective_native_barrier');assert.equal(f.deopts,0);assert.equal(f.selectiveCalls.length,8);
+  f.invoke('reboot','manual');f.flush();assert.equal(f.calls.filter(x=>x.name==='reboot').length,1);
+  assert.equal(f.nativeTransaction(),false);assert.deepEqual(f.nativeCalls.map(x=>x.allowed),[true,false,false]);
+  assert.equal(f.requests.filter(x=>x==='CONSUME').length,1);assert.equal(f.retained,0);
+});
+await lifecycleCase('native boundary precedes preflight and every selective deoptimization precedes Java replacements',async()=>{
+  // Intentionally stricter than the pinned mangler: reflection reports a native
+  // replacement after installation, and the ART fixture rejects deopting it.
+  const f=fixture({queued:true,nativeBarrier:true,changedMethodContract:true,replies:grantReplies()});await f.init();
+  assert.equal(f.inspect().deoptimization.strategy,'selective_native_barrier');assert.equal(f.deopts,0);
+  const native=f.stages.findIndex(x=>x.nativeGuardInstalled),firstHook=f.stages.findIndex(x=>x.hook);
+  const deopts=f.stages.map((x,i)=>x.deoptimized?i:-1).filter(i=>i>=0);
+  assert(deopts.length>0);assert(native<Math.min(...deopts));assert(Math.max(...deopts)<firstHook);
+});
+await lifecycleCase('native capability failure retains terminal-first global coverage before continuation setup',async()=>{
+  const f=fixture({changedMethodContract:true});await f.init();
+  const terminal=f.stages.findIndex(x=>x.hook==='reboot'),global=f.stages.findIndex(x=>x.globalDeoptimization),ctor=f.stages.findIndex(x=>x.hook==='ctor');
+  assert(terminal>=0&&terminal<global&&global<ctor);assert.equal(f.inspect().deoptimization.strategy,'global_fallback');
+});
+await lifecycleCase('an inlined or unclassified native path blocks without spending the marker or creating a scope',async()=>{
+  const f=fixture({queued:true,nativeBarrier:true,replies:grantReplies()});await f.init();assert.equal(f.nativeTransaction(),false);
+  assert.deepEqual(f.requests,['STATE']);assert.equal(f.calls.length,0);assert.equal(f.events.filter(e=>e.event==='native_reboot_blocked').length,0);
+  f.timers.shift()();assert.equal(f.events.filter(e=>e.event==='native_reboot_blocked').length,1);
+});
+await lifecycleCase('official execution failure never opens a native scope despite a consumed marker',async()=>{
+  const f=fixture({queued:true,nativeBarrier:true,replies:[{ok:true,state:0},{ok:false,authorized:true,state:0,decision:'EXECUTION_FAILED'}]});await f.init();
+  f.invoke('reboot','manual');f.flush();assert.equal(f.nativeTransaction(),false);
+  assert.equal(f.calls.length,0);assert.equal(f.requests.filter(x=>x==='CONSUME').length,1);assert.equal(f.retained,0);
+});
+
+await lifecycleCase('asynchronous ART virtual replay reaches the original terminal after one marker consumption',async()=>{
+  for(const noLooper of [false,true]){
+    const f=fixture({queued:true,virtualReplay:true,noLooper,replies:grantReplies()});await f.init();
+    f.invoke('reboot','manual');f.flush();
+    assert.equal(f.calls.filter(x=>x.name==='reboot').length,1,'native terminal body must execute, not just return from its replacement');
+    assert.equal(f.events.filter(x=>x.event==='original_reboot_replay_entered'&&x.terminal).length,1);
+    assert.equal(f.events.filter(x=>x.event==='original_reboot_entry_returned'&&x.terminal).length,1);
+    assert.equal(f.requests.filter(x=>x==='CONSUME').length,1);
+    assert.equal(f.events.filter(x=>x.event==='reboot_preparation_pending').length,0);
+    assert.equal(f.inspect().reboot_preparing,false);assert.equal(f.retained,0);noUiProtocol(f);
+  }
+});
+
+await lifecycleCase('ART self-entry grants no later click a cached marker and preserves zero after the official action',async()=>{
+  let token=1;
+  const f=fixture({queued:true,virtualReplay:true,state:()=>({ok:true,state:token}),replies:grantReplies()});await f.init();
+  const broker=f.context.brokerRequest;
+  f.context.brokerRequest=command=>{const result=broker(command);if(command==='CONSUME'&&result.decision==='ALLOW')token=0;return result;};
+  f.invoke('reboot','manual');f.flush();
+  f.invoke('reboot','manual');f.flush();
+  assert.equal(token,0);assert.equal(f.calls.filter(x=>x.name==='reboot').length,1);
+  assert.equal(f.requests.filter(x=>x==='CONSUME').length,1);assert.equal(f.retained,0);
+  assert.equal(f.inspect().reboot_preparing,false);noUiProtocol(f);
+});
+
+await lifecycleCase('a static vendor frontier and its original asynchronous continuation reach the instance terminal once',async()=>{
+  const hooks=critical();hooks.find(h=>h.role==='reboot_gate').is_static=true;
+  let f;
+  f=fixture({hooks,queued:true,virtualReplay:true,replies:grantReplies(),nativeBodies:{frontier(){f.raw('reason','manual');}}});
+  await f.init();f.methods.get('reason').call=()=>f.continuation();f.methods.get('runContinuation').call=()=>f.raw('reboot','ota');
+  f.raw('frontier','manual');f.flush();
+  assert.equal(f.calls.filter(x=>x.name==='frontier').length,1);
+  assert.equal(f.calls.filter(x=>x.name==='reboot').length,1);
+  assert.equal(f.requests.filter(x=>x==='CONSUME').length,1);
+  assert.equal(f.events.filter(x=>x.event==='original_reboot_replay_entered'&&!x.terminal).length,1);
+  assert.equal(f.events.filter(x=>x.event==='original_reboot_replay_entered'&&x.terminal).length,1);
+  assert.equal(f.retained,0);assert.equal(f.inspect().reboot_preparing,false);noUiProtocol(f);
+});
+
+await lifecycleCase('an ART self-entry preserves native exception diagnostics and releases wrappers and engine exactly once',async()=>{
+  const f=fixture({queued:true,virtualReplay:true,lifecycle:true,nativeFailures:['reboot'],replies:grantReplies()});await f.init();
+  f.invoke('reboot','manual');f.flush();
+  assert.equal(f.calls.filter(x=>x.name==='reboot').length,1);
+  assert.equal(f.events.filter(x=>x.event==='original_reboot_entry_failed').length,1);
+  assert.equal(f.events.filter(x=>x.event==='original_reboot_entry_returned').length,0);
+  assert.equal(f.traces.filter(x=>x.startsWith('TRACE original_failed ')).length,1);
+  assert.equal(f.requests.filter(x=>x==='CONSUME').length,1);
+  assert.equal(f.stops,1);assert.equal(f.references,0);assert.equal(f.retained,0);
+  assert.equal(f.inspect().reboot_preparing,false);noUiProtocol(f);
+});
+
 await lifecycleCase('manual terminal returns before queued work and deduplicates repeated clicks',async()=>{
   const f=fixture({queued:true,replies:grantReplies()});await f.init();
   f.invoke('reboot','manual');f.invoke('reboot','manual');assert.equal(f.calls.length,0);assert.equal(f.workers.length,1);
@@ -242,7 +368,7 @@ await lifecycleCase('original lifecycle is best effort preparation before one fi
   const f=fixture({queued:true,lifecycle:true,replies:grantReplies()});await f.init();f.invoke('reboot','manual');f.flush();
   assert.deepEqual(f.requests,['STATE','STATE','CONSUME']);assert.equal(f.starts,1);assert.equal(f.stops,1);assert.equal(f.references,0);
   assert.equal(f.calls.filter(x=>x.name==='reboot').length,1);assert.equal(f.stages.find(x=>x.native==='reboot').lane,'ui');
-  assert.deepEqual(f.traces.map(x=>x.split(' ')[1]),['terminal_enter','status','open_start','open_ok','consume_allow','original_started','lease_released']);
+  assert.deepEqual(f.traces.map(x=>x.split(' ')[1]),['terminal_enter','status','open_start','open_ok','consume_allow','original_returned','lease_released']);
   for(const line of f.traces)assert(/^TRACE [a-z_]+ [A-Za-z0-9_-]{1,24}$/.test(line)&&line.length<64);
   assert.equal(f.retained,0);noUiProtocol(f);
 });
@@ -399,4 +525,28 @@ await lifecycleCase('a failed new BEGIN never starts payload and a real recovere
  const f=fixture({replies:[{ok:true,state:0},new Error('RESET unavailable'),{ok:true,state:0}]});await f.init();assert.throws(()=>f.invoke('apply','payload'),/clearing the previous OTA permission failed/);
  assert.equal(f.calls.filter(x=>x.name==='apply').length,0);assert.equal(f.inspect().stats.reset,0);assert.equal(f.requests.includes('CONSUME'),false);
  f.invoke('complete',0);assert.equal(f.requests.filter(x=>x==='RESET').length,0);f.invoke('apply','payload');assert.equal(f.calls.filter(x=>x.name==='apply').length,1);assert.equal(f.inspect().stats.reset,1);
+});
+
+await lifecycleCase('reopening screens and repeated init reuse one resident hook set',async()=>{
+  const f=fixture({nativeBarrier:true});await f.init({discovery_cached:true});
+  const before=f.stages.filter(x=>x.hook).length,deopts=f.selectiveCalls.length;
+  for(let i=0;i<30;i++)await f.init({discovery_cached:true});
+  assert.equal(f.stages.filter(x=>x.hook).length,before);assert.equal(f.selectiveCalls.length,deopts);
+  assert.equal(f.inspect().hook_installations,1);assert.equal(f.inspect().initialization_reuses,30);
+  assert.equal(f.inspect().mapping_source,'validated_cache');assert(f.inspect().method_resolution_cache.method_hits>0);
+});
+await lifecycleCase('cached required descriptor mismatch requests one clean rediscovery',async()=>{
+  const f=fixture({nativeBarrier:true,failedMethods:['reboot']});
+  await assert.rejects(f.init({discovery_cached:true}));
+  await assert.rejects(f.init({discovery_cached:true}));
+  const invalid=f.events.filter(x=>x.event==='cached_mapping_invalid');assert.equal(invalid.length,1);
+  assert.equal(invalid[0].stage,'method_resolution');assert.equal(invalid[0].code,'runtime_mapping_mismatch');
+  assert.equal(f.deopts,0);assert.equal(f.inspect().critical_ready,false);
+});
+await lifecycleCase('fresh discovery failures and optional cache failures do not start rediscovery loops',async()=>{
+  const fresh=fixture({failedMethods:['reboot']});await assert.rejects(fresh.init());
+  assert.equal(fresh.events.some(x=>x.event==='cached_mapping_invalid'),false);
+  const optional=fixture({hooks:[...critical(),hook('full_package','optional',[],'java.lang.String')],failedMethods:['optional']});
+  await optional.init({discovery_cached:true});assert.equal(optional.inspect().hook_ready,true);
+  assert.equal(optional.events.some(x=>x.event==='cached_mapping_invalid'),false);
 });

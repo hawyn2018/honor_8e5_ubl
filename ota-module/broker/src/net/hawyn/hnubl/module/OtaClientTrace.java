@@ -9,7 +9,7 @@ import java.util.Set;
 final class OtaClientTrace {
     private static final Set<String> STAGES = new HashSet<>(Arrays.asList(
         "status", "open_start", "open_ok", "open_failed", "prepare_ready", "prepare_wait",
-        "consume_allow", "consume_deny", "original_started", "original_failed", "lease_released",
+        "consume_allow", "consume_deny", "original_started", "original_returned", "original_failed", "lease_released",
         "frontier_pass", "terminal_enter", "terminal_blocked",
         "label_state_zero", "label_state_one", "label_read_error"));
     final String stage, attempt;
