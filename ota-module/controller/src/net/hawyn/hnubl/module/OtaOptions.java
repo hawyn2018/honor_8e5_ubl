@@ -14,35 +14,44 @@ import java.util.*;
 /** Desired settings survive upgrades; active settings belong to one activation. */
 public final class OtaOptions {
     public static final boolean DEFAULT_FORCE_FULL_PACKAGE = false;
+    public static final boolean DEFAULT_PREFER_PATCH_PACKAGE = true;
     static final Path STATE = Paths.get("/data/adb/hnubl");
     static final String DESIRED = "ota-options.conf";
     static final String ACTIVE = "ota-options.active.conf";
     private static final String SCHEMA = "1";
-    private static final Set<String> KEYS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList("schema", "force_full_package", "activation_id")));
+    private static final Set<String> KEYS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
+        "schema", "force_full_package", "prefer_patch_package", "activation_id")));
 
     private OtaOptions() {}
 
     public static final class Active {
         public final boolean forceFullPackage;
+        public final boolean preferPatchPackage;
         public final String activationId;
-        Active(boolean value, String id) { forceFullPackage = value; activationId = id; }
+        Active(boolean forceFullPackage, boolean preferPatchPackage, String id) {
+            this.forceFullPackage = forceFullPackage;
+            this.preferPatchPackage = preferPatchPackage;
+            activationId = id;
+        }
     }
 
     static final class Snapshot {
-        final boolean desired, active, hasSavedValue, activeKnown;
+        final boolean desired, active, desiredPatch, activePatch, hasSavedValue, activeKnown;
         final String activationId, warning;
-        Snapshot(boolean desired, boolean active, boolean saved, boolean known, String id, String warning) {
+        Snapshot(boolean desired, boolean active, boolean desiredPatch, boolean activePatch,
+                 boolean saved, boolean known, String id, String warning) {
             this.desired = desired; this.active = active; hasSavedValue = saved; activeKnown = known;
+            this.desiredPatch = desiredPatch; this.activePatch = activePatch;
             activationId = id; this.warning = warning;
         }
-        boolean pending() { return !activeKnown || desired != active; }
+        boolean pending() { return !activeKnown || desired != active || desiredPatch != activePatch; }
     }
 
     private static final class Parsed {
-        final boolean value, valid;
+        final boolean value, patch, valid;
         final String id, error;
-        Parsed(boolean value, boolean valid, String id, String error) {
-            this.value = value; this.valid = valid; this.id = id; this.error = error;
+        Parsed(boolean value, boolean patch, boolean valid, String id, String error) {
+            this.value = value; this.patch = patch; this.valid = valid; this.id = id; this.error = error;
         }
     }
 
@@ -57,7 +66,16 @@ public final class OtaOptions {
 
         Snapshot save(boolean value) throws IOException {
             try (Guard guard = lock()) {
-                atomic(directory.resolve(DESIRED), desiredText(value));
+                Path desired = directory.resolve(DESIRED);
+                atomic(desired, desiredText(value, read(desired, false).patch));
+                return snapshotUnlocked();
+            }
+        }
+
+        Snapshot savePatch(boolean value) throws IOException {
+            try (Guard guard = lock()) {
+                Path desired = directory.resolve(DESIRED);
+                atomic(desired, desiredText(read(desired, false).value, value));
                 return snapshotUnlocked();
             }
         }
@@ -66,12 +84,12 @@ public final class OtaOptions {
             requireId(activationId);
             try (Guard guard = lock()) {
                 Parsed desired = read(directory.resolve(DESIRED), false);
-                // First installation, old modules and invalid settings start off.
-                // A valid explicit choice is retained across every activation.
-                if (!desired.valid) atomic(directory.resolve(DESIRED), desiredText(DEFAULT_FORCE_FULL_PACKAGE));
-                boolean value = desired.valid ? desired.value : DEFAULT_FORCE_FULL_PACKAGE;
-                atomic(directory.resolve(ACTIVE), desiredText(value) + "activation_id=" + activationId + "\n");
-                return new Snapshot(value, value, true, true, activationId, desired.error);
+                // Missing settings use the current defaults. Saved choices survive activation.
+                String text = desiredText(desired.value, desired.patch);
+                if (!desired.valid) atomic(directory.resolve(DESIRED), text);
+                atomic(directory.resolve(ACTIVE), text + "activation_id=" + activationId + "\n");
+                return new Snapshot(desired.value, desired.value, desired.patch, desired.patch,
+                    true, true, activationId, desired.error);
             }
         }
 
@@ -81,7 +99,7 @@ public final class OtaOptions {
                 Parsed active = read(directory.resolve(ACTIVE), true);
                 if (!active.valid || !activationId.equals(active.id))
                     throw new IOException("OTA settings snapshot is missing, invalid or belongs to another activation");
-                return new Active(active.value, active.id);
+                return new Active(active.value, active.patch, active.id);
             }
         }
 
@@ -89,8 +107,8 @@ public final class OtaOptions {
             Parsed desired = read(directory.resolve(DESIRED), false);
             Parsed active = read(directory.resolve(ACTIVE), true);
             String warning = !desired.error.isEmpty() ? desired.error : active.error;
-            return new Snapshot(desired.valid ? desired.value : DEFAULT_FORCE_FULL_PACKAGE,
-                active.valid ? active.value : DEFAULT_FORCE_FULL_PACKAGE, desired.valid, active.valid, active.id, warning);
+            return new Snapshot(desired.value, active.value, desired.patch, active.patch,
+                desired.valid, active.valid, active.id, warning);
         }
 
         private Guard lock() throws IOException {
@@ -111,10 +129,14 @@ public final class OtaOptions {
         if (id == null || !id.matches("[A-Za-z0-9-]+")) throw new IllegalArgumentException("Activation ID rejected");
     }
 
-    private static String desiredText(boolean value) { return "schema=" + SCHEMA + "\nforce_full_package=" + (value ? "1" : "0") + "\n"; }
+    private static String desiredText(boolean full, boolean patch) {
+        return "schema=" + SCHEMA + "\nforce_full_package=" + (full ? "1" : "0") +
+            "\nprefer_patch_package=" + (patch ? "1" : "0") + "\n";
+    }
 
     private static Parsed read(Path file, boolean active) {
-        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return new Parsed(false, false, "", "");
+        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS))
+            return new Parsed(DEFAULT_FORCE_FULL_PACKAGE, DEFAULT_PREFER_PATCH_PACKAGE, false, "", "");
         try {
             if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Not a regular settings file");
             byte[] bytes = Files.readAllBytes(file);
@@ -132,12 +154,20 @@ public final class OtaOptions {
             if (!SCHEMA.equals(fields.get("schema"))) throw new IOException("Unknown settings schema");
             String value = fields.get("force_full_package");
             if (!"0".equals(value) && !"1".equals(value)) throw new IOException("Boolean setting must be 0 or 1");
+            // Schema 1 files from before the patch switch have no patch field.
+            String patch = fields.get("prefer_patch_package");
+            if (patch != null && !"0".equals(patch) && !"1".equals(patch))
+                throw new IOException("Patch setting must be 0 or 1");
+            int savedFields = patch == null ? 2 : 3;
             String id = fields.getOrDefault("activation_id", "");
-            if (active) { requireId(id); if (fields.size() != 3) throw new IOException("Invalid active snapshot"); }
-            else if (fields.size() != 2) throw new IOException("Invalid saved settings");
-            return new Parsed("1".equals(value), true, id, "");
+            if (active) { requireId(id); if (fields.size() != savedFields + 1) throw new IOException("Invalid active snapshot"); }
+            else if (fields.size() != savedFields) throw new IOException("Invalid saved settings");
+            // An older active snapshot records the behavior of that activation.
+            boolean preferPatch = patch == null ? !active && DEFAULT_PREFER_PATCH_PACKAGE : "1".equals(patch);
+            return new Parsed("1".equals(value), preferPatch, true, id, "");
         } catch (IOException | IllegalArgumentException invalid) {
-            return new Parsed(DEFAULT_FORCE_FULL_PACKAGE, false, "", "设置文件无效，按默认关闭处理：" + file.getFileName());
+            return new Parsed(DEFAULT_FORCE_FULL_PACKAGE, DEFAULT_PREFER_PATCH_PACKAGE, false, "",
+                "设置文件无效，按默认设置处理：" + file.getFileName());
         }
     }
 

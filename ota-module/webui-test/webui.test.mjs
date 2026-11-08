@@ -6,14 +6,19 @@ const base = new URL('../module/webroot/', import.meta.url);
 async function load(name) { return import('data:text/javascript;base64,' + Buffer.from(await readFile(new URL(name, base))).toString('base64')); }
 const { controlCommand, execKernelSu, parseStatus, createModuleApi } = await load('bridge.js');
 const { OtaSettings, activationState } = await load('state.js');
-const status = (values = {}) => ({ desired: false, active: false, pending: false, ready: true, controllerReady: true, updaterRunning: true, waitingForUpdater: false, activationId: 'old-id', error: '', ...values });
-const wire = (values = {}) => ({ desired_force_full_package: false, active_force_full_package: false, pending: false, hook_ready: true, controller_ready: true, updater_running: true, waiting_for_updater: false, activation_id: 'old-id', error: '', ...values });
+const status = (values = {}) => ({ desired: false, active: false, desiredPatch: false, activePatch: false, pending: false, ready: true, controllerReady: true, updaterRunning: true, waitingForUpdater: false, activationId: 'old-id', error: '', ...values });
+const wire = (values = {}) => ({ desired_force_full_package: false, active_force_full_package: false, desired_prefer_patch_package: false, active_prefer_patch_package: false, pending: false, hook_ready: true, controller_ready: true, updater_running: true, waiting_for_updater: false, activation_id: 'old-id', error: '', ...values });
 
 test('commands are a closed set and do not accept shell text', () => {
   assert.equal(controlCommand('status'), 'sh /data/adb/modules/hnubl_ota/webui-control.sh status');
   assert.match(controlCommand('save', true), / save 1$/);
   assert.match(controlCommand('save', false), / save 0$/);
-  for (const input of ['1; reboot', 1, '0', null]) assert.throws(() => controlCommand('save', input));
+  assert.match(controlCommand('save-patch', true), / save-patch 1$/);
+  assert.match(controlCommand('save-patch', false), / save-patch 0$/);
+  for (const input of ['1; reboot', 1, '0', null]) {
+    assert.throws(() => controlCommand('save', input));
+    assert.throws(() => controlCommand('save-patch', input));
+  }
   assert.throws(() => controlCommand('reboot'));
 });
 test('bridge follows the documented callback ABI and cleans callbacks', async () => {
@@ -33,7 +38,10 @@ test('bridge errors and timeouts leave no callback behind', async () => {
 test('status requires actual booleans and activation fields', () => {
   assert.deepEqual(parseStatus(wire({ desired_force_full_package: true, pending: true })), status({ desired: true, pending: true }));
   for (const value of [null, [], {}, wire({ hook_ready: 'true' }), wire({ pending: 1 }), wire({ activation_id: null }), wire({ controller_ready: undefined }), wire({ updater_running: 0 }), wire({ waiting_for_updater: 'true' })]) assert.throws(() => parseStatus(value));
-  assert.throws(() => parseStatus(wire({ controller_ready: undefined })), /2\.7\.6/);
+  assert.deepEqual(parseStatus(wire({ desired_prefer_patch_package: true, pending: true })),
+    status({ desiredPatch: true, pending: true }));
+  assert.throws(() => parseStatus(wire({ active_prefer_patch_package: 'true' })), /active_prefer_patch_package/);
+  assert.throws(() => parseStatus(wire({ controller_ready: undefined })), /支持补丁包开关/);
 });
 test('backend failures and malformed JSON do not become success', async () => {
   for (const result of [{ errno: 1, stdout: '{"error":"fixture failure"}', stderr: '' }, { errno: 0, stdout: 'bad', stderr: '' }]) {
@@ -52,6 +60,27 @@ test('save leaves active policy unchanged and never applies implicitly', async (
   const model = new OtaSettings({ status: async () => status(), save: async value => { events.push(['save', value]); return status({ desired: value, pending: true }); }, apply: async () => events.push('apply') }, () => {});
   await model.load(); await model.save(true);
   assert.deepEqual(events, [['save', true]]); assert.equal(model.status.active, false); assert.equal(model.status.pending, true); assert.notEqual(model.feedback.kind, 'success');
+});
+test('saving patch leaves the full choice and the active patch strategy intact until Apply', async () => {
+  const calls = [];
+  const api = createModuleApi(async command => {
+    calls.push(command);
+    const value = wire({ desired_force_full_package: true, active_force_full_package: true });
+    if (command.endsWith(' save-patch 1')) Object.assign(value, { desired_prefer_patch_package: true, pending: true });
+    else if (command.endsWith(' apply')) Object.assign(value, {
+      desired_prefer_patch_package: true, active_prefer_patch_package: true, activation_id: 'patch-applied'
+    });
+    return { errno: 0, stdout: JSON.stringify(value), stderr: '' };
+  });
+  const model = new OtaSettings(api, () => {});
+  await model.load();
+  await model.save(true, 'desiredPatch');
+  assert.deepEqual(model.status, status({ desired: true, active: true, desiredPatch: true, pending: true }));
+  assert.equal(calls.length, 2);
+  await model.apply();
+  assert.equal(model.feedback.kind, 'success');
+  assert.equal(model.status.activePatch, true);
+  assert.equal(model.status.active, true);
 });
 test('save failure restores the backend-confirmed selection', async () => {
   const model = new OtaSettings({ status: async () => status(), save: async () => { throw new Error('fixture'); } }, () => {});
@@ -117,12 +146,15 @@ test('an idle controller with a stale activation or wrong policy is not applied'
   }
 });
 test('stale activation, superseded activation, or wrong policy cannot report applied', async () => {
-  for (const scenario of ['stale', 'superseded', 'wrong-policy', 'pending', 'changed-desired', 'error']) {
+  for (const scenario of ['stale', 'superseded', 'wrong-policy', 'wrong-patch', 'pending', 'changed-desired', 'changed-patch', 'error']) {
     let first = true;
     const model = new OtaSettings({
       status: async () => {
         if (first) { first = false; return status({ desired: true, pending: true }); }
-        return status({ desired: scenario !== 'changed-desired', active: scenario !== 'wrong-policy', pending: scenario === 'pending', activationId: scenario === 'superseded' ? 'other-id' : 'new-id', error: scenario === 'error' ? 'fixture reported error' : '' });
+        return status({ desired: scenario !== 'changed-desired', active: scenario !== 'wrong-policy',
+          desiredPatch: scenario === 'changed-patch', activePatch: scenario === 'wrong-patch',
+          pending: scenario === 'pending', activationId: scenario === 'superseded' ? 'other-id' : 'new-id',
+          error: scenario === 'error' ? 'fixture reported error' : '' });
       },
       apply: async () => status({ desired: true, active: true, activationId: scenario === 'stale' ? 'old-id' : 'new-id', ready: false })
     }, () => {}, { wait: async () => {}, pollAttempts: 1 });
@@ -145,6 +177,7 @@ test('assets are offline and production app has no preview/mock flag', async () 
   const html = await readFile(new URL('index.html', base), 'utf8');
   assert.match(html, /connect-src 'none'/); assert.doesNotMatch(html, /(?:src|href)=["']https?:/);
   assert.match(html, /role="switch"/); assert.match(html, /aria-live="polite"/);
+  assert.match(html, /id="preferPatchPackage" type="checkbox" role="switch"/);
   const js = await readFile(new URL('app.js', base), 'utf8');
   assert.doesNotMatch(js, /localStorage|sessionStorage|preview|mock/i);
   assert.match(js, /activationState\(status\)/);

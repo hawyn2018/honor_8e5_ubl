@@ -36,6 +36,7 @@ h1 { font-size: clamp(27px, 7vw, 34px); line-height: 1.25; letter-spacing: -.045
 .section-heading h2 { margin: 0; font-size: 15px; font-weight: 700; }
 .section-heading > span { color: var(--secondary); font-size: 10px; opacity: .8; letter-spacing: .04em; }
 .setting-card { background: var(--surface); border: 1px solid color-mix(in srgb, var(--line) 55%, transparent); border-radius: 26px; box-shadow: var(--shadow); padding: 22px 20px 19px; }
+.setting-card + .setting-card { margin-top: 10px; }
 .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; min-height: 44px; }
 .switch-label { display: flex; flex-direction: column; min-width: 0; }
 .switch-label strong { font-size: 17px; line-height: 1.4; font-weight: 700; letter-spacing: -.025em; }

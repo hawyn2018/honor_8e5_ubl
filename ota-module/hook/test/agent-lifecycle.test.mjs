@@ -9,6 +9,8 @@ import {installNativeRebootGuard} from '../src/native-reboot-guard.js';
 import {createNativeRebootScope, applyCriticalDeoptimization} from '../src/deoptimization-policy.js';
 import {installCacheVersionQuery} from '../src/cache-query.js';
 import {createProcessMethodCache} from '../src/method-resolution-cache.js';
+import {createUpdatePackagePolicy} from '../src/update-package-policy.js';
+import {installPatchPriority} from '../src/patch-priority.js';
 
 // Exercise the actual agent's binding/closure/lifecycle code with a Java ABI
 // fixture. No ART, broker socket, updater, payload, reboot or slot API is run.
@@ -20,7 +22,7 @@ const critical = () => [hook('reboot_terminal','reboot',['java.lang.String'],'vo
 
 function fixture({hooks=critical(), failedMethods=[], replies=[{ok:true,state:0,decision:'DENY'}],logFails=false,
   queued=false,state={ok:true,state:1},lifecycle=false,lifecycleBindFails=false,engineReady=false,engineStart=true,
-  traceFails=false,noLooper=false,postFails=false,threadFailAt=0,deoptFails=false,virtualReplay=false,nativeFailures=[],nativeBodies={},nativeBarrier=false,changedMethodContract=false}={}) {
+  traceFails=false,noLooper=false,postFails=false,threadFailAt=0,deoptFails=false,virtualReplay=false,nativeFailures=[],nativeBodies={},nativeBarrier=false,changedMethodContract=false,hotpatchProof=false}={}) {
   const events=[], timers=[], requests=[], calls=[], logs=[], traces=[], workers=[], main=[], stages=[]; const methods=new Map();
   let lane='ui',rebootJob=false,manualAction=null,deopts=0,identity=0,references=0,starts=0,stops=0,liveRetains=0,threadStarts=0,nativeOptions=null;
   const selectiveCalls=[],nativeCalls=[];
@@ -29,7 +31,7 @@ function fixture({hooks=critical(), failedMethods=[], replies=[{ok:true,state:0,
   const looper={id:'original-looper'}, activeMethods=new Set();
   function method(name) {
     if (!methods.has(name)) {
-      const value={returnType:{className:hooks.find(h=>h.method_name===name)?.return_type||'void'},
+      const value={returnType:{className:name==='isHotpatchOnly'?'boolean':hooks.find(h=>h.method_name===name)?.return_type||'void'},
         handle:{isNull:()=>false,toString:()=>name},call(receiver,...args){
         // ART's virtual dispatch can re-enter an installed replacement when an
         // asynchronous job invokes .call outside that method's replacement
@@ -59,6 +61,9 @@ function fixture({hooks=critical(), failedMethods=[], replies=[{ok:true,state:0,
   for(const h of hooks) {
     if(!types[h.class_name])types[h.class_name]={};
     types[h.class_name][h.method_name]={overload:()=>{if(failedMethods.includes(h.method_name))throw new Error('missing optional ABI');return method(h.method_name);}};
+  }
+  if(hotpatchProof) {
+    types.PatchFixture={isHotpatchOnly:{overload:()=>method('isHotpatchOnly')}};
   }
   const reflected=(name,parameters,returns,handleName=name)=>({getName:()=>name,getModifiers:()=>changedMethodContract&&methods.get(handleName)?.hooked?0x100:0,
     getParameterTypes:()=>parameters.map(name=>({getName:()=>name})),getReturnType:()=>({getName:()=>returns})});
@@ -105,7 +110,7 @@ function fixture({hooks=critical(), failedMethods=[], replies=[{ok:true,state:0,
     }};
   const context=vm.createContext({...policy,...versions,createRebootContext,createOriginalReplay,
     installNativeRebootGuard:options=>{if(!nativeBarrier)return installNativeRebootGuard(options);stages.push({nativeGuardInstalled:true});nativeOptions=options;return {ready:true};},
-    createNativeRebootScope,applyCriticalDeoptimization,createProcessMethodCache,Java,installCacheVersionQuery,installRebootLabels:options=>{manualAction=options.manualAction;return {aroundOriginal:fn=>fn()};},rpc:{exports:{}},send:e=>events.push(JSON.parse(JSON.stringify(e))),
+    createNativeRebootScope,applyCriticalDeoptimization,createProcessMethodCache,createUpdatePackagePolicy,installPatchPriority,Java,installCacheVersionQuery,installRebootLabels:options=>{manualAction=options.manualAction;return {aroundOriginal:fn=>fn()};},rpc:{exports:{}},send:e=>events.push(JSON.parse(JSON.stringify(e))),
     setTimeout:fn=>{timers.push(()=>run('worker',fn));return timers.length;},clearTimeout(){},console});
   vm.runInContext(source,context);
   context.brokerRequest=command=>{
@@ -116,6 +121,8 @@ function fixture({hooks=critical(), failedMethods=[], replies=[{ok:true,state:0,
     const next=replies.length>1?replies.shift():replies[0];if(next instanceof Error)throw next;return next;};
   vm.runInContext('marker = command => brokerRequest(command)',context);
   const mapping={schema:1,package:'com.hihonor.ouc',discovery_complete:true,apk_sha256:'fixture',hooks,reboot_continuations:[{class_name:'RunFixture',constructors:[{parameter_types:['android.content.Context','java.lang.String']}],callback:{method_name:'run',parameter_types:[],return_type:'void',is_static:false}}],...(lifecycle?{engine_lifecycle:engineSpec}:{})};
+  if(hotpatchProof) mapping.hotpatch_only={class_name:'PatchFixture',method_name:'isHotpatchOnly',
+    parameter_types:[],return_type:'boolean',is_static:true};
   if(nativeBarrier){
     const dex=t=>({void:'V',int:'I',boolean:'Z'}[t]||'L'+t.replaceAll('.','/')+';');
     const shape=v=>({...v,is_static:v.is_static===true,dex_method:dex(v.class_name)+'->'+v.method_name+'('+v.parameter_types.map(dex).join('')+')'+dex(v.return_type)});
@@ -263,6 +270,39 @@ console.log('Agent optional warnings, pending STATE, critical lifecycle, native 
 const grantReplies=()=>[{ok:true,state:0,decision:'DENY'},{ok:true,authorized:true,state:0,decision:'ALLOW'}];
 let lifecycleCases=0;
 async function lifecycleCase(name,body){await body();lifecycleCases++;console.log('PASS '+name);}
+await lifecycleCase('pure hotpatch replays original countdown and reboot without a marker transaction',async()=>{
+  const f=fixture({hooks:[...critical(), hook('payload_start','startUpdateZip',['java.lang.String'],'void',
+    {protocol_descriptor:'startUpdateZip(Ljava/lang/String;)V'})],hotpatchProof:true,nativeBarrier:true,nativeBodies:{
+    isHotpatchOnly:()=>true,reboot:()=>f.nativeTransaction(),
+  }});
+  await f.init({preferPatchPackage:true});
+  const before=f.requests.slice();
+  f.raw('startUpdateZip','patch.zip');
+  f.raw('complete',0);
+  f.raw('countdown');
+  assert.equal(f.raw('reboot','ota'),true);
+  assert.deepEqual(f.requests,before);
+  assert.equal(f.calls.filter(c=>c.name==='countdown').length,1);
+  assert.equal(f.calls.filter(c=>c.name==='startUpdateZip').length,1);
+  assert.equal(f.nativeCalls.filter(c=>c.allowed).length,1);
+  f.raw('apply','firmware-payload');
+  assert.ok(f.requests.includes('BEGIN'));
+  f.raw('complete',0);
+  assert.ok(f.requests.includes('RESET'));
+  assert.equal(f.raw('reboot','ota'),undefined);
+  assert.equal(f.calls.filter(c=>c.name==='reboot').length,1);
+});
+await lifecycleCase('the same ZIP Binder entry keeps legacy protection for cold, unknown, or switch-off cases',async()=>{
+  for(const [preferPatchPackage, hotpatchProof] of [[true,false],[false,true]]) {
+    const f=fixture({hooks:[...critical(),hook('payload_start','startUpdateZip',['java.lang.String'],'void',
+      {protocol_descriptor:'startUpdateZip(Ljava/lang/String;)V'})],hotpatchProof,
+      nativeBodies:{isHotpatchOnly:()=>true}});
+    await f.init({preferPatchPackage});
+    f.raw('startUpdateZip','unknown.zip');
+    assert.ok(f.requests.includes('BEGIN'));
+    assert.ok(!f.calls.some(c=>c.name==='isHotpatchOnly'));
+  }
+});
 function noUiProtocol(f){for(const s of f.stages.filter(x=>x.command&&x.command!=='STATE'))assert.equal(s.lane,'worker',s.command+' ran on UI');
   assert.equal(f.requests.some(x=>x==='STATUS'||x==='PREPARE'),false,'phase/preflight commands must not participate in file permission');}
 

@@ -27,10 +27,12 @@ public final class OtaOptionsTest {
             Path normal = root.resolve("normal"); OtaOptions.Store store = new OtaOptions.Store(normal);
             OtaOptions.Snapshot initial = store.snapshot();
             check(!initial.desired && !initial.active, "First installation must default off");
+            check(initial.desiredPatch, "First installation must default patch on");
             check(!initial.hasSavedValue && !initial.activeKnown && initial.pending(), "Missing state must not claim applied");
             invalidActive(store, "boot-1");
             store.prepare("boot-1");
             check(!store.requireActive("boot-1").forceFullPackage, "First boot must activate off");
+            check(store.requireActive("boot-1").preferPatchPackage, "First boot must activate patch on");
             check(store.snapshot().hasSavedValue && !store.snapshot().pending(), "Initial choice must be persisted");
 
             OtaOptions.Active captured = store.requireActive("boot-1");
@@ -46,11 +48,31 @@ public final class OtaOptionsTest {
             store.prepare("boot-3");
             check(!store.requireActive("boot-3").forceFullPackage, "Reboot activation must use saved off");
 
-            store.save(true);
+            text(normal, OtaOptions.DESIRED, "schema=1\nforce_full_package=1\n");
+            text(normal, OtaOptions.ACTIVE, "schema=1\nforce_full_package=1\nactivation_id=boot-3\n");
             OtaOptions.Store upgrade = new OtaOptions.Store(normal);
+            check(!upgrade.requireActive("boot-3").preferPatchPackage, "A legacy live snapshot retains its original patch-off behavior");
+            check(upgrade.snapshot().desiredPatch && upgrade.snapshot().pending(), "Legacy desired settings pick up the patch default");
             upgrade.prepare("upgrade-4");
-            check(upgrade.requireActive("upgrade-4").forceFullPackage, "An explicit valid on survives upgrade");
+            OtaOptions.Active legacy = upgrade.requireActive("upgrade-4");
+            check(legacy.forceFullPackage && legacy.preferPatchPackage, "Legacy full-on choice survives with patch default on");
             check(upgrade.snapshot().desired && upgrade.snapshot().hasSavedValue, "Upgrade must not overwrite a valid saved choice");
+            OtaOptions.Snapshot patchSaved = upgrade.savePatch(false);
+            check(patchSaved.desired && patchSaved.active && !patchSaved.desiredPatch &&
+                patchSaved.activePatch && patchSaved.pending(), "Saving patch off must preserve full and defer activation");
+            OtaOptions.Store upgradedAgain = new OtaOptions.Store(normal);
+            upgradedAgain.prepare("patch-off");
+            check(!upgradedAgain.requireActive("patch-off").preferPatchPackage, "An explicit patch opt-out survives an upgrade");
+            upgrade.savePatch(true);
+            upgrade.prepare("patch-5");
+            OtaOptions.Active both = upgrade.requireActive("patch-5");
+            check(both.forceFullPackage && both.preferPatchPackage && !upgrade.snapshot().pending(),
+                "One activation must take both saved choices");
+            check(upgrade.save(false).desiredPatch, "Saving full must preserve the patch choice");
+            check(upgrade.requireActive("patch-5").forceFullPackage, "Saving full must leave the live fallback intact");
+            upgrade.prepare("upgrade-4");
+            check(!upgrade.requireActive("upgrade-4").forceFullPackage && upgrade.requireActive("upgrade-4").preferPatchPackage,
+                "Patch on and full off must remain independent");
             boolean badId = false;
             try { upgrade.prepare("bad\nactivation"); } catch (IllegalArgumentException expected) { badId = true; }
             check(badId, "Activation identity must be strict");
@@ -65,6 +87,8 @@ public final class OtaOptionsTest {
                 "schema=1\nforce_full_package=1\r\n",
                 "force_full_package=1\n",
                 "schema=1\nforce_full_package=\n",
+                "schema=1\nforce_full_package=1\nprefer_patch_package=true\n",
+                "schema=1\nforce_full_package=0\nprefer_patch_package=1\nprefer_patch_package=0\n",
             };
             for (int i = 0; i < invalid.length; i++) {
                 Path folder = root.resolve("invalid-" + i); Files.createDirectories(folder);
@@ -73,6 +97,7 @@ public final class OtaOptionsTest {
                 check(!snapshot.desired && !snapshot.hasSavedValue && !snapshot.warning.isEmpty(), "Invalid saved setting must default off");
                 broken.prepare("recovered-" + i);
                 check(!broken.requireActive("recovered-" + i).forceFullPackage, "Invalid settings must not migrate as on");
+                check(broken.requireActive("recovered-" + i).preferPatchPackage, "Invalid settings must recover to the patch default");
                 check(broken.snapshot().hasSavedValue, "Recovered default must be a valid saved setting");
             }
 

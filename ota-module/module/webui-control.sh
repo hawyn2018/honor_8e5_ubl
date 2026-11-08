@@ -20,9 +20,9 @@ case "${1:-}" in
     [ "$#" = 1 ] || { printf '%s\n' '{"ok":false,"error":"Unexpected arguments"}'; exit 1; }
     cli status
     ;;
-  save)
+  save|save-patch)
     [ "$#" = 2 ] || { printf '%s\n' '{"ok":false,"error":"Setting must be 0 or 1"}'; exit 1; }
-    case "$2" in 0|1) cli save "$2";; *) printf '%s\n' '{"ok":false,"error":"Setting must be 0 or 1"}'; exit 1;; esac
+    case "$2" in 0|1) cli "$1" "$2";; *) printf '%s\n' '{"ok":false,"error":"Setting must be 0 or 1"}'; exit 1;; esac
     ;;
   apply)
     [ "$#" = 1 ] || { printf '%s\n' '{"ok":false,"error":"Unexpected arguments"}'; exit 1; }

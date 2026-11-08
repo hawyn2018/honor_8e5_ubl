@@ -39,6 +39,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.sp
@@ -69,7 +70,7 @@ data class OtaActions(
     val onExportEfisp: () -> Unit = {},
     val onClearLogs: () -> Unit = {},
     val onExportDiagnostics: () -> Unit = {},
-    val onReturnToSystemUpdater: () -> Unit = {},
+    val onCompletionAction: () -> Unit = {},
 )
 
 @Composable
@@ -154,10 +155,17 @@ fun OtaPage(state: OtaUiState, operationBusy: Boolean, actions: OtaActions, cont
                     Spacer(Modifier.height(10.dp))
                     Text(state.error, fontSize = 12.sp, lineHeight = 20.sp, color = MiuixTheme.colorScheme.error)
                 }
-                if (state.completed && OtaCompletionPolicy.action(state.operation) != OtaCompletionAction.NONE) {
+                val completionAction = OtaCompletionPolicy.action(state.operation)
+                if (state.completed && completionAction != OtaCompletionAction.NONE) {
                     Spacer(Modifier.height(14.dp))
-                    Button(onClick = actions.onReturnToSystemUpdater,
-                        enabled = enabled, modifier = Modifier.fillMaxWidth()) { Text("返回软件更新") }
+                    Button(onClick = actions.onCompletionAction,
+                        enabled = enabled, modifier = Modifier.fillMaxWidth()) {
+                        if (completionAction == OtaCompletionAction.OPEN_KERNEL_SU) {
+                            Text(completionAction.label, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                        } else {
+                            Text(completionAction.label)
+                        }
+                    }
                 }
             }
         }
@@ -297,7 +305,7 @@ fun OtaPage(state: OtaUiState, operationBusy: Boolean, actions: OtaActions, cont
 
 @Composable
 private fun OtaRebootWarning() {
-    val warning = "注意：本工具无修补init_boot功能，在本工具执行完ota流程重启前，请进入kernelsu安装到未使用的槽位后再重启！"
+    val warning = "保留锁态 OTA 完成后，在 KernelSU 安装到未使用的槽位，再返回软件更新点击立即重启。"
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
     BoxWithConstraints(Modifier.fillMaxWidth()) {

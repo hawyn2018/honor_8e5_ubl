@@ -13,7 +13,7 @@ import dev.honor.bootforge.core.OtaUpdatePreparation
 import dev.honor.bootforge.core.OtaDiagnosticsArchive
 import dev.honor.bootforge.core.Payloads
 import dev.honor.bootforge.core.RootShell
-import dev.honor.bootforge.core.SystemUpdaterHandoff
+import dev.honor.bootforge.core.KernelSuHandoff
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CancellationException
@@ -262,16 +262,36 @@ class OtaModel(application: Application) : AndroidViewModel(application) {
             catch (e: Exception) { OtaState.state = state.copy(error = e.message.orEmpty()) }
         }
     }
-    fun returnToSystemUpdater() {
-        if (!OtaCompletionPolicy.available(state.operation, OtaCompletionAction.RETURN_TO_UPDATER,
+    fun runCompletionAction() {
+        val action = OtaCompletionPolicy.action(state.operation)
+        if (!OtaCompletionPolicy.available(state.operation, action,
                 state.completed, state.busy || RunState.state.busy || BackupState.state.busy)) return
+        if (action == OtaCompletionAction.REBOOT_TO_TRY_EFISP && !BuildConfig.ALLOW_PARTITION_WRITES) return
         OtaState.state = state.copy(busy = true)
         viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
             try {
-                val result = withContext(Dispatchers.IO) {
-                    SystemUpdaterHandoff.open(app, File(app.filesDir, "ota-module/updater-open.log"))
+                val logs = when (action) {
+                    OtaCompletionAction.OPEN_KERNEL_SU -> {
+                        val result = KernelSuHandoff.openFromForeground(app)
+                        OtaState.state = state.copy(error = if (result.opened) "" else
+                            "未能打开 KernelSU，请从桌面手动打开。保留锁态 OTA 已完成。")
+                        result.logs
+                    }
+                    OtaCompletionAction.REBOOT_TO_TRY_EFISP -> {
+                        withContext(Dispatchers.IO) {
+                            AppRebootCommands.requestSystem(app, File(app.filesDir, "efisp-reboot.log"))
+                        }
+                        OtaState.state = state.copy(stage = "已请求重启系统", error = "")
+                        listOf("[重启] 已请求正常重启，体验新版 efisp")
+                    }
+                    OtaCompletionAction.NONE -> return@launch
                 }
-                result.logs.forEach(OtaState::append)
+                logs.forEach(OtaState::append)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                OtaState.append("[重启] ${failure.message ?: failure.javaClass.simpleName}")
+                OtaState.state = state.copy(error = "重启系统未确认，请查看日志")
             } finally { OtaState.state = state.copy(busy = false) }
         }
     }

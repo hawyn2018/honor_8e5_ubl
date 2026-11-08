@@ -9,10 +9,11 @@ export class OtaSettings {
   constructor(api, render, { wait = ms => new Promise(resolve => setTimeout(resolve, ms)), pollAttempts = 30 } = {}) {
     this.api = api; this.render = render; this.wait = wait; this.pollAttempts = pollAttempts;
     this.status = null; this.busy = null; this.feedback = null; this.disposed = false;
-    this.selectedDesired = null; this.operation = 0;
+    this.selection = null; this.operation = 0;
   }
   emit() { if (!this.disposed) this.render({ status: this.status, busy: this.busy, feedback: this.feedback,
-    selectedDesired: this.selectedDesired === null ? this.status?.desired : this.selectedDesired }); }
+    selectedDesired: this.selection?.key === 'desired' ? this.selection.value : this.status?.desired,
+    selectedPatchDesired: this.selection?.key === 'desiredPatch' ? this.selection.value : this.status?.desiredPatch }); }
   current(operation) { return !this.disposed && operation === this.operation; }
   async load() {
     if (this.busy || this.disposed) return;
@@ -22,29 +23,31 @@ export class OtaSettings {
     catch (error) { if (this.current(operation)) this.feedback = { kind: 'error', message: '读取模块设置失败。', detail: String(error.message || error) }; }
     finally { if (this.current(operation)) { this.busy = null; this.emit(); } }
   }
-  async save(value) {
-    if (this.busy || !this.status || this.disposed || typeof value !== 'boolean') return;
+  async save(value, key = 'desired') {
+    if (this.busy || !this.status || this.disposed || typeof value !== 'boolean' ||
+        (key !== 'desired' && key !== 'desiredPatch')) return;
     const previous = this.status;
     const operation = ++this.operation;
     // Keep the thumb under the user's new selection while persistence is pending.
     // status remains the last backend-confirmed value, not an optimistic success.
-    this.selectedDesired = value;
+    this.selection = { key, value };
     this.busy = 'saving'; this.feedback = { kind: 'progress', message: '正在保存设置…' }; this.emit();
     try {
-      const saved = await this.api.save(value);
+      const saved = await (key === 'desiredPatch' ? this.api.savePatch(value) : this.api.save(value));
       if (!this.current(operation)) return;
-      if (saved.desired !== value) throw new Error('模块未确认保存所选设置。');
+      if (saved[key] !== value) throw new Error('模块未确认保存所选设置。');
       this.status = saved;
       this.feedback = { kind: 'neutral', message: saved.pending ? '设置已保存。点击“立即应用”，或在下次手机启动时生效。' : '设置已保存，与当前加载的策略一致。' };
     } catch (error) {
       if (!this.current(operation)) return;
       this.status = previous;
       this.feedback = { kind: 'error', message: '设置保存失败，请重试。', detail: String(error.message || error) };
-    } finally { if (this.current(operation)) { this.selectedDesired = null; this.busy = null; this.emit(); } }
+    } finally { if (this.current(operation)) { this.selection = null; this.busy = null; this.emit(); } }
   }
   async apply() {
     if (this.busy || !this.status || this.disposed) return;
     const wanted = this.status.desired;
+    const wantedPatch = this.status.desiredPatch;
     const oldId = this.status.activationId;
     const operation = ++this.operation;
     this.busy = 'applying';
@@ -56,9 +59,11 @@ export class OtaSettings {
       this.status = requested; this.emit();
       const confirmed = current => {
         if (current.activationId !== requested.activationId) throw new Error('模块已开始另一次激活，请刷新页面确认当前状态。');
-        if (current.desired !== wanted) throw new Error('保存的设置已被其他操作修改，请重新应用。');
+        if (current.desired !== wanted || current.desiredPatch !== wantedPatch)
+          throw new Error('保存的设置已被其他操作修改，请重新应用。');
         const readiness = activationState(current);
-        if (readiness === 'waiting' || current.active !== wanted || current.pending) return false;
+        if (readiness === 'waiting' || current.active !== wanted || current.activePatch !== wantedPatch || current.pending)
+          return false;
         this.feedback = { kind: 'success', message: readiness === 'idle' ?
           '设置已应用，下次打开软件更新时生效。' : '设置已生效，软件更新保护已就绪。' };
         return true;

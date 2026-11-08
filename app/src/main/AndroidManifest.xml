@@ -14,6 +14,11 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <queries>
         <package android:name="com.hihonor.ouc" />
+        <package android:name="me.weishu.kernelsu" />
+        <package android:name="com.rifsxd.ksunext" />
+        <package android:name="com.sukisu.ultra" />
+        <package android:name="com.resukisu.resukisu" />
+        <package android:name="me.yuki.fina" />
     </queries>
     <application
         android:name="dev.honor.bootforge.HonorUblApplication"

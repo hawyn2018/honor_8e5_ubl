@@ -7,7 +7,10 @@ import dev.honor.bootforge.wireless.ShellAccess
 import java.io.File
 
 /** Integration lifecycle only. The four backend hooks contain no new implementation. */
-abstract class NewKernelRootAdapterBase(private val chain: RootChain) : RootAdapter {
+abstract class NewKernelRootAdapterBase(
+    private val chain: RootChain,
+    private val targetKernel: String = NEW_ROOT_KERNEL_G459A,
+) : RootAdapter {
     @Volatile private var callback: ((String) -> Unit)? = null
 
     final override fun setLogCallback(callback: ((String) -> Unit)?) {
@@ -19,13 +22,13 @@ abstract class NewKernelRootAdapterBase(private val chain: RootChain) : RootAdap
     }
 
     protected fun pending(hook: String): Nothing = error(
-        "${chain.id} / $NEW_ROOT_KERNEL_G459A 的 $hook 尚待对接；现有内核实现保持原样"
+        "${chain.id} / $targetKernel 的 $hook 尚待对接"
     )
 
     private fun checkTarget(shell: ShellAccess, application: Application) {
         val result = shell.run(application, "uname -r", 10)
-        check(result.exitCode == 0 && result.output.trim() == NEW_ROOT_KERNEL_G459A) {
-            "新增内核适配器仅接收完整匹配的内核：$NEW_ROOT_KERNEL_G459A"
+        check(result.exitCode == 0 && result.output.trim() == targetKernel) {
+            "新增内核适配器仅接收完整匹配的内核：$targetKernel"
         }
         checkRootChainAllowed(shell, application, chain)
     }

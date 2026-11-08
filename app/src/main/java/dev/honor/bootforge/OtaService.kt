@@ -23,7 +23,7 @@ import dev.honor.bootforge.core.ImagePatchFailureBoundary
 import java.util.concurrent.CancellationException
 import dev.honor.bootforge.core.OtaCompletionMarker
 import dev.honor.bootforge.core.PatchRetryTask
-import dev.honor.bootforge.core.SystemUpdaterHandoff
+import dev.honor.bootforge.core.KernelSuHandoff
 
 class OtaService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -103,7 +103,8 @@ class OtaService : Service() {
                         val completion = withContext(Dispatchers.IO) {
                             OtaCompletionFlow.afterSuccess(operation,
                                 writeMarker = { OtaCompletionMarker.write(File(filesDir, "ota-module/freeotaok.log")) },
-                                openUpdater = { SystemUpdaterHandoff.open(this@OtaService, File(filesDir, "ota-module/updater-open.log")) })
+                                openKernelSu = { KernelSuHandoff.openFromService(this@OtaService,
+                                    File(filesDir, "ota-module/ksu-open.log")) })
                         }
                         completion.logs.forEach(OtaState::append)
                         OtaState.state = OtaState.state.copy(completionMarkerReady = completion.markerReady,

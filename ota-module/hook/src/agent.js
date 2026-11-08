@@ -3,6 +3,8 @@ import {isAutomatic, isManual, consumeAllows, requiredReady, isCriticalRole, rea
 import {filterVersionResponse, parseFirmwareVersion} from './version-policy.js';
 import {installRebootLabels} from './reboot-labels.js';
 import {installCacheVersionQuery} from './cache-query.js';
+import {createUpdatePackagePolicy} from './update-package-policy.js';
+import {installPatchPriority} from './patch-priority.js';
 import {createRebootContext} from './reboot-context.js';
 import {createOriginalReplay} from './original-replay.js';
 import {installNativeRebootGuard} from './native-reboot-guard.js';
@@ -20,6 +22,14 @@ let brokerRetry = null;
 let app = null;
 let mapping = null;
 let forceFullPackage = false;
+let preferPatchPackage = false;
+let readHotpatchOnly = null;
+let patchPriorityReady = false;
+const updatePackagePolicy = createUpdatePackagePolicy({
+  enabled: () => preferPatchPackage && readHotpatchOnly !== null,
+  readHotpatchOnly: () => readHotpatchOnly(),
+  warn: error => reportWarning('hotpatch_only', 'Native patch classification failed; retaining OTA protection', error),
+});
 let cycleResetPending = false;
 let payloadStarted = false;
 let rebootLabels = null;
@@ -62,7 +72,8 @@ function telemetry(event) {
     'reboot_authorization_transport_error', 'reboot_execution_failed', 'original_reboot_entry_failed',
     'payload_begin_blocked', 'redirect_to_hnubl', 'original_reboot_entry_allowed', 'original_reboot_replay_entered',
     'original_reboot_entry_returned', 'native_reboot_blocked', 'runtime_deoptimized',
-    'terminal_reboot_blocked', 'reboot_frontier_passed', 'version_filter', 'cache_version_filter'].includes(event.event)) {
+    'terminal_reboot_blocked', 'reboot_frontier_passed', 'version_filter', 'cache_version_filter',
+    'patch_package_preferred', 'hotpatch_native_payload', 'hotpatch_original_reboot'].includes(event.event)) {
     try {
       const Log = Java.use('android.util.Log');
       Log.i.overload('java.lang.String', 'java.lang.String').call(Log, 'hnubl-ota', JSON.stringify(detail));
@@ -408,7 +419,7 @@ function bindSetting(hook) {
         overload.implementation = function (...args) {
           try {
             const key = String(args[1]);
-            if (values.has(key)) return values.get(key);
+            if (values.has(key) && !updatePackagePolicy.isHotpatchOnly()) return values.get(key);
           } catch (error) { reportWarning('optional_setting', 'Settings classification failed; preserving native read', error); }
           return original(overload, this, args);
         };
@@ -426,7 +437,7 @@ function bindTimer(hook) {
   if (timerStartPatched) return;
   const start = Java.use('android.os.CountDownTimer').start.overload();
   start.implementation = function () {
-    if (timerClasses.has(String(this.getClass().getName()))) {
+    if (timerClasses.has(String(this.getClass().getName())) && !updatePackagePolicy.isHotpatchOnly()) {
       stats.automaticBlocked++;
       return this;
     }
@@ -521,6 +532,7 @@ function bindHook(hook) {
   } else if (role === 'countdown') {
     if (!['void', 'boolean'].includes(hook.return_type)) throw new Error('Countdown entry result unsupported');
     overload.implementation = function () {
+      if (updatePackagePolicy.isHotpatchOnly()) return original(overload, this, []);
       stats.automaticBlocked++;
       return hook.return_type === 'boolean' ? true : undefined;
     };
@@ -532,6 +544,10 @@ function bindHook(hook) {
         telemetry({event: 'original_reboot_replay_entered', terminal: false,
           class_name: hook.class_name, method_name: hook.method_name});
         return original(overload, this, args);
+      }
+      if (updatePackagePolicy.isHotpatchOnly()) {
+        telemetry({event: 'hotpatch_original_reboot', terminal: false});
+        return originalReboot(overload, this, args, hook.is_static === true, true);
       }
       const mode = args[hook.mode_arg];
       if (isAutomatic(mode, hook.automatic_values || []) || rebootContext.current() === 'automatic') {
@@ -573,6 +589,10 @@ function bindHook(hook) {
           class_name: hook.class_name, method_name: hook.method_name});
         return original(overload, this, args);
       }
+      if (updatePackagePolicy.isHotpatchOnly()) {
+        telemetry({event: 'hotpatch_original_reboot', terminal: true});
+        return originalReboot(overload, this, args, false, true);
+      }
       const kind=isAutomatic(args[0],hook.automatic_values||[])?'automatic':rebootContext===null?'unknown':rebootContext.current();
       if (kind !== 'manual') {
         if (kind === 'automatic') stats.automaticBlocked++; else stats.denied++;
@@ -585,6 +605,14 @@ function bindHook(hook) {
     };
   } else if (role === 'payload_start') {
     overload.implementation = function (...args) {
+      // The vendor uses this ZIP entry for hot and cold patches. Only its
+      // native hot-only proof exempts it; firmware payload calls never do.
+      if (hook.protocol_descriptor === 'startUpdateZip(Ljava/lang/String;)V' &&
+          updatePackagePolicy.isHotpatchOnly()) {
+        telemetry({event: 'hotpatch_native_payload'});
+        return original(overload, this, args);
+      }
+      updatePackagePolicy.beginProtectedPayload();
       payloadStarted = false;
       // BEGIN arms a new durable native cycle and resets the old marker. A
       // completion RESET must only reset the marker, retaining a deferred plan.
@@ -629,7 +657,9 @@ function inspect() {
     mapping_source:discoveryCached?'validated_cache':'semantic_discovery',
     method_resolution_cache:methodCache === null ? null : methodCache.inspect(),
     reboot_labels:rebootLabels !== null && typeof rebootLabels.inspect === 'function' ? rebootLabels.inspect() : null,
-    ota_socket: otaSocket, apk_sha256: mapping && mapping.apk_sha256, force_full_package: forceFullPackage};
+    ota_socket: otaSocket, apk_sha256: mapping && mapping.apk_sha256, force_full_package: forceFullPackage,
+    prefer_patch_package: preferPatchPackage, hotpatch_classifier_ready: readHotpatchOnly !== null,
+    patch_priority_ready: patchPriorityReady};
 }
 
 function cachedMappingInvalid(failure, stage) {
@@ -668,8 +698,19 @@ function init(stage, parameters) {
         otaSocket = suppliedSocket || actualSocket;
         mapping = parameters && parameters.mapping;
         forceFullPackage = parameters && parameters.forceFullPackage === true;
+        preferPatchPackage = parameters && parameters.preferPatchPackage === true;
         if (!mapping || mapping.schema !== 1 || mapping.package !== TARGET ||
             mapping.discovery_complete !== true || !Array.isArray(mapping.hooks)) throw new Error('Incomplete semantic discovery mapping');
+        if (preferPatchPackage) {
+          const proof = mapping.hotpatch_only;
+          if (proof && proof.return_type === 'boolean' && proof.is_static === true &&
+              Array.isArray(proof.parameter_types) && proof.parameter_types.length === 0) try {
+            const {type, method} = methodCache.resolve(proof);
+            readHotpatchOnly = () => method.call(type);
+          } catch (error) {
+            reportWarning('hotpatch_only', 'Patch-only predicate unavailable; retaining original OTA protection', error);
+          }
+        }
         const terminalHooks = mapping.hooks.filter(hook => hook.role === 'reboot_terminal');
         if (!terminalHooks.length) throw new Error('Required terminal reboot entry is missing');
         const bindTerminals = () => {
@@ -716,9 +757,16 @@ function init(stage, parameters) {
         const requiredFailures = failures.filter(failure => isCriticalRole(failure.hook.role));
         if (requiredFailures.length > 0) throw cachedMappingInvalid(new Error('A required discovered entry was not hooked: ' + JSON.stringify(requiredFailures)), 'critical_binding');
         if (!deoptimized || !continuationReady || !requiredReady(counts)) throw new Error('Required hook coverage is incomplete: ' + JSON.stringify(counts));
+        if (preferPatchPackage && readHotpatchOnly !== null) try {
+          patchPriorityReady = installPatchPriority({Java, mapping, methodCache, enabled: () => updatePackagePolicy.canPreferPatch(),
+            warn: (message, error) => reportWarning('patch_priority', message, error), telemetry});
+        } catch (error) {
+          reportWarning('patch_priority', 'Patch priority binding unavailable; retaining native update selection', error);
+        }
         criticalReady = true;
         try {
-          rebootLabels = installRebootLabels({Java, app, state: () => marker('STATE'),
+          rebootLabels = installRebootLabels({Java, app,
+            state: () => updatePackagePolicy.isHotpatchOnly() ? {native: true} : marker('STATE'),
             warn: (message, error) => reportWarning('reboot_labels', message, error),
             onState: value => rebootTrace(value === 1 ? 'label_state_one' : 'label_state_zero', (diagnosticSession + '-label').slice(-24)),
             onStateError: () => rebootTrace('label_read_error', (diagnosticSession + '-label').slice(-24)),

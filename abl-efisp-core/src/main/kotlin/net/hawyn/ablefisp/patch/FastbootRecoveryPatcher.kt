@@ -58,7 +58,17 @@ internal object FastbootRecoveryPatcher {
             plan.copy(automaticCallSites = usable)
         }
         return try {
-            val installed = install(image, facts, key, slots, failures)
+            val continueBoard = optional<ContinueBoardInitFacts.Plan?>("手动 continue 板型初始化", null) {
+                val auth = facts.continueFlow.authCallRva
+                val prepare = image.word(auth - 4) ?: fail("手动 continue 参数")
+                val args = A64.add(prepare)
+                val postAuth = image.word(auth + 4) ?: fail("手动 continue 认证返回")
+                if (args == null || args.rd != 0 || args.rn != 31 || prepare ushr 31 != 1 ||
+                    postAuth and 0x7e00001f != 0x34000000)
+                    fail("手动 continue 原生参数及失败汇合点")
+                ContinueBoardInitFacts.analyze(image, facts)
+            }
+            val installed = install(image, facts, key, slots, failures, continueBoard)
             installed.copy(notes = installed.notes + skipped,
                 metadata = installed.metadata + mapOf("recoveryApplied" to true, "optionalFeatureSkips" to skipped))
         } catch (failure: PatchException) {
@@ -87,7 +97,8 @@ internal object FastbootRecoveryPatcher {
     }
 
     internal fun install(image: PeImage, facts: FastbootRecoveryFacts.Facts, key: SemanticPlan,
-                         slots: FastbootSlotRecoveryFacts.Plan?, failures: AutoBootFailureFacts.Facts): Result {
+                         slots: FastbootSlotRecoveryFacts.Plan?, failures: AutoBootFailureFacts.Facts,
+                         continueBoard: ContinueBoardInitFacts.Plan? = null): Result {
         require(facts.prerequisites.earlyJumpProven)
         val scopePrefix=facts.scopePrefix?:fail("原生 Fastboot scope 前缀尚未完整证明")
         if(!scopePrefix.noExternalEntryProven || scopePrefix.startRva!=facts.fastbootSetupRva ||
@@ -129,8 +140,15 @@ internal object FastbootRecoveryPatcher {
                 code.address(2, site)
                 code.branch(rx + FastbootRecoveryModule.REQUEST_OFFSET)
             }
+            val manualAuth = facts.continueFlow.authCallRva
+            val manualBoot = facts.continueFlow.bootLinuxCallRva
             fun replay(pc: Long) {
                 val original=image.word(pc)?:fail("原指令")
+                if (pc == manualAuth || pc == manualBoot) {
+                    code.replay(pc, original)
+                    code.branch(pc + 4)
+                    return
+                }
                 val target=A64.blTarget(pc,original)
                 when(target) {
                     facts.continueFlow.authTargetRva -> { code.branch(rx+FastbootRecoveryModule.AUTH_OFFSET,true);displacedWrappedCalls+=pc }
@@ -274,15 +292,14 @@ internal object FastbootRecoveryPatcher {
             }
             }
 
-            // Native auth success and benign reports return unchanged. A manual
-            // continue failure still sends its original FAIL and stays Fastboot.
+            // Keep the existing non-manual recovery scopes at their original sites.
             val authCalls = image.instructions().filter { (pc,w) -> A64.blTarget(pc,w) == facts.continueFlow.authTargetRva }.toList()
             if (authCalls.none { it.first == facts.continueFlow.authCallRva }) fail("原生 Continue auth 调用")
-            authCalls.filter { it.first !in displacedWrappedCalls }.forEach { (pc,_) -> word("原生引导认证调用边界", pc,
+            authCalls.filter { it.first != manualAuth && it.first !in displacedWrappedCalls }.forEach { (pc,_) -> word("原生引导认证调用边界", pc,
                 A64.branch(pc, rx + FastbootRecoveryModule.AUTH_OFFSET) or 0x80000000.toInt()) }
             val linuxCalls = image.instructions().filter { (pc,w) -> A64.blTarget(pc,w) == facts.continueFlow.bootLinuxTargetRva }.toList()
             if (linuxCalls.none { it.first == facts.continueFlow.bootLinuxCallRva }) fail("原生 BootLinux 调用")
-            linuxCalls.filter { it.first !in displacedWrappedCalls }.forEach { (pc,_) -> word("内核交接前清除故障计数", pc,
+            linuxCalls.filter { it.first != manualBoot && it.first !in displacedWrappedCalls }.forEach { (pc,_) -> word("内核交接前清除故障计数", pc,
                 A64.branch(pc, rx + FastbootRecoveryModule.BOOTLINUX_OFFSET) or 0x80000000.toInt()) }
 
             failures.sites.distinctBy { it.existingPolicyStubRva ?: it.hookRva }.forEach { site ->
@@ -329,6 +346,28 @@ internal object FastbootRecoveryPatcher {
                 }
             }
 
+            // The manual handler owns auth, FAIL, OKAY, teardown and BootLinux.
+            // Only an early-recovery Continue needs the missing native inputs.
+            if (continueBoard != null) {
+                val prepare = manualAuth - 4
+                hook("手动 continue 补齐原生板型与平台上下文", prepare) {
+                    save()
+                    branch(rx + FastbootRecoveryModule.FORCED_OFFSET, true)
+                    val ordinary = placeholder()
+                    continueBoardInit(continueBoard)
+                    val initialized = placeholder()
+                    // Preserve the actual protocol status as the native auth result.
+                    scalar(false, 0, 0)
+                    restore()
+                    branch(manualAuth + 4)
+                    val native = pc
+                    replace(ordinary, cbz(ordinary, native, 0))
+                    replace(initialized, cbz(initialized, native, 0))
+                    restore()
+                    replay(prepare)
+                }
+            }
+
             val config = FastbootRecoveryModule.CONFIG_OFFSET.toInt()
             listOf(rx, rw, facts.entryRva, facts.requestFlagRva ?: 0L, facts.continueFlow.flagRva,
                 facts.continueFlow.bootLinuxTargetRva, slots?.manualSetActiveEntryRva ?: 0L, facts.canaryGlobalRva,
@@ -369,6 +408,7 @@ internal object FastbootRecoveryPatcher {
             "按实际定位结果应用音量下资格策略；未完整匹配的可选项保留原生流程，手动命令保留。",
             "故障恢复使用独立 RX/RW 小模块及原始入口栈；KBL 仍由显式命令启动。",
             "连续阻断故障达到 3 次优先进入 Fastboot；私有 EFI 计数服务不可用时保留 RAM 恢复。",
+            "手动 continue 使用原生认证、内核交接与清理；仅在已证明的故障入口补齐原生板型与平台上下文。",
             "已退出 UEFI Boot Services 后的内核异常不在本恢复模块可直接接管的范围内。",
         ), linkedMapOf("rxRva" to layout.rx.rva,"stateRva" to layout.rw.rva,"moduleSha256" to FastbootRecoveryModule.SHA256,
             "checkpointRva" to checkpointMetadata(facts),"hookCount" to finalChanges.size,
@@ -426,6 +466,94 @@ internal object FastbootRecoveryPatcher {
             val delta=to-from
             if(delta%4!=0L || delta !in -0x100000L..0xffffcL) fail("条件分支的实际范围")
             return 0xb4000000.toInt() or (if(nonzero)0x01000000 else 0) or (((delta shr 2).toInt() and 0x7ffff) shl 5) or reg
+        }
+        /** Reuse the exact vendor protocols and field copies proven in its normal path. */
+        fun continueBoardInit(plan: ContinueBoardInitFacts.Plan) {
+            val errors = arrayListOf<Long>()
+            val missing = arrayListOf<Pair<Long, Int>>()
+            fun load(reg: Int, base: Int, offset: Int, size: Int = 8) {
+                require(size in setOf(4, 8) && offset >= 0 && offset % size == 0 && offset / size < 4096)
+                val opcode = if (size == 8) 0xf9400000.toInt() else 0xb9400000.toInt()
+                emit(opcode or ((offset / size) shl 10) or (base shl 5) or reg)
+            }
+            fun call(reg: Int) = emit(0xd63f0000.toInt() or (reg shl 5))
+            fun protocol(spec: ContinueBoardInitFacts.Protocol) {
+                // save() leaves two aligned scratch words after the saved flags.
+                scalar(false, 31, 256)
+                address(8, plan.bootServicesRva)
+                load(8, 8, 0)
+                missing += placeholder() to 8
+                load(16, 8, plan.locateMethodOffset)
+                missing += placeholder() to 16
+                address(0, spec.guidRva)
+                emit(0xaa1f03e1.toInt()) // x1 = NULL registration
+                emit(0x910403e2.toInt()) // x2 = sp + 256
+                call(16)
+                errors += placeholder()
+                spec.probeOffset?.let { offset ->
+                    scalar(true, 8, 256)
+                    missing += placeholder() to 8
+                    load(16, 8, offset)
+                    missing += placeholder() to 16
+                    emit(0xaa1f03e0.toInt()) // The original probe consumes the zero LocateProtocol status.
+                    call(16)
+                    errors += placeholder()
+                }
+                scalar(true, 0, 256)
+                missing += placeholder() to 0
+                load(16, 0, spec.getterOffset)
+                missing += placeholder() to 16
+                address(1, spec.outputRva)
+                call(16)
+                errors += placeholder()
+            }
+            // A late recovery entry can already have complete native context.
+            // Require the native board ID and both copies to agree before reuse.
+            address(8, plan.board.outputRva)
+            load(9, 8, 0, 4)
+            val emptyBoard = placeholder()
+            val mismatches = plan.platformCopies.map { copy ->
+                address(8, copy.sourceRva)
+                load(9, 8, 0, copy.size)
+                address(8, copy.destRva)
+                load(10, 8, 0, copy.size)
+                val xor = if (copy.size == 8) 0xca0a0129.toInt() else 0x4a0a0129
+                emit(xor) // x9/w9 = source XOR destination
+                placeholder()
+            }
+            emit(0xaa1f03e0.toInt())
+            val alreadyReady = placeholder()
+            val query = pc
+            replace(emptyBoard, cbz(emptyBoard, query, 9))
+            mismatches.forEach { at -> replace(at, cbz(at, query, 9, true)) }
+
+            protocol(plan.board)
+            protocol(plan.platform)
+            address(8, plan.platform.outputRva)
+            load(9, 8, 0, 4)
+            require(plan.boardValidationShift in 0..31)
+            emit(0x53007d29 or (plan.boardValidationShift shl 16)) // lsr w9,w9,#shift
+            immediate(10, plan.boardValidationLimit.toLong())
+            emit(0x6b0a013f) // cmp w9,w10
+            val invalid = placeholder()
+            for (copy in plan.platformCopies) {
+                address(8, copy.sourceRva)
+                load(9, 8, 0, copy.size)
+                address(8, copy.destRva)
+                val store = if (copy.size == 8) 0xf9000000.toInt() else 0xb9000000.toInt()
+                emit(store or (8 shl 5) or 9)
+            }
+            emit(0xaa1f03e0.toInt())
+            val done = placeholder()
+            val notReady = pc
+            immediate(0, Long.MIN_VALUE or 6L) // EFI_NOT_READY for missing pointers or invalid platform data.
+            val end = pc
+            val delta = ((notReady - invalid) shr 2).toInt()
+            replace(invalid, 0x54000002 or ((delta and 0x7ffff) shl 5)) // b.hs
+            replace(done, A64.branch(done, end))
+            replace(alreadyReady, A64.branch(alreadyReady, end))
+            missing.forEach { (at, reg) -> replace(at, cbz(at, notReady, reg)) }
+            errors.forEach { at -> replace(at, cbz(at, end, 0, true)) }
         }
         /** Relocate semantics, rather than copying a PC-relative instruction. */
         fun replay(originalPc: Long, word: Int) {

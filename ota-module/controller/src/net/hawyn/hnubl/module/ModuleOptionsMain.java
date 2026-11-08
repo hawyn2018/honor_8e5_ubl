@@ -23,9 +23,12 @@ public final class ModuleOptionsMain {
                     if (args.length != 1) throw new IllegalArgumentException("Unexpected arguments");
                     snapshot = store.snapshot(); break;
                 case "save":
+                case "save-patch":
                     if (args.length != 2 || !("0".equals(args[1]) || "1".equals(args[1])))
                         throw new IllegalArgumentException("Setting must be 0 or 1");
-                    snapshot = store.save("1".equals(args[1])); break;
+                    snapshot = "save-patch".equals(args[0]) ?
+                        store.savePatch("1".equals(args[1])) : store.save("1".equals(args[1]));
+                    break;
                 case "prepare":
                     if (args.length != 2) throw new IllegalArgumentException("Activation ID required");
                     snapshot = store.prepare(args[1]); break;
@@ -54,7 +57,8 @@ public final class ModuleOptionsMain {
 
     static JSONObject statusResponse(OtaOptions.Snapshot snapshot, JSONObject controller, String statusError) throws Exception {
         boolean sameActivation = snapshot.activeKnown && snapshot.activationId.equals(controller.optString("activation_id"));
-        boolean sameMode = Boolean.valueOf(snapshot.active).equals(controller.opt("force_full_package"));
+        boolean sameMode = Boolean.valueOf(snapshot.active).equals(controller.opt("force_full_package")) &&
+            Boolean.valueOf(snapshot.activePatch).equals(controller.opt("prefer_patch_package"));
         String controllerError = sameActivation ? controller.optString("error", "") : "";
         String error = !snapshot.warning.isEmpty() ? snapshot.warning : !statusError.isEmpty() ? statusError :
             !controllerError.isEmpty() ? controllerError : sameActivation && sameMode ? "" :
@@ -69,6 +73,8 @@ public final class ModuleOptionsMain {
         boolean ready = brokerReady && criticalReady && running && Boolean.TRUE.equals(controller.opt("hook_ready"));
         return new JSONObject().put("ok", true).put("desired_force_full_package", snapshot.desired)
             .put("active_force_full_package", snapshot.active).put("pending", snapshot.pending())
+            .put("desired_prefer_patch_package", snapshot.desiredPatch)
+            .put("active_prefer_patch_package", snapshot.activePatch)
             .put("has_saved_value", snapshot.hasSavedValue).put("active_known", snapshot.activeKnown)
             .put("hook_ready", ready).put("controller_ready", controllerReady).put("updater_running", running)
             .put("broker_ready", brokerReady).put("critical_ready", criticalReady)

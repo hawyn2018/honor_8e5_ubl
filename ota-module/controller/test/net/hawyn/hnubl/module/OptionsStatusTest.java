@@ -9,12 +9,12 @@ public final class OptionsStatusTest {
     private static JSONObject controller(String id, Object mode, boolean ready) throws Exception {
         JSONObject result = new JSONObject().put("activation_id", id).put("hook_ready", ready).put("error", "");
         result.put("controller_ready", true).put("updater_running", true).put("waiting_for_updater", false);
-        result.put("broker_ready", true).put("critical_ready", true);
+        result.put("broker_ready", true).put("critical_ready", true).put("prefer_patch_package", false);
         if (mode != null) result.put("force_full_package", mode);
         return result;
     }
     public static void main(String[] ignored) throws Exception {
-        OtaOptions.Snapshot active = new OtaOptions.Snapshot(true, true, true, true, "new-id", "");
+        OtaOptions.Snapshot active = new OtaOptions.Snapshot(true, true, false, false, true, true, "new-id", "");
         JSONObject matching = ModuleOptionsMain.statusResponse(active, controller("new-id", true, true), "");
         check(matching.getBoolean("hook_ready"), "Matching ready activation should be accepted");
         check(!matching.getBoolean("pending"), "Matching saved and active settings should agree");
@@ -25,13 +25,13 @@ public final class OptionsStatusTest {
         check(!ModuleOptionsMain.statusResponse(active, controller("new-id", null, true), "").getBoolean("hook_ready"), "Older statuses without a mode must not complete Apply");
         check(!ModuleOptionsMain.statusResponse(active, controller("new-id", true, false), "").getBoolean("hook_ready"), "A pending injection must remain pending");
 
-        OtaOptions.Snapshot savedOnly = new OtaOptions.Snapshot(false, true, true, true, "new-id", "");
+        OtaOptions.Snapshot savedOnly = new OtaOptions.Snapshot(false, true, false, false, true, true, "new-id", "");
         JSONObject pending = ModuleOptionsMain.statusResponse(savedOnly, controller("new-id", true, true), "");
         check(pending.getBoolean("pending") && pending.getBoolean("active_force_full_package") && !pending.getBoolean("desired_force_full_package"), "Saving must preserve the active mode and report a pending choice");
-        OtaOptions.Snapshot missing = new OtaOptions.Snapshot(false, false, false, false, "", "");
+        OtaOptions.Snapshot missing = new OtaOptions.Snapshot(false, false, false, false, false, false, "", "");
         check(!ModuleOptionsMain.statusResponse(missing, controller("", false, true), "").getBoolean("hook_ready"), "Missing active file cannot claim readiness");
         String escaped = "设置错误：\"quoted\"\nnext\\line";
-        OtaOptions.Snapshot warning = new OtaOptions.Snapshot(false, false, false, false, "", escaped);
+        OtaOptions.Snapshot warning = new OtaOptions.Snapshot(false, false, false, false, false, false, "", escaped);
         JSONObject serialized = new JSONObject(ModuleOptionsMain.statusResponse(warning, new JSONObject(), "").toString());
         check(escaped.equals(serialized.getString("error")), "Status errors must round-trip through valid escaped JSON");
         check("state unreadable".equals(ModuleOptionsMain.statusResponse(active, controller("new-id", true, false), "state unreadable").getString("error")), "Unreadable controller state must surface an error");
@@ -58,6 +58,16 @@ public final class OptionsStatusTest {
         check(!ModuleOptionsMain.statusResponse(active, controller("new-id", true, true).put("critical_ready", false), "").getBoolean("hook_ready"), "Running hooks require critical protection");
         JSONObject optionalWarning = controller("new-id", true, true).put("warnings", new org.json.JSONArray().put("optional version response absent"));
         check(ModuleOptionsMain.statusResponse(active, optionalWarning, "").getBoolean("hook_ready"), "Optional warnings preserve genuine readiness");
+        OtaOptions.Snapshot patchActive = new OtaOptions.Snapshot(true, true, true, true, true, true, "new-id", "");
+        JSONObject patchReady = controller("new-id", true, true).put("prefer_patch_package", true);
+        JSONObject patchStatus = ModuleOptionsMain.statusResponse(patchActive, patchReady, "");
+        check(patchStatus.getBoolean("hook_ready") && patchStatus.getBoolean("desired_prefer_patch_package") &&
+            patchStatus.getBoolean("active_prefer_patch_package"), "Patch-on readiness requires the applied choice");
+        check(!ModuleOptionsMain.statusResponse(patchActive, controller("new-id", true, true), "").getBoolean("hook_ready"),
+            "Matching full with a different patch setting must not complete Apply");
+        patchReady.remove("prefer_patch_package");
+        check(!ModuleOptionsMain.statusResponse(patchActive, patchReady, "").getBoolean("hook_ready"),
+            "Status without a patch setting must not complete Apply");
         System.out.println("OptionsStatus checks passed: " + checks);
     }
 }

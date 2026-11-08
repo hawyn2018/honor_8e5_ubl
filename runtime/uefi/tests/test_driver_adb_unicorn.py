@@ -325,6 +325,11 @@ class Fixture(u.BoundFixture):
 def run_one(driver,address,stop_kind):
     print('driver-adb',hex(address),stop_kind,'activation',flush=True)
     f=Fixture(driver,address);f.begin();counts=dict(f.extra_calls)
+    f.open(10,'shell,v2,pty:')
+    banner=b'KBL native USB debug session\nhttps://github.com/hawyn2018/KernelBL\n# '
+    f.until(lambda:f.channel_output(10));f.settle()
+    assert f.channel_output(10)==struct.pack('<BI',1,len(banner))+banner,f.channel_output(10)
+    f.close(10)
     out,rc=f.shell(11,'echo actual-driver-adb');assert out==b'actual-driver-adb\n'and rc==0,(out,rc)
     out,rc=f.shell(12,'el');assert b'1' in out and rc==0
     print('driver-adb shell passed; sync',flush=True);f.open(20,'sync:')

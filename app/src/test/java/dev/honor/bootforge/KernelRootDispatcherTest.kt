@@ -36,7 +36,7 @@ class KernelRootDispatcherTest {
             when (kernelRootRoute(identity.release)) {
                 KernelRootRoute.BUILTIN -> builtin
                 KernelRootRoute.EXTRA -> extra
-                null -> error("No exact kernel route")
+                KernelRootRoute.G142, null -> error("No fixture for kernel route")
             }
         }
 
@@ -46,12 +46,15 @@ class KernelRootDispatcherTest {
         assertEquals(KernelRootRoute.BUILTIN, kernelRootRoute(KERNEL_61258))
         assertEquals(KernelRootRoute.BUILTIN, kernelRootRoute(KERNEL_6138))
         assertEquals(KernelRootRoute.EXTRA, kernelRootRoute(NEW_ROOT_KERNEL_G459A))
+        assertEquals(KernelRootRoute.G142, kernelRootRoute(NEW_ROOT_KERNEL_G142))
     }
 
     @Test fun unknownBuildsNeverMatchByKernelPrefixOrPartialHash() {
         for (release in listOf("6.12.58", "6.12.58-android16-6", KERNEL_61258 + "-other",
             NEW_ROOT_KERNEL_G459A.replace("532718632", "532718633"),
             NEW_ROOT_KERNEL_G459A.replace("g459a4285ccf8", "g459a4285ccf9"),
+            NEW_ROOT_KERNEL_G142.replace("576095858", "576095859"),
+            NEW_ROOT_KERNEL_G142.replace("g142ddad31e60", "g142ddad31e61"),
             "6.12.38-android16-5-unknown", "")) {
             assertNull(release, kernelRootRoute(release))
         }
@@ -198,33 +201,41 @@ class KernelRootDispatcherTest {
         assertEquals(listOf(existing), resolutions)
     }
 
-    @Test fun registeringAndForwardingCallbacksNeverDeploysEitherImplementation() {
+    @Test fun registeringAndForwardingCallbacksNeverDeploysAnyImplementation() {
         for (chain in RootChain.entries) {
-            val builtin = CallbackAdapter(); val extra = CallbackAdapter()
-            val dispatch = KernelDispatchRootAdapter(chain, builtin, extra)
+            val builtin = CallbackAdapter()
+            val extra = CallbackAdapter()
+            val g142 = CallbackAdapter()
+            val dispatch = KernelDispatchRootAdapter(chain, builtin, extra, g142)
             val messages = mutableListOf<String>()
             val callback: (String) -> Unit = { messages += it }
             dispatch.setLogCallback(callback)
             assertSame(callback, builtin.callback)
             assertSame(callback, extra.callback)
+            assertSame(callback, g142.callback)
             builtin.callback?.invoke("old"); extra.callback?.invoke("new")
             assertEquals(listOf("old", "new"), messages)
             dispatch.setLogCallback(null)
             assertNull(builtin.callback)
             assertNull(extra.callback)
+            assertNull(g142.callback)
             assertEquals(0, builtin.operations)
             assertEquals(0, extra.operations)
+            assertEquals(0, g142.operations)
         }
     }
 
-    @Test fun callbackCleanupStillVisitsExtraWhenBuiltinThrows() {
-        val builtin = CallbackAdapter(); val extra = CallbackAdapter()
-        val dispatch = KernelDispatchRootAdapter(RootChain.DEFAULT, builtin, extra)
+    @Test fun callbackCleanupStillVisitsOtherAdaptersWhenBuiltinThrows() {
+        val builtin = CallbackAdapter()
+        val extra = CallbackAdapter()
+        val g142 = CallbackAdapter()
+        val dispatch = KernelDispatchRootAdapter(RootChain.DEFAULT, builtin, extra, g142)
         dispatch.setLogCallback { }
         builtin.failNullCallback = true
         assertThrows(IllegalStateException::class.java) { dispatch.setLogCallback(null) }
         assertNull(builtin.callback)
         assertNull(extra.callback)
+        assertNull(g142.callback)
     }
 
     private class CallbackAdapter : RootAdapter {

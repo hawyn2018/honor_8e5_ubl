@@ -1,6 +1,7 @@
 package net.hawyn.hnubl.discovery;
 
 import com.android.tools.smali.dexlib2.DexFileFactory;
+import com.android.tools.smali.dexlib2.Opcode;
 import com.android.tools.smali.dexlib2.Opcodes;
 import com.android.tools.smali.dexlib2.iface.*;
 import com.android.tools.smali.dexlib2.iface.instruction.*;
@@ -15,7 +16,7 @@ import java.util.zip.GZIPOutputStream;
 /** DEX semantics, descriptors and invoke edges; no vendor class/version/address table. */
 public final class OucDiscovery {
     /** Persist only location-independent DEX descriptors; runtime handles are resolved in each new process. */
-    public static final String CACHE_POLICY = "ouc-semantic-dex-identities-v3";
+    public static final String CACHE_POLICY = "ouc-semantic-dex-identities-v4";
     private static final String STRING = "Ljava/lang/String;";
     private static final class MethodInfo {
         final Method method;
@@ -190,6 +191,7 @@ public final class OucDiscovery {
         List<Map<String,Object>> rebootContinuations=discoverTerminalReboot(hooks,hookIds,methods,classes);
         discoverVersionCache(hooks,hookIds,methods,classes);
         Map<String,Object> engineLifecycle=discoverEngineLifecycle(methods,classes);
+        Map<String,Object> hotpatchOnly=discoverHotPatchOnly(methods);
         Set<String> roles=new HashSet<>();for(Map<String,Object> h:hooks) roles.add((String)h.get("role"));
         List<String> missing=new ArrayList<>();
         if(!roles.contains("reboot_gate")) missing.add("reboot_gate");
@@ -207,6 +209,7 @@ public final class OucDiscovery {
         for(String role:Arrays.asList("full_package","disable_auto","night_switch","auto_download","version_response","version_cache_query","payload_complete"))
             if(!roles.contains(role)) optionalMissing.add(role);
         if(engineLifecycle.isEmpty()) optionalMissing.add("engine_lifecycle");
+        if(hotpatchOnly.isEmpty()) optionalMissing.add("hotpatch_only");
         Map<String,Object> result=new LinkedHashMap<>();
         result.put("schema",1);result.put("package","com.hihonor.ouc");
         result.put("apk_sha256",sha256(apk));result.put("discovery_complete",missing.isEmpty());
@@ -216,6 +219,8 @@ public final class OucDiscovery {
         result.put("reboot_continuations",rebootContinuations);
         result.put("deoptimization_plan",criticalDispatchPlan(methods,classes,hooks,rebootContinuations));
         result.put("engine_lifecycle",engineLifecycle);
+        result.put("hotpatch_only",hotpatchOnly);
+        result.put("patch_priority",discoverPatchPriority(methods,classes,hotpatchOnly));
         result.put("unproved_asynchronous_frontiers",asynchronousFrontiers);
         result.put("method_count",methods.size());
         result.put("policy","semantic anchors + DEX descriptors + literal argument flow + invoke graph; no model/version/address table");
@@ -224,6 +229,225 @@ public final class OucDiscovery {
 
     private static boolean callsNamed(MethodInfo m,String name) {
         for(String call:m.calls)if(call.contains("->"+name+"("))return true;return false;
+    }
+
+    /** Prioritize an eligible patch only inside the native normal-result save. */
+    private static Map<String,Object> discoverPatchPriority(Map<String,MethodInfo> methods,
+            Map<String,ClassDef> classes,Map<String,Object> hotpatchOnly) {
+        if(!hotpatchOnly.containsKey("patch_mask_test"))return Collections.emptyMap();
+        MethodInfo patchInfo=null, extraInfo=null, packageType=null;
+        for(MethodInfo save:methods.values()) {
+            if(!save.contains("save, hasPatchNewVersion is "))continue;
+            for(String helperKey:save.calls) {
+                MethodInfo helper=methods.get(helperKey);
+                if(helper==null || !helper.method.getDefiningClass().equals(save.method.getDefiningClass()))continue;
+                for(String getter:helper.calls) {
+                    MethodInfo patchGetter=methods.get(getter);
+                    if(patchGetter==null || !patchGetter.method.getName().equals("getPatchPackage") ||
+                       !patchGetter.signature(STRING))continue;
+                    for(String extra:helper.calls) {
+                        MethodInfo extraGetter=methods.get(extra);
+                        if(extraGetter==null || !extraGetter.method.getName().equals("getExtraInfo") ||
+                           !extraGetter.signature(patchGetter.method.getDefiningClass()))continue;
+                        MethodInfo typeGetter=methods.get(extraGetter.method.getDefiningClass()+"->getPackageType()I");
+                        if(typeGetter==null)continue;
+                        if(patchInfo!=null && (patchInfo!=patchGetter || extraInfo!=extraGetter || packageType!=typeGetter))
+                            return Collections.emptyMap();
+                        patchInfo=patchGetter;extraInfo=extraGetter;packageType=typeGetter;
+                    }
+                }
+            }
+        }
+        if(patchInfo==null)return Collections.emptyMap();
+        Map<String,Object> found=Collections.emptyMap();
+        for(MethodInfo save:methods.values()) {
+            String owner=save.method.getDefiningClass();
+            if(!types(save.method).isEmpty() || (save.method.getAccessFlags()&8)!=0 ||
+               !save.contains("save, isAllowContinueUpgrade is false") || !save.contains("save, installStatus =") ||
+               !save.contains("results.size:"))continue;
+            ClassDef concrete=classes.get(owner);
+            if(concrete==null || !Objects.equals(concrete.getSuperclass(),save.method.getReturnType()))continue;
+            String base=concrete.getSuperclass();
+            for(String call:save.calls) {
+                MethodInfo persistence=methods.get(call);
+                if(persistence==null || !persistence.method.getDefiningClass().equals(owner) ||
+                   !persistence.signature("V") || !persistence.contains("saveToDb, components.size:"))continue;
+                Map<MethodInfo,Set<Integer>> groupReads=priorityGroupReads(persistence,methods,classes,base);
+                for(Map.Entry<MethodInfo,Set<Integer>> read:groupReads.entrySet()) {
+                    if(!read.getValue().containsAll(Arrays.asList(2,4)))continue;
+                    MethodInfo eligible=null, suppress=null;
+                    for(MethodInfo method:methods.values()) {
+                        if(!method.method.getDefiningClass().equals(base) || (method.method.getAccessFlags()&8)!=0)continue;
+                        if(method.signature("Z","Z") && method.contains("isAllowContinueUpgrade currentComponents is null") &&
+                           priorityCalls(save,method,classes) && priorityCalls(method,read.getKey(),classes)) {
+                            if(eligible!=null)return Collections.emptyMap();
+                            eligible=method;
+                        }
+                        if(method.signature("V","I") && method.contains("setNoVersion checkType is: ") &&
+                           callsNamed(method,"iterator")) {
+                            if(suppress!=null)return Collections.emptyMap();
+                            suppress=method;
+                        }
+                    }
+                    if(eligible==null || suppress==null)continue;
+                    if(!found.isEmpty())return Collections.emptyMap();
+                    found=new LinkedHashMap<>();
+                    found.put("save",priorityShape(save));found.put("eligible",priorityShape(eligible));
+                    found.put("components",priorityShape(read.getKey()));found.put("suppress",priorityShape(suppress));
+                    found.put("package_type",priorityShape(packageType));found.put("extra_info",priorityShape(extraInfo));
+                    found.put("patch_mask",priorityShape(patchInfo));
+                    found.put("patch_group",2);found.put("full_group",4);found.put("micro_patch_type",10);
+                    found.put("evidence","normal save + successful native eligibility + both typed groups persist + native no-version setter + PatchNewVersion metadata");
+                }
+            }
+        }
+        return found;
+    }
+
+    private static Map<String,Object> priorityShape(MethodInfo method) {
+        Map<String,Object> shape=methodShape(method);
+        shape.put("class_name",javaType(method.method.getDefiningClass()));
+        return shape;
+    }
+
+    private static boolean priorityCalls(MethodInfo caller,MethodInfo target,Map<String,ClassDef> classes) {
+        String suffix=target.key.substring(target.key.indexOf("->"));
+        for(String call:caller.calls)if(call.endsWith(suffix) &&
+                isSubclass(call.substring(0,call.indexOf("->")),target.method.getDefiningClass(),classes,new HashSet<String>()))
+            return true;
+        return false;
+    }
+
+    private static Map<MethodInfo,Set<Integer>> priorityGroupReads(MethodInfo persistence,
+            Map<String,MethodInfo> methods,Map<String,ClassDef> classes,String base) {
+        MethodInfo expanded=code(persistence);Set<Integer> boundaries=blockStarts(expanded);
+        Map<MethodInfo,Set<Integer>> reads=new LinkedHashMap<>();
+        for(int i=0;i<expanded.instructions.size();i++) {
+            Instruction ins=expanded.instructions.get(i);
+            if(!ins.getOpcode().name().startsWith("INVOKE_VIRTUAL") || !(ins instanceof ReferenceInstruction) ||
+               !(((ReferenceInstruction)ins).getReference() instanceof MethodReference))continue;
+            MethodReference method=(MethodReference)((ReferenceInstruction)ins).getReference();
+            if(!method.getReturnType().equals("Ljava/util/List;") || !types(method).equals(Collections.singletonList("I")) ||
+               !isSubclass(method.getDefiningClass(),base,classes,new HashSet<String>()))continue;
+            MethodInfo getter=methods.get(base+key(method).substring(method.getDefiningClass().length()));
+            if(getter==null || !callsNamed(getter,"iterator"))continue;
+            Integer value=constantInteger(expanded.instructions,i,argumentRegister(ins,1),boundaries);
+            if(value!=null)reads.computeIfAbsent(getter,k->new HashSet<>()).add(value);
+        }
+        return reads;
+    }
+
+    /** Optional read-only observer. The all-micro-patch rows check and the
+     * hot-only subtype test must both feed the native boolean return. */
+    private static Map<String,Object> discoverHotPatchOnly(Map<String,MethodInfo> methods) {
+        Map<String,Object> result=Collections.emptyMap();
+        for(MethodInfo candidate:methods.values()) {
+            if(!candidate.signature("Z") || (candidate.method.getAccessFlags()&8)==0 ||
+               !candidate.strings.contains("isHotPatchOnly:")) continue;
+            List<MethodInfo> pair=conjunctionInputs(candidate,methods,Opcode.IF_EQZ);
+            if(pair.size()!=2) continue;
+            MethodInfo rows=pair.get(0), subtype=pair.get(1);
+            if(!rows.signature("Z") || !rows.strings.contains("isMicroPatchOnly return false") ||
+               !rows.contains("isMicroPatchOnly patchOnlyNum=") || !callsNamed(rows,"iterator") ||
+               !subtype.signature("Z","I") ||
+               !subtype.method.getDefiningClass().equals(candidate.method.getDefiningClass())) continue;
+            List<MethodInfo> filters=conjunctionInputs(subtype,methods,Opcode.IF_NEZ);
+            if(filters.size()!=2) continue;
+            String hot=categoryMask(filters.get(0),methods), cold=categoryMask(filters.get(1),methods);
+            if(hot==null || cold==null || hot.equals(cold)) continue;
+            if(!result.isEmpty()) return Collections.emptyMap();
+            result=staticPredicateDescriptor(candidate);
+            result.put("evidence",Collections.singletonList("native all-micro-patch row test AND hot mask present AND cold mask absent"));
+            result.put("patch_mask_test",staticPredicateDescriptor(subtype));
+        }
+        return result;
+    }
+
+    private static Map<String,Object> staticPredicateDescriptor(MethodInfo method) {
+        Map<String,Object> descriptor=new LinkedHashMap<>();
+        descriptor.put("class_name",javaType(method.method.getDefiningClass()));
+        descriptor.put("method_name",method.method.getName());
+        List<String> args=new ArrayList<>();
+        for(String type:types(method.method)) args.add(javaType(type));
+        descriptor.put("parameter_types",args);
+        descriptor.put("return_type","boolean");descriptor.put("is_static",true);
+        return descriptor;
+    }
+
+    /** Prove short-circuit false branches of two static call results and their
+     * true/false return join without relying on absolute offsets or registers. */
+    private static List<MethodInfo> conjunctionInputs(MethodInfo method,Map<String,MethodInfo> methods,Opcode second) {
+        List<Instruction> ins=code(method).instructions;
+        int tail=ins.size()-5;
+        if(tail<2 || ins.get(tail).getOpcode()!=second)
+            return Collections.emptyList();
+        int[] pc=new int[ins.size()];
+        for(int i=1;i<pc.length;i++)pc[i]=pc[i-1]+ins.get(i-1).getCodeUnits();
+        int first=-1;
+        for(int i=0;i<tail;i++) {
+            Instruction instruction=ins.get(i);
+            if(instruction instanceof OffsetInstruction) {
+                if(first>=0 || instruction.getOpcode()!=Opcode.IF_EQZ || !jumpsTo(ins,pc,i,tail+3))
+                    return Collections.emptyList();
+                first=i;
+            } else if(instruction.getOpcode().name().startsWith("RETURN") || instruction.getOpcode()==Opcode.THROW) {
+                return Collections.emptyList();
+            }
+        }
+        if(first<0 || !jumpsTo(ins,pc,tail,tail+3) ||
+           !ins.get(tail+2).getOpcode().name().startsWith("GOTO") || !jumpsTo(ins,pc,tail+2,tail+4) ||
+           ins.get(tail+4).getOpcode()!=Opcode.RETURN) return Collections.emptyList();
+        int returned=((OneRegisterInstruction)ins.get(tail+4)).getRegisterA();
+        for(int index:new int[]{tail+1,tail+3}) {
+            Instruction value=ins.get(index);
+            if(!value.getOpcode().name().startsWith("CONST") || !(value instanceof NarrowLiteralInstruction) ||
+               ((NarrowLiteralInstruction)value).getNarrowLiteral()!=(index==tail+1?1:0) ||
+               ((OneRegisterInstruction)value).getRegisterA()!=returned) return Collections.emptyList();
+        }
+        List<MethodInfo> inputs=new ArrayList<>();
+        for(int branch:new int[]{first,tail}) {
+            int register=((OneRegisterInstruction)ins.get(branch)).getRegisterA();
+            MethodInfo input=null;
+            for(int i=branch-1;i>0;i--) {
+                Instruction value=ins.get(i);
+                if(!value.getOpcode().setsRegister() || !(value instanceof OneRegisterInstruction) ||
+                   ((OneRegisterInstruction)value).getRegisterA()!=register) continue;
+                Instruction call=ins.get(i-1);
+                if(value.getOpcode()==Opcode.MOVE_RESULT && call.getOpcode().name().startsWith("INVOKE_STATIC") &&
+                   call instanceof ReferenceInstruction && ((ReferenceInstruction)call).getReference() instanceof MethodReference)
+                    input=methods.get(key((MethodReference)((ReferenceInstruction)call).getReference()));
+                break;
+            }
+            if(input==null)return Collections.emptyList();
+            inputs.add(input);
+        }
+        return inputs;
+    }
+
+    private static boolean jumpsTo(List<Instruction> ins,int[] pc,int at,int target) {
+        Instruction instruction=ins.get(at);
+        return instruction instanceof OffsetInstruction && pc[at]+((OffsetInstruction)instruction).getCodeOffset()==pc[target];
+    }
+
+    private static String categoryMask(MethodInfo filter,Map<String,MethodInfo> methods) {
+        if(!filter.signature("Z","I") || (filter.method.getAccessFlags()&8)==0) return null;
+        Set<String> masks=new HashSet<>();
+        boolean iterates=false, comparesMask=false;
+        for(Instruction i:filter.method.getImplementation().getInstructions()) {
+            if(i.getOpcode()==Opcode.AGET) iterates=true;
+            if(i.getOpcode()!=Opcode.SGET_OBJECT || !(i instanceof ReferenceInstruction) ||
+               !(((ReferenceInstruction)i).getReference() instanceof FieldReference)) continue;
+            FieldReference f=(FieldReference)((ReferenceInstruction)i).getReference();
+            if(f.getType().equals("[I") && f.getDefiningClass().equals(filter.method.getDefiningClass())) masks.add(f.toString());
+        }
+        for(String call:filter.calls) {
+            MethodInfo helper=methods.get(call);
+            if(helper==null || !helper.signature("Z","I","I") || !helper.conditional ||
+               !helper.method.getDefiningClass().equals(filter.method.getDefiningClass())) continue;
+            for(Instruction i:helper.method.getImplementation().getInstructions())
+                if(i.getOpcode()==Opcode.AND_INT || i.getOpcode()==Opcode.AND_INT_2ADDR) comparesMask=true;
+        }
+        return iterates && comparesMask && masks.size()==1 ? masks.iterator().next() : null;
     }
 
     private static void discoverReasonBridges(List<Map<String,Object>> hooks,Set<String> ids,

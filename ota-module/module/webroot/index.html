@@ -12,9 +12,9 @@
 <body>
   <main class="page">
     <header class="hero">
-      <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 7 3v5c0 4-2.5 7.4-7 10-4.5-2.6-7-6-7-10V6l7-3Z"/><path d="m13 7-4 6h5l-3 5"/></svg></span><span>hnubl OTA</span><span class="version">3.0.1</span></div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 7 3v5c0 4-2.5 7.4-7 10-4.5-2.6-7-6-7-10V6l7-3Z"/><path d="m13 7-4 6h5l-3 5"/></svg></span><span>hnubl OTA</span><span class="version">3.1.4</span></div>
       <h1>更新，按你的方式</h1>
-      <p class="hero-note">选择全量包策略，让每次更新都符合预期。</p>
+      <p class="hero-note">设置补丁包优先级和全量包策略。</p>
     </header>
 
     <section class="status-card" aria-labelledby="statusHeading">
@@ -24,7 +24,14 @@
     </section>
 
     <section class="settings-section" aria-labelledby="strategyHeading">
-      <div class="section-heading"><h2 id="strategyHeading">全量包策略</h2><span>01</span></div>
+      <div class="section-heading"><h2 id="strategyHeading">更新包策略</h2><span>01</span></div>
+      <div class="setting-card">
+        <label class="switch-row" for="preferPatchPackage">
+          <span class="switch-label"><strong>获取补丁包</strong><span>有可用补丁包时优先选择</span></span>
+          <span class="switch"><input id="preferPatchPackage" type="checkbox" role="switch" aria-describedby="patchDescription" disabled><span class="switch-track" aria-hidden="true"><span class="switch-thumb"><svg viewBox="0 0 16 16"><path d="m4 8 3 3 5-6"/></svg></span></span></span>
+        </label>
+        <p class="setting-description" id="patchDescription">默认关闭。开启后优先选择可用补丁包，无补丁包时使用下方全量包策略。</p>
+      </div>
       <div class="setting-card">
         <label class="switch-row" for="forceFullPackage">
           <span class="switch-label"><strong>始终获取全量包</strong><span>包括当前已安装的版本</span></span>
@@ -45,9 +52,9 @@
       <span class="feedback-dot" aria-hidden="true"></span><div><p id="feedbackMessage"></p><details id="errorDetails" hidden><summary>查看详细信息</summary><pre id="errorText"></pre></details><button class="retry-button" id="refreshButton" type="button" hidden>重新读取状态</button></div>
     </section>
 
-    <aside class="rules" aria-label="关闭开关时的版本判断规则">
+    <aside class="rules" aria-label="全量包版本判断规则">
       <span class="rules-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.1"/></svg></span>
-      <p>关闭开关后，先比较数字版本号；数字版本相同时，再检查括号内信息是否有变化。</p>
+      <p>关闭“始终获取全量包”后，先比较数字版本号。数字版本相同时，再检查括号内信息是否有变化。</p>
     </aside>
     <footer>hnubl · 让更新保持自由</footer>
   </main>

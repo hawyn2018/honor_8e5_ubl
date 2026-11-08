@@ -1,0 +1,73 @@
+{
+  "profile_id": "aph136g142",
+  "kernel_release": "6.12.58-android16-6-g142ddad31e60-abogki576095858-4k",
+  "boot_image_sha256": "697a6356f2157665fff4926f5f4efbac08c3efcd0d20a8b08c8609ac084c5051",
+  "kernel_sha256": "f445f7756756ad5c8a58b63c48b12efd69f2e829903e3f009ad2ad6bdfb17c56",
+  "links": {
+    "LINK_SELINUX_STATE": "0xffffffc0827e7a60",
+    "LINK_INIT_USER_NS": "0xffffffc082572138",
+    "LINK_ROOT_USER": "0xffffffc0825723b0",
+    "LINK_INIT_GROUPS": "0xffffffc082573878",
+    "LINK_INIT_UCOUNTS": "0xffffffc082573d48",
+    "LINK_ALLOC_TIMER": "0xffffffc08051a918",
+    "LINK_ALLOC_CRED": "0xffffffc0801935e4",
+    "LINK_ALLOC_TASK": "0xffffffc0801f06e0",
+    "GEOM_MEMSTART_ADDR": "0xffffffc08193b1b8",
+    "BNE_LINK": "0xffffffc0806c8c58"
+  },
+  "function_offsets": {
+    "do_timer_create": "0xac",
+    "prepare_creds": "0x2c",
+    "copy_process": "0x190",
+    "begin_new_exec.release_task": "0x410",
+    "begin_new_exec.down_read_killable": "0x50c",
+    "begin_new_exec.posix_cpu_timers_exit": "0x87c",
+    "begin_new_exec.exit_itimers": "0x88c"
+  },
+  "btf_geometry": {
+    "task_struct.size": "0x1440",
+    "task_struct.cred": "0x900",
+    "task_struct.real_cred": "0x8f8",
+    "task_struct.comm": "0x910",
+    "task_struct.pid": "0x708",
+    "cred.size": "0xb8",
+    "cred.cap_effective": "0x40",
+    "cred.cap_bset": "0x48",
+    "cred.cap_ambient": "0x50",
+    "cred.security": "0x80",
+    "cred.user_ns": "0x90",
+    "k_itimer.size": "0x100",
+    "k_itimer.it.cpu.node": "0x78",
+    "k_itimer.rcu": "0xf0",
+    "selinux_state.size": "0x80",
+    "selinux_state.enforcing": "0x0",
+    "selinux_state.initialized": "0x1",
+    "selinux_write_target": "-0x7"
+  },
+  "kaslr_anchors": {
+    "worker_thread": "0xffffffc080207bc8",
+    "rcu_gp_fqs_loop": "0xffffffc08018dbfc",
+    "rcu_gp_kthread": "0xffffffc08018d6f4",
+    "folio_wait_bit_common": "0xffffffc0802e798c",
+    "ufshcd_issue_dev_cmd": "0xffffffc080e55658",
+    "icc_set_bw": "0xffffffc08037a2b8",
+    "prepare_creds": "0xffffffc0801935b8",
+    "selinux_state": "0xffffffc0827e7a60"
+  },
+  "runtime": {
+    "GEO_TASK_OBJSIZE": "fallback 5696; runtime reads /proc/slabinfo",
+    "GEO_TASK_OBJ_PER_SLAB": 5,
+    "GEO_TASK_SLAB_PAGES": 8,
+    "GEO_POSIX_TIMER_OBJSIZE": 256,
+    "GEO_POSIX_TIMER_OBJ_PER_SLAB": 32,
+    "GEO_POSIX_TIMER_SLAB_ORDER": 1,
+    "GEOM_MEMSTART_PFN": "0x80000 (inferred; confirm on device)",
+    "KASLR_SLIDE": "derived per boot, not hardcoded"
+  },
+  "syms": {
+    "undefined": 226,
+    "resolved": 226,
+    "missing": 0
+  },
+  "validation": "static derivation only; no APH g142 device was connected"
+}

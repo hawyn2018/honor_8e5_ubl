@@ -17,7 +17,10 @@ const fixture = `
   const initial = new URL(location.href).searchParams.get('saved') === 'on';
   const running = new URL(location.href).searchParams.get('idle') !== '1';
   const slow = new URL(location.href).searchParams.get('slow') === '1';
-  let state = { desired_force_full_package: initial, active_force_full_package: initial, pending: false, hook_ready: running, controller_ready: true, updater_running: running, waiting_for_updater: !running, activation_id: 'before-apply', error: '' };
+  let state = { desired_force_full_package: initial, active_force_full_package: initial,
+    desired_prefer_patch_package: false, active_prefer_patch_package: false,
+    pending: false, hook_ready: running, controller_ready: true, updater_running: running,
+    waiting_for_updater: !running, activation_id: 'before-apply', error: '' };
   let settling = false, polls = 0;
   window.__commands = [];
   window.__updaterRestarts = 0;
@@ -26,12 +29,18 @@ const fixture = `
   window.ksu = { exec(command, options, callback) {
     window.__commands.push(command);
     const prefix = 'sh /data/adb/modules/hnubl_ota/webui-control.sh ';
-    if (!command.startsWith(prefix) || !['status', 'apply', 'save 0', 'save 1'].includes(command.slice(prefix.length))) throw new Error('Unexpected command: ' + command);
+    if (!command.startsWith(prefix) || !['status', 'apply', 'save 0', 'save 1', 'save-patch 0', 'save-patch 1'].includes(command.slice(prefix.length))) throw new Error('Unexpected command: ' + command);
     if (command.endsWith('save 1') || command.endsWith('save 0')) {
       state.desired_force_full_package = command.endsWith('1');
-      state.pending = state.desired_force_full_package !== state.active_force_full_package;
+      state.pending = state.desired_force_full_package !== state.active_force_full_package ||
+        state.desired_prefer_patch_package !== state.active_prefer_patch_package;
+    } else if (command.endsWith('save-patch 1') || command.endsWith('save-patch 0')) {
+      state.desired_prefer_patch_package = command.endsWith('1');
+      state.pending = state.desired_force_full_package !== state.active_force_full_package ||
+        state.desired_prefer_patch_package !== state.active_prefer_patch_package;
     } else if (command.endsWith(' apply')) {
       state.active_force_full_package = state.desired_force_full_package;
+      state.active_prefer_patch_package = state.desired_prefer_patch_package;
       state.pending = false; state.hook_ready = false; state.controller_ready = false; state.waiting_for_updater = false; state.activation_id = 'current-apply'; settling = true; polls = 0;
       if (running) window.__updaterRestarts++;
     } else if (settling && ++polls >= 2) { state.controller_ready = true; state.hook_ready = running; state.waiting_for_updater = !running; settling = false; }
@@ -102,6 +111,7 @@ try {
   await until('!document.getElementById("forceFullPackage").disabled');
   assert.deepEqual(await evaluate('window.__commands'), ['sh /data/adb/modules/hnubl_ota/webui-control.sh status']);
   assert.equal(await evaluate('document.getElementById("forceFullPackage").checked'), false);
+  assert.equal(await evaluate('document.getElementById("preferPatchPackage").checked'), false);
   await shot('light-off');
   await evaluate('document.getElementById("forceFullPackage").click()');
   await until('document.getElementById("stateTag").textContent === "待应用" && !document.getElementById("applyButton").disabled');
@@ -123,6 +133,13 @@ try {
   await until('!document.getElementById("forceFullPackage").disabled');
   assert.equal(await evaluate('document.getElementById("forceFullPackage").checked'), true);
   assert.deepEqual(await evaluate('window.__commands'), ['sh /data/adb/modules/hnubl_ota/webui-control.sh status']);
+  await evaluate('document.getElementById("preferPatchPackage").click()');
+  await until('document.getElementById("stateTag").textContent === "待应用" && !document.getElementById("applyButton").disabled');
+  assert.equal(await evaluate('document.getElementById("forceFullPackage").checked'), true);
+  assert.equal(await evaluate('document.getElementById("activeMode").textContent'), '始终获取全量包');
+  await evaluate('document.getElementById("applyButton").click()');
+  await until('document.getElementById("feedback").dataset.kind === "success"');
+  assert.equal(await evaluate('document.getElementById("activeMode").textContent'), '补丁包优先 · 无补丁时始终获取全量包');
   await viewport(390, false);
   await send('Page.navigate', { url: origin + '/?idle=1' });
   await until('!document.getElementById("forceFullPackage").disabled');
@@ -157,7 +174,7 @@ try {
   await until('window.__commands.some(command => command.includes(" save "))');
   assert.equal(await evaluate('window.__saveReplies'), 0);
   assert.equal(await evaluate('document.getElementById("forceFullPackage").checked'), true);
-  assert.equal(await evaluate('getComputedStyle(document.querySelector(".switch-thumb")).transform'), 'matrix(1, 0, 0, 1, 20, 0)');
+  assert.equal(await evaluate('getComputedStyle(document.querySelector("label[for=forceFullPackage] .switch-thumb")).transform'), 'matrix(1, 0, 0, 1, 20, 0)');
   await shot('light-saving-pending');
   await until('!document.getElementById("applyButton").disabled');
   const applyFeedback = await evaluate(`(() => {

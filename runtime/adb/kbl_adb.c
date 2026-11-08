@@ -195,7 +195,11 @@ static int open_service(struct kbl_adb*s,uint32_t remote,const unsigned char*dat
         if(c->interactive){
             if(!multi(s)&&s->job_active){unsigned owned=0;for(size_t i=0;i<s->channel_capacity;++i)if(&s->channels[i]!=c&&s->channels[i].used&&s->channels[i].job_active)owned=1;
                 if(!owned){c->job=s->job;c->job_active=1;}}
-            (void)app_text(c,c->job_active?"KBL native USB debug session; resuming native job\n":"KBL native USB debug session\n# ");return KBL_OK;}
+            static const char welcome[]="KBL native USB debug session\n"
+                "https://github.com/hawyn2018/KernelBL\n# ";
+            static const char resume[]="KBL native USB debug session; resuming native job\n"
+                "https://github.com/hawyn2018/KernelBL\n";
+            (void)app_text(c,c->job_active?resume:welcome);return KBL_OK;}
         return submit_line(s,c,command);
     }
     /* Idle sync connections own no native file lease. Each operation acquires

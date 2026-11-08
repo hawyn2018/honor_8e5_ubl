@@ -35,6 +35,14 @@ test('state-only return refresh bypasses the cache without discovering the tree'
   assert.equal(f.labels.inspect().discoveryCount,before.discoveryCount);
   assert.deepEqual(f.events,[0,1]);f.labels.dispose();
 });
+test('pure hotpatch restores native text without fabricating a marker value',()=>{
+  const f=fixture();f.labels.resume(f.owner);f.tick();
+  assert.equal(f.view.text,'继续流程');
+  f.setReply({native:true});f.labels.refreshState(true);f.tick();
+  assert.equal(f.view.text,'立即重启');assert.deepEqual(f.events,[0]);
+  f.setReply({ok:true,state:0});f.labels.refreshState(true);f.tick();
+  assert.equal(f.view.text,'继续流程');f.labels.dispose();
+});
 test('native click return preserves result once and reads the consumed file without a tree scan',()=>{
   const f=fixture();f.setReply({ok:true,state:1});f.labels.resume(f.owner);f.tick();
   const before=f.counts();let calls=0;

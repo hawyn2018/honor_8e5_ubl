@@ -5,6 +5,7 @@ import dev.honor.bootforge.core.RootProcessProvider
 import dev.honor.bootforge.wireless.ShellAccess
 
 internal const val NEW_ROOT_KERNEL_G459A = "6.12.58-android16-6-g459a4285ccf8-abogki532718632-4k"
+internal const val NEW_ROOT_KERNEL_G142 = "6.12.58-android16-6-g142ddad31e60-abogki576095858-4k"
 
 /** An exact kernel release paired with the boot in which it was observed. */
 internal data class KernelIdentity(val release: String, val bootId: String) {
@@ -18,12 +19,13 @@ internal data class KernelIdentity(val release: String, val bootId: String) {
     }
 }
 
-internal enum class KernelRootRoute { BUILTIN, EXTRA }
+internal enum class KernelRootRoute { BUILTIN, EXTRA, G142 }
 
 /** Existing exact releases retain their original adapters; no prefix fallback. */
 internal fun kernelRootRoute(release: String): KernelRootRoute? = when {
     rootProfileForKernel(release) != null -> KernelRootRoute.BUILTIN
     release == NEW_ROOT_KERNEL_G459A -> KernelRootRoute.EXTRA
+    release == NEW_ROOT_KERNEL_G142 -> KernelRootRoute.G142
     else -> null
 }
 
@@ -75,13 +77,14 @@ internal class KernelDispatchSession<T>(private val choose: (KernelIdentity) -> 
 
 /**
  * Per-chain dispatcher. The built-in implementations and their payloads are
- * delegated unchanged; the additional release has its own explicit adapter.
+ * delegated unchanged; each additional release has its own explicit adapter.
  * Construction/registration performs no Shell or deployment operation.
  */
 class KernelDispatchRootAdapter(
     private val chain: RootChain,
     private val builtin: RootAdapter,
     private val extra: RootAdapter,
+    private val g142: RootAdapter,
 ) : RootAdapter {
     @Volatile private var logCallback: ((String) -> Unit)? = null
     private val session = KernelDispatchSession<RootAdapter>(::resolveBackend)
@@ -90,15 +93,19 @@ class KernelDispatchRootAdapter(
     internal fun resolveBackend(identity: KernelIdentity): RootAdapter = when (kernelRootRoute(identity.release)) {
         KernelRootRoute.BUILTIN -> builtin
         KernelRootRoute.EXTRA -> extra
+        KernelRootRoute.G142 -> g142
         null -> error("${chain.id} 未接入完整内核版本：${identity.release}")
     }
 
     override fun setLogCallback(callback: ((String) -> Unit)?) {
         logCallback = callback
-        // ViewModel.onCleared only knows this dispatcher. Always visit both
-        // delegates, including when one implementation rejects a callback.
+        // ViewModel.onCleared only knows this dispatcher. Visit every delegate
+        // even when an implementation rejects a callback.
         try { builtin.setLogCallback(callback) }
-        finally { extra.setLogCallback(callback) }
+        finally {
+            try { extra.setLogCallback(callback) }
+            finally { g142.setLogCallback(callback) }
+        }
     }
 
     override suspend fun deploy(shell: ShellAccess, application: Application) {

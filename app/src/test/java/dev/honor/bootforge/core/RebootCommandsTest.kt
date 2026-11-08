@@ -82,6 +82,45 @@ class RebootCommandsTest {
         assertEquals(listOf("id -u", "reboot recovery"), rootCommands)
     }
 
+    @Test fun systemRebootUsesThePlainCommandOnTheSelectedChannel() {
+        val rootCommands = mutableListOf<String>()
+        RootShell.setIntegratedProvider(RootProcessProvider { command ->
+            rootCommands += command
+            ProcessFixture(if (command == "id -u") "0" else "")
+        }, temporary.newFile("root.log"))
+        val wirelessCommands = mutableListOf<String>()
+        assertEquals(0, RebootCommands.requestSystem(temporary.newFile("wireless-reboot.log"),
+            timeoutSeconds = 19, shellReady = true, shell = { command, timeout ->
+                wirelessCommands += command
+                assertEquals(19L, timeout)
+                ShellResult(0, "")
+            }).exitCode)
+        assertEquals(listOf("id -u"), rootCommands)
+        assertEquals(listOf("reboot"), wirelessCommands)
+
+        assertEquals(0, RebootCommands.requestSystem(temporary.newFile("root-reboot.log")).exitCode)
+        assertEquals(listOf("id -u", "reboot"), rootCommands)
+    }
+
+    @Test fun systemRebootFailureIsNotReplayedOverAnotherChannel() {
+        val rootCommands = mutableListOf<String>()
+        RootShell.setIntegratedProvider(RootProcessProvider { command ->
+            rootCommands += command
+            ProcessFixture("0")
+        }, temporary.newFile("root.log"))
+        val wirelessCommands = mutableListOf<String>()
+        val denied = assertThrows(IllegalStateException::class.java) {
+            RebootCommands.requestSystem(temporary.newFile("denied-reboot.log"), shellReady = true,
+                shell = { command, _ ->
+                    wirelessCommands += command
+                    ShellResult(13, "Shell permission denied")
+                })
+        }
+        assertTrue(denied.message.orEmpty().contains("13"))
+        assertEquals(listOf("reboot"), wirelessCommands)
+        assertEquals(listOf("id -u"), rootCommands)
+    }
+
     @Test fun wirelessFailureNeverReplaysTheRebootOverRootOrSu() {
         val rootCommands = mutableListOf<String>()
         RootShell.setIntegratedProvider(RootProcessProvider { command ->

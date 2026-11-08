@@ -10,7 +10,7 @@
   </p>
   <p><strong>hnubl专为荣耀8e5设备解锁BL+假回锁适配的全功能解锁神器，目前已合入保留锁态OTA功能。</strong></p>
   <p>A full-featured bootloader unlock and simulated relock toolkit for HONOR 8e5 (Snapdragon 8 Elite Gen 5) devices,<br/>now with OTA support that preserves the configured lock state.</p>
-  <p><code>3.0.6</code> &nbsp;·&nbsp; Android / Miuix &nbsp;·&nbsp; <a href="LICENSE">AGPL-3.0-only</a> &nbsp;·&nbsp; Source-only releases</p>
+  <p><code>3.1.4</code> &nbsp;·&nbsp; Android / Miuix &nbsp;·&nbsp; <a href="LICENSE">AGPL-3.0-only</a> &nbsp;·&nbsp; Source-only releases</p>
   <p><a href="#简体中文"><strong>中文版</strong></a> &nbsp;|&nbsp; <a href="#english"><strong>English</strong></a></p>
 </div>
 
@@ -21,6 +21,8 @@
 **hnubl专为荣耀8e5设备解锁BL+假回锁适配的全功能解锁神器，目前已合入保留锁态OTA功能。**
 
 从无线调试连接、提权、原始分区备份，到 ABL → EFISP 修补、分区准备、解锁刷写和 OTA 后的保留锁态处理，在一个应用中完成。界面基于 [Miuix](https://github.com/compose-miuix-ui/miuix)，提供动态配色、玻璃模糊和可滑动的五页导航。
+
+**3.1.1 内核适配补充：** APH-AN00 `6.12.58-android16-6-g142ddad31e60-abogki576095858-4k` 已接入实际 98260 与 64650 提权实现和内置执行文件，按完整 `uname -r` 选择 G142 路由，不需要新增 KSU。保留 3.1.0 的 OTA、备份、分区与解锁流程。详细偏移和验证边界见 [APH g142 内核适配](docs/aph136g142-kernel-adaptation.md)。
 
 **导航：** [功能](#功能一览) · [支持设备](#支持范围) · [使用流程](#使用流程) · [OTA](#保留锁态-ota) · [构建](#从源码构建) · [许可证](#许可证与第三方组件)
 
@@ -108,14 +110,16 @@ GPT 主备表、分区信息、清单及校验记录
 
 此功能用于**系统 OTA 安装完成、尚未重启**的阶段。配套模块负责与系统软件更新协作，hnubl 负责备份及保留锁态处理；最终仍由系统软件更新执行原生收尾与重启。
 
+模块 WebUI 的**获取补丁包**默认开启，升级时保留已保存的开关状态。开启后，系统确认可用的纯热补丁优先由系统软件更新推送和安装，无需执行保留锁态 OTA。没有可用纯热补丁时，仍按**始终获取全量包**开关的原规则选择和比较版本。涉及对槽写入的固件更新继续使用下列流程。全量包、涉及对槽写入的冷补丁及类型不明确的更新都受 `freeotaok` 控制。
+
 #### 推荐顺序
 
 1. **开始系统升级前**，进入 hnubl 的 OTA 页面，点击**升级前请点此处安装或更新模块**，确认日志中的模块状态。相同或更高版本的已安装模块不会被降级重装。
 2. 打开系统**软件更新**，按系统流程下载并安装更新。配套模块提供自动更新控制、全量包入口，以及完成后的倒计时 / 重启保护。其 WebUI 可选择**始终获取全量包**：首次安装默认关闭，后续升级保留已有设置；“立即应用”只对软件更新应用应用配置，不重启设备。
 3. 安装完成后，系统更新的重启入口在 hnubl 完整流程成功前显示为**继续流程**，点击进入 hnubl 的 OTA 页面。若显示增强在某个版本未匹配，请以实际模块状态和流程日志为准。
 4. 选择标准、尝鲜或自定义 OTA，执行**保留锁态 OTA**。工具要求设备已有 `efisp`，并在相关分区写入之前完成相应备份。
-5. **hnubl 不修补 `init_boot`。** 若使用 KernelSU 并需要保留它，请在重启前进入 KernelSU，执行**安装到未使用的槽位**。
-6. 完整流程成功后，hnubl 写入完成许可并返回软件更新。确认上述步骤完成，再点击系统软件更新中的**立即重启**，由系统原流程完成重启。若自动返回未成功，可点击 hnubl 的**返回软件更新**或手动打开软件更新。
+5. 完整流程成功后，hnubl 写入完成许可并打开 KernelSU 主页。若未自动跳转，可点击 hnubl 的**KernelSU 对槽安装**。在 KernelSU 中选择**安装到未使用的槽位**并确认目标分区为 `init_boot`。
+6. 安装完成后，返回系统**软件更新**点击**立即重启**，由系统原流程完成切槽和重启。
 
 #### 三种 OTA 方案
 
@@ -133,9 +137,18 @@ OTA 备份目录为：
 内部存储/Download/hnubl/hnubl_ota_backup_yyyyMMdd_HHmmss/
 ```
 
-**仅刷写 EFISP**用于单独更新 EFISP，**导出 EFISP**用于生成并保存镜像。它们不等同于完整保留锁态 OTA，单独执行不会获得完整 OTA 的重启放行许可。仅刷写完成后的按钮也为“返回软件更新”；导出流程不写入分区。
+**仅刷写 EFISP**用于单独更新 EFISP，**导出 EFISP**用于生成并保存镜像。仅刷写完成后留在 hnubl，点击**重启体验新版efisp**才会请求正常重启。仅刷写和导出均不写入 OTA 完成标记，导出流程也不写入分区。
 
 完整 OTA 修补外部来源失败时可确认使用内置 ABL 重试；仅刷写 / 导出失败会显示重试建议。请根据实际所选来源、备份和输出日志判断结果。
+
+### 3.1.4 更新重点
+
+- **OTA 补丁包优先。** 模块新增「获取补丁包」设置。3.1.4 在没有已保存选择时默认开启。只有已明确识别的纯热补丁才使用独立的官方流程；对槽写入和类型不明确的更新继续受 `freeotaok` 控制。旧版已生效的设置在重新应用或重启后采用新默认值，已保存的明确选择会保留。此版 WebUI 的静态说明可能仍写着「默认关闭」，请以开关状态为准。
+- **完成 OTA 后打开 KernelSU。** 完整保留锁态 OTA 成功后进入 KernelSU 主页，手动安装到未使用的槽位，再回系统更新重启。仅刷写 EFISP 有单独的手动重启入口。
+- **Fastboot `continue` 兼容性。** 提前进入 Fastboot 后，手动 `continue` 会按功能定位并补齐原厂板型和平台初始化，然后继续原厂引导。普通引导、自动切槽拦截和故障转 Fastboot 的策略保持不变。
+- **KBL 与内核适配。** KBL ADB Shell 欢迎信息加入项目链接，提权页新增 g142 内核的两条适配路由。
+
+完整累计变更见 [3.1.4 Release](https://github.com/hawyn2018/honor_8e5_ubl/releases/tag/v3.1.4)。
 
 ### 3.0.6 更新重点
 
@@ -241,12 +254,14 @@ If a selected external source fails to patch during a full unlock workflow, the 
 
 Run this workflow **after the system OTA has finished installing and before rebooting**. The companion module coordinates with the system updater; hnubl performs the backup and lock-state preservation work. Finalization and reboot remain part of the system updater's native workflow.
 
+The module's **Get patch packages** switch is on by default. Upgrades preserve the saved setting. When enabled, the updater prioritizes a confirmed hot-patch-only offer and handles its notification and installation through the native flow. If no such patch is available, the existing **Always obtain a full package** setting still controls firmware selection and version comparison. Full firmware updates, cold patches that write the inactive slot, and ambiguous updates continue through the `freeotaok` workflow below.
+
 1. **Before starting the system upgrade**, open the OTA page and use **Install or update the module before upgrading**. Check the installation / readiness logs. An installed module of the same or a newer version is not downgraded or reinstalled.
 2. Download and install the update in the system updater. The module provides automatic-update control, a full-package entry, and post-install countdown / reboot protection. Its WebUI offers **Always obtain a full package**, disabled on first installation and preserved across subsequent upgrades. **Apply now** applies the setting to the updater application without rebooting the device.
 3. Until the full hnubl OTA workflow succeeds, the updater's restart action is presented as **Continue workflow** and opens hnubl. Presentation is an optional enhancement; check actual module readiness and logs if a particular updater version does not match it.
 4. Select a preset and execute the full **Preserve lock-state OTA** operation. An existing `efisp` partition is required. Relevant backups are completed before the corresponding ABL / EFISP writes.
-5. **hnubl does not patch `init_boot`.** If you use KernelSU and wish to retain it, use **Install to inactive slot** in KernelSU before rebooting.
-6. On full success, hnubl records completion permission and returns to the system updater. After the preceding steps are complete, choose **Restart now** there and let the updater perform its original reboot flow. If the automatic handoff fails, use **Return to system updater** or open it manually.
+5. On full success, hnubl records completion permission and opens the KernelSU home screen. If it does not open automatically, tap **KernelSU 对槽安装** in hnubl. In KernelSU, select **Install to inactive slot** and verify that the target is `init_boot`.
+6. After installing, return to the system updater and choose **Restart now** to let the updater activate the slot and reboot through its original flow.
 
 | Preset | ABL image to flash | EFISP input |
 | --- | --- | --- |
@@ -258,7 +273,16 @@ Changing either source manually selects Custom OTA. Advanced options include lea
 
 OTA backups are saved in `Download/hnubl/hnubl_ota_backup_yyyyMMdd_HHmmss/`.
 
-**Flash EFISP only** updates EFISP separately. **Export EFISP** generates and saves an image without writing a partition. Neither replaces the full lock-state preservation workflow or grants its reboot permission. EFISP-only completion also offers **Return to system updater**; image export has no reboot action.
+**Flash EFISP only** updates EFISP separately and keeps the completion screen in hnubl. Tap **Reboot to try the new EFISP** to request a normal reboot. **Export EFISP** generates and saves an image without writing a partition. Both operations leave the OTA completion marker untouched.
+
+### What's new in 3.1.4
+
+- **Patch packages take priority.** The module adds a Get patch packages setting, enabled by default in 3.1.4 when there is no saved choice. Confirmed hot-patch-only updates use the native updater independently. Updates that write the inactive slot, or whose type is uncertain, still use `freeotaok`. Legacy active settings pick up the new default on the next apply or reboot, and saved choices are preserved. The static WebUI help in this version may still say “off by default”; use the actual switch state.
+- **Full OTA opens KernelSU.** After hnubl finishes lock-state-preserving OTA, install manually to the inactive slot from KernelSU home, then return to the system updater to restart. EFISP-only flashing has a separate manual reboot action.
+- **Fastboot `continue` compatibility.** After early Fastboot entry, manual `continue` locates and completes OEM board and platform initialization before resuming the OEM boot flow. Normal boot, automatic slot-switch interception, and fault routing to Fastboot retain their prior behavior.
+- **KBL and kernel support.** The KBL ADB shell welcome includes the project link. Both privilege routes support exact matching of `6.12.58-android16-6-g142ddad31e60-abogki576095858-4k`.
+
+See the [3.1.4 release](https://github.com/hawyn2018/honor_8e5_ubl/releases/tag/v3.1.4) for the complete change list.
 
 ### What's new in 3.0.6
 

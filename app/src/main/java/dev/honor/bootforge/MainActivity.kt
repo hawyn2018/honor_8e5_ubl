@@ -167,7 +167,7 @@ class MainActivity : ComponentActivity() {
                                             onExportEfisp = { operate { exportOtaEfisp.launch("efisp.img") } },
                                             onClearLogs = { operate { otaModel.clearLogs() } },
                                             onExportDiagnostics = { operate { exportOtaDiagnostics.launch(dev.honor.bootforge.core.OtaDiagnosticsArchive.fileName()) } },
-                                            onReturnToSystemUpdater = { operate { otaModel.returnToSystemUpdater() } },
+                                            onCompletionAction = { operate { otaModel.runCompletionAction() } },
                                         ), padding)
                                     },
                                     rootContent = { padding, busy ->

@@ -780,6 +780,7 @@ public final class HookController {
             JSONObject parameters = new JSONObject().put("mapping", sessionMapping).put("activation_id", activationId)
                 .put("discovery_cached", cachedMapping)
                 .put("forceFullPackage", options.forceFullPackage)
+                .put("preferPatchPackage", options.preferPatchPackage)
                 .put("ota_socket", otaTransport == null ? "" : otaTransport.path);
             if (stopping || stopped) return;
             if (!agentSha.equals(sha256(new File(module, "agent.bundle.js"))))
@@ -913,6 +914,7 @@ public final class HookController {
             .put("session_start_count", sessionStartCount)
             .put("resident_session_count", sessions.values().stream().filter(session -> session.ready && session.eternalized && !session.stopped).count())
             .put("force_full_package", options.forceFullPackage)
+            .put("prefer_patch_package", options.preferPatchPackage)
             .put("process_discovery_source", processDiscoverySource);
         status.put("critical_mapping_failure", criticalMappingFailure != null)
             .put("critical_mapping_reason", criticalMappingFailure == null ? "" : criticalMappingFailure.code);

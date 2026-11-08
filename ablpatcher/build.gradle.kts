@@ -28,8 +28,8 @@ android {
         create("fakebl") {
             dimension = "patchMode"
             applicationId = "net.hawyn.ablefispfakebl"
-            versionCode = 34
-            versionName = "1.4.0"
+            versionCode = 35
+            versionName = "1.4.1"
             resValue("string", "app_name", "ABL-EFISP fakebl")
             buildConfigField("String", "PATCH_MODE", "\"FREEDOM_FAKE_LOCK\"")
         }

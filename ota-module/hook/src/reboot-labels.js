@@ -130,6 +130,7 @@ export function createRebootLabelController(p) {
           record.retired = true; record.applied = null; continue;
         }
         eligibleCount++;
+        if (cached === null) { restore(record); continue; }
         if (text !== cached) write(view, cached);
         record.applied = cached;
       } catch (error) { warning('Refreshing the restart label failed', error); }
@@ -177,10 +178,14 @@ export function createRebootLabelController(p) {
       let next = rebootLabels.continue, value = null, failure = null;
       try {
         counts.stateReadCount++;
-        const reply = p.state(); // The adapter supplies STATE exclusively.
-        if (!reply || reply.ok !== true || (reply.state !== 0 && reply.state !== 1))
-          throw new Error('STATE did not prove an exact zero/one marker');
-        value = reply.state; next = labelForState(reply);
+        const reply = p.state();
+        if (reply && reply.native === true) {
+          next = null; // Proven hotpatch: restore the updater's native text.
+        } else {
+          if (!reply || reply.ok !== true || (reply.state !== 0 && reply.state !== 1))
+            throw new Error('STATE did not prove an exact zero/one marker');
+          value = reply.state; next = labelForState(reply);
+        }
       } catch (error) { failure = error; }
       if (!current(epoch) || requesting !== job) return;
       requesting = null;
@@ -194,7 +199,7 @@ export function createRebootLabelController(p) {
         readFailed = false;
         if (value !== observedState) {
           observedState = value;
-          if (typeof p.onState === 'function') try { p.onState(value); }
+          if (value !== null && typeof p.onState === 'function') try { p.onState(value); }
           catch (error) { warning('Recording the optional label state failed', error); }
         }
       }
