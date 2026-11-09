@@ -737,7 +737,7 @@ internal fun SupportedDevicesDialog(onDismiss: () -> Unit) {
                     Text("在搭载高通第五代骁龙8至尊版的荣耀设备上提供有限支持", fontSize = 13.sp, lineHeight = 22.sp,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                     Text("支持的设备", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                    Text("honor magic 8\nhonor magic 8 pro\nhonor magic 8 rsr\nhonor win\nhonor robot phone\nhonor magic v6\nhonor magicpad3 pro 13.3",
+                    Text("honor magic 8\nhonor magic 8 pro\nhonor magic 8 rsr\nhonor win\nhonor win pad\nhonor robot phone\nhonor magic v6\nhonor magicpad3 pro 13.3",
                         fontSize = 15.sp, lineHeight = 24.sp)
                     Text("目前确定不支持的设备", fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
                         color = Color(0xFFE53935))

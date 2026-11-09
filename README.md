@@ -10,7 +10,7 @@
   </p>
   <p><strong>hnubl专为荣耀8e5设备解锁BL+假回锁适配的全功能解锁神器，目前已合入保留锁态OTA功能。</strong></p>
   <p>A full-featured bootloader unlock and simulated relock toolkit for HONOR 8e5 (Snapdragon 8 Elite Gen 5) devices,<br/>now with OTA support that preserves the configured lock state.</p>
-  <p><code>3.1.4</code> &nbsp;·&nbsp; Android / Miuix &nbsp;·&nbsp; <a href="LICENSE">AGPL-3.0-only</a> &nbsp;·&nbsp; Source-only releases</p>
+  <p><code>3.1.5</code> &nbsp;·&nbsp; Android / Miuix &nbsp;·&nbsp; <a href="LICENSE">AGPL-3.0-only</a> &nbsp;·&nbsp; Source-only releases</p>
   <p><a href="#简体中文"><strong>中文版</strong></a> &nbsp;|&nbsp; <a href="#english"><strong>English</strong></a></p>
 </div>
 
@@ -50,6 +50,7 @@
 | honor magic 8 pro | honor magic 9 |
 | honor magic 8 rsr | |
 | honor win | |
+| honor win pad | |
 | honor robot phone | |
 | honor magic v6 | |
 | honor magicpad3 pro 13.3 | |
@@ -203,6 +204,7 @@ It brings wireless-debugging pairing, privilege access, partition backups, ABL-t
 | honor magic 8 pro | honor magic 9 |
 | honor magic 8 rsr | |
 | honor win | |
+| honor win pad | |
 | honor robot phone | |
 | honor magic v6 | |
 | honor magicpad3 pro 13.3 | |
