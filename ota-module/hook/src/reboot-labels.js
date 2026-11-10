@@ -429,7 +429,7 @@ export function lifecycleImplementations(contract, controller, warn) {
 }
 
 /** Install once after the critical hooks. All failures are optional warnings. */
-export function installRebootLabels({Java, app, state, warn, manualAction, onState, onStateError, intervalMs = 2500, cacheMs = 750}) {
+export function installRebootLabels({Java, app, state, warn, manualAction, onState, onStateError, observeLatestVersion, intervalMs = 2500, cacheMs = 750}) {
   const warning = (message, error) => { try { warn(message, error); } catch (_) {} };
   const ActivityCallbacks = Java.use('android.app.Application$ActivityLifecycleCallbacks');
   const WeakReference = Java.use('java.lang.ref.WeakReference');
@@ -585,6 +585,7 @@ export function installRebootLabels({Java, app, state, warn, manualAction, onSta
     const labels = [];
     if (roots.some(root => root.hasWindowFocus())) for (const root of roots) labels.push(...resourceTexts(root));
     else roots.length = 0;
+    const observeBadge = observeLatestVersion?.(roots.find(root => root.hasWindowFocus()));
     // The cursor and identity buckets retain only weak views between frames.
     // Child enumeration itself is incremental, including wide ViewGroups.
     const pending = roots.map(root => ({view: WeakReference.$new(root), child: -1})), visited = new Map();
@@ -617,6 +618,7 @@ export function installRebootLabels({Java, app, state, warn, manualAction, onSta
             const tracked = controller.tracks(view);
             const text = readRestartCandidateText(Java.cast(view, TextView).getText(), labels, tracked);
             if (text != null) {
+              if (observeBadge) observeBadge(view, text);
               const manual = isManualRestartText(text, labels);
               // Parent/listener walks remain exclusive to semantic candidates.
               if (manual || tracked) value = {...read(view, text), view, manual};
@@ -784,6 +786,7 @@ export function installRebootLabels({Java, app, state, warn, manualAction, onSta
   }
   function resumeRoot(root) {
     if (root == null || disposed) return;
+    observeLatestVersion?.(root, true);
     const prior = weakGet(labelRoot);
     if (prior == null || !prior.equals(root)) cancelDiscovery();
     watchRoot(root); labelRoot = WeakReference.$new(root); controller.resume(root);
@@ -839,12 +842,18 @@ export function installRebootLabels({Java, app, state, warn, manualAction, onSta
               const changedViews = pendingTextViews; pendingTextViews = [];
               discoveryDirty = false; renderDirty = false; focusDirty = false;
               if (!controller.inspect().active || previous == null || !previous.equals(focused)) resumeRoot(focused);
-              else if (discover) controller.refresh(false);
+              else if (discover) {
+                observeLatestVersion?.(focused, true);
+                controller.refresh(false);
+              }
               else {
                 for (const reference of changedViews) { const view = weakGet(reference); if (view != null) controller.refreshView(view); }
                 if (apply) controller.apply();
               }
-              if (forceState) controller.refreshState(true);
+              if (forceState) {
+                observeLatestVersion?.(focused, true);
+                controller.refreshState(true);
+              }
             } catch (error) { warning('Optional restart label refresh failed', error); }
           }); } catch (error) { refreshQueued = false; warning('Scheduling optional restart label refresh failed', error); }
         }); } catch (error) { refreshQueued = false; warning('Entering optional restart label refresh failed', error); }

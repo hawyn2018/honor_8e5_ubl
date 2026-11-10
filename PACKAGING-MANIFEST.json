@@ -1,10 +1,10 @@
 {
   "application": {
     "applicationId": "net.hawyn.honor8e5ubl",
-    "versionCode": 115,
-    "versionName": "3.1.5"
+    "versionCode": 118,
+    "versionName": "3.1.8"
   },
-  "baseline": "3.1.4",
+  "baseline": "3.1.7",
   "excluded": [
     "APKs",
     "signing private keys",
@@ -15,11 +15,11 @@
   "kernelBlDriverSha256": "fcb4c6c6af41cb9798ebb8791246b18dce0d25a7ebe3d2432de5df60b41841cf",
   "license": "AGPL-3.0-only",
   "module": {
-    "sha256": "af8c6aaf56b441c1ba0f7382e863cf147e911fe64854356cbf87f99347262f1b",
-    "version": "3.1.4",
-    "versionCode": 114
+    "sha256": "1286d18a5ce24b537edc8d79a3117d08d6b5eee4de454360d78844625fd5798d",
+    "version": "3.1.8",
+    "versionCode": 118
   },
-  "scope": "Add honor win pad to the in-app supported devices dialog",
+  "scope": "Clear both the software-update badge and the launcher Settings badge when the updater displays the latest-version state",
   "standaloneFakebl": {
     "applicationId": "net.hawyn.ablefispfakebl",
     "versionCode": 35,

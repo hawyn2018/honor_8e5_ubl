@@ -1,6 +1,6 @@
 id=hnubl_ota
 name=hnubl OTA companion
-version=3.1.4
-versionCode=114
+version=3.1.8
+versionCode=118
 author=hawyn
 description=Updater package selection with optional patch priority, firmware version filtering, and full OTA reboot handoff to hnubl.

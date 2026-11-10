@@ -2,6 +2,7 @@ import Java from 'frida-java-bridge';
 import {isAutomatic, isManual, consumeAllows, requiredReady, isCriticalRole, readiness} from './policy.js';
 import {filterVersionResponse, parseFirmwareVersion} from './version-policy.js';
 import {installRebootLabels} from './reboot-labels.js';
+import {createLatestVersionBadgeObserver} from './latest-version-badge.js';
 import {installCacheVersionQuery} from './cache-query.js';
 import {createUpdatePackagePolicy} from './update-package-policy.js';
 import {installPatchPriority} from './patch-priority.js';
@@ -73,7 +74,8 @@ function telemetry(event) {
     'payload_begin_blocked', 'redirect_to_hnubl', 'original_reboot_entry_allowed', 'original_reboot_replay_entered',
     'original_reboot_entry_returned', 'native_reboot_blocked', 'runtime_deoptimized',
     'terminal_reboot_blocked', 'reboot_frontier_passed', 'version_filter', 'cache_version_filter',
-    'patch_package_preferred', 'hotpatch_native_payload', 'hotpatch_original_reboot'].includes(event.event)) {
+    'patch_package_preferred', 'hotpatch_native_payload', 'hotpatch_original_reboot', 'latest_version_badge_cleared',
+    'latest_version_launcher_badge_cleared'].includes(event.event)) {
     try {
       const Log = Java.use('android.util.Log');
       Log.i.overload('java.lang.String', 'java.lang.String').call(Log, 'hnubl-ota', JSON.stringify(detail));
@@ -766,6 +768,10 @@ function init(stage, parameters) {
         criticalReady = true;
         try {
           rebootLabels = installRebootLabels({Java, app,
+            observeLatestVersion: createLatestVersionBadgeObserver({Java, app,
+              warn: error => reportWarning('latest_version_badge', 'Optional updater badge cleanup failed', error),
+              onCleared: () => telemetry({event: 'latest_version_badge_cleared'}),
+              onLauncherCleared: () => telemetry({event: 'latest_version_launcher_badge_cleared'})}),
             state: () => updatePackagePolicy.isHotpatchOnly() ? {native: true} : marker('STATE'),
             warn: (message, error) => reportWarning('reboot_labels', message, error),
             onState: value => rebootTrace(value === 1 ? 'label_state_one' : 'label_state_zero', (diagnosticSession + '-label').slice(-24)),

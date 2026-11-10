@@ -11,6 +11,7 @@ import {installCacheVersionQuery} from '../src/cache-query.js';
 import {createProcessMethodCache} from '../src/method-resolution-cache.js';
 import {createUpdatePackagePolicy} from '../src/update-package-policy.js';
 import {installPatchPriority} from '../src/patch-priority.js';
+import {createLatestVersionBadgeObserver} from '../src/latest-version-badge.js';
 
 // Exercise the actual agent's binding/closure/lifecycle code with a Java ABI
 // fixture. No ART, broker socket, updater, payload, reboot or slot API is run.
@@ -110,7 +111,7 @@ function fixture({hooks=critical(), failedMethods=[], replies=[{ok:true,state:0,
     }};
   const context=vm.createContext({...policy,...versions,createRebootContext,createOriginalReplay,
     installNativeRebootGuard:options=>{if(!nativeBarrier)return installNativeRebootGuard(options);stages.push({nativeGuardInstalled:true});nativeOptions=options;return {ready:true};},
-    createNativeRebootScope,applyCriticalDeoptimization,createProcessMethodCache,createUpdatePackagePolicy,installPatchPriority,Java,installCacheVersionQuery,installRebootLabels:options=>{manualAction=options.manualAction;return {aroundOriginal:fn=>fn()};},rpc:{exports:{}},send:e=>events.push(JSON.parse(JSON.stringify(e))),
+    createNativeRebootScope,applyCriticalDeoptimization,createProcessMethodCache,createUpdatePackagePolicy,installPatchPriority,createLatestVersionBadgeObserver,Java,installCacheVersionQuery,installRebootLabels:options=>{manualAction=options.manualAction;return {aroundOriginal:fn=>fn()};},rpc:{exports:{}},send:e=>events.push(JSON.parse(JSON.stringify(e))),
     setTimeout:fn=>{timers.push(()=>run('worker',fn));return timers.length;},clearTimeout(){},console});
   vm.runInContext(source,context);
   context.brokerRequest=command=>{
